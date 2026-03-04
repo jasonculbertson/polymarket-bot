@@ -451,6 +451,11 @@ def analyze_all(all_markets: dict, all_forecasts: dict,
     """
     Run full analysis.
     Returns (yes_clusters, no_opps) sorted by return_pct descending.
+
+    Each event produces at most one YES cluster (the highest-return option).
+    Both 2-bracket (tighter, higher return) and 3-bracket (safer, lower return)
+    are evaluated; the best one per event is kept. The alternative cluster is
+    stored in cluster.alt so the UI can show it as a toggle.
     """
     if max_capital is None:
         max_capital = STRATEGY["max_capital"]
@@ -464,7 +469,17 @@ def analyze_all(all_markets: dict, all_forecasts: dict,
             continue
         for event in events:
             clusters, no_opps = analyze_event(event, city_forecast, max_capital)
-            all_clusters.extend(clusters)
+
+            # Keep only the best cluster per event; attach the other as .alt
+            if len(clusters) >= 2:
+                clusters.sort(key=lambda c: c.return_pct, reverse=True)
+                best = clusters[0]
+                best.alt = clusters[1]   # safer alternative
+                all_clusters.append(best)
+            elif clusters:
+                clusters[0].alt = None
+                all_clusters.append(clusters[0])
+
             all_no_opps.extend(no_opps)
 
     all_clusters.sort(key=lambda c: (c.forecast_confidence == "high", c.return_pct), reverse=True)

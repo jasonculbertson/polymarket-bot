@@ -1118,6 +1118,22 @@ function renderYes(clusters) {
     const id = yesId(c);
     const taken = _takenSet.has(id);
 
+    // Safer alt cluster (3-bracket)
+    let altPill = '';
+    if (c.alt) {
+      const altLabels = c.alt.brackets.map(b => b.group_title).join(' + ');
+      const altRet    = c.alt.return_pct.toFixed(1);
+      const altRange  = (() => {
+        const lo = c.alt.win_lo != null ? Math.round(c.alt.win_lo) : '<lo';
+        const hi = c.alt.win_hi != null ? Math.round(c.alt.win_hi)+'°'+u : '→∞';
+        return `${lo}-${hi}`;
+      })();
+      altPill = `<div style="margin-top:3px;font-size:.62rem;color:var(--text-muted)">
+        Safer 3-bkt: <span style="color:var(--purple-light)">${altLabels}</span>
+        <span style="color:var(--text-dim)"> · ${altRet}% · ${altRange}</span>
+      </div>`;
+    }
+
     const bktDetails = c.brackets.map(b => {
       const fc = b.is_forecast_bracket ? ' ⭐' : '';
       return `<div class="bracket-row">`
@@ -1131,7 +1147,7 @@ function renderYes(clusters) {
     return `<tr class="${taken ? 'taken-row' : ''}">
       <td class="city-cell">${c.city}${cityBadge(c.city)}</td>
       <td class="date-cell">${c.date}</td>
-      <td class="brackets-cell">${labels}</td>
+      <td class="brackets-cell">${labels}${altPill}</td>
       <td style="text-align:center">${c.cluster_size}</td>
       <td class="price-cell">${fmt(c.total_price, 3)}</td>
       <td class="ret-cell ${retCls}">${fmt(c.return_pct)}%</td>

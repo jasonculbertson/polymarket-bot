@@ -53,9 +53,8 @@ def build_forecast_rows(forecasts: dict, target_date: str) -> list:
 
 def save_results(clusters, no_opps, markets, forecasts, scan_time: str, target_date: str = ""):
     """Save scan results to data/ directory."""
-    clusters_data = []
-    for c in clusters:
-        clusters_data.append({
+    def _serialize_cluster(c) -> dict:
+        return {
             "type": "YES_CLUSTER",
             "city": c.city,
             "date": c.date,
@@ -84,7 +83,15 @@ def save_results(clusters, no_opps, markets, forecasts, scan_time: str, target_d
             "total_cost": c.total_cost,
             "liquidity_min": c.liquidity_min,
             "polymarket_url": f"https://polymarket.com/event/{c.event_slug}",
-        })
+        }
+
+    clusters_data = []
+    for c in clusters:
+        row = _serialize_cluster(c)
+        alt = getattr(c, "alt", None)
+        if alt is not None:
+            row["alt"] = _serialize_cluster(alt)
+        clusters_data.append(row)
 
     no_opps_data = []
     for o in no_opps:
