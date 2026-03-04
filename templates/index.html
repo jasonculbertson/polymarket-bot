@@ -676,6 +676,11 @@ tr.taken-row:hover td { opacity: 0.55; }
       <input type="number" id="capital" value="400" min="50" step="50">
     </div>
     <div class="divider"></div>
+    <div id="auto-scan-info" style="font-size:.7rem; color:var(--text-muted); display:flex; flex-direction:column; gap:2px; min-width:110px">
+      <span id="auto-next" style="color:var(--green)">⏱ loading…</span>
+      <span id="auto-last" style="color:var(--text-muted)"></span>
+    </div>
+    <div class="divider"></div>
     <button class="btn btn-secondary" onclick="toggleLog()" id="log-toggle-btn">Log</button>
   </div>
   <div id="log-wrap"></div>
@@ -1507,10 +1512,60 @@ document.addEventListener('keydown', e => {
   if (e.key === 'f' || e.key === 'F') $('min-return-filter').focus();
 });
 
+// ─── Schedule status ─────────────────────────────────────────────────
+function _fmtCountdown(isoStr) {
+  if (!isoStr) return null;
+  const diff = Math.max(0, new Date(isoStr) - Date.now());
+  const h = Math.floor(diff / 3600000);
+  const m = Math.floor((diff % 3600000) / 60000);
+  const s = Math.floor((diff % 60000) / 1000);
+  if (h > 0)  return `${h}h ${m}m`;
+  if (m > 0)  return `${m}m ${s}s`;
+  return `${s}s`;
+}
+function _fmtAgo(isoStr) {
+  if (!isoStr) return '';
+  const diff = Math.max(0, Date.now() - new Date(isoStr));
+  const h = Math.floor(diff / 3600000);
+  const m = Math.floor((diff % 3600000) / 60000);
+  if (h > 0)  return `last ${h}h ${m}m ago`;
+  if (m > 0)  return `last ${m}m ago`;
+  return 'last <1m ago';
+}
+
+let _scheduleData = null;
+
+function loadSchedule() {
+  fetch('/schedule')
+    .then(r => r.json())
+    .then(d => {
+      _scheduleData = d;
+      const nextEl = $('auto-next');
+      const lastEl = $('auto-last');
+      if (!nextEl) return;
+      if (!d.enabled) {
+        nextEl.textContent = '⏸ auto-scan off';
+        nextEl.style.color = 'var(--text-muted)';
+        lastEl.textContent = 'Set SCAN_INTERVAL_HOURS';
+      } else {
+        const cd = _fmtCountdown(d.next_run);
+        nextEl.textContent = cd ? `⏱ next in ${cd}` : '⏱ running soon';
+        nextEl.style.color = 'var(--green)';
+        lastEl.textContent = _fmtAgo(d.last_run);
+      }
+    })
+    .catch(() => {
+      const el = $('auto-next');
+      if (el) { el.textContent = ''; }
+    });
+}
+
 // ─── Init ────────────────────────────────────────────────────────────
 loadTaken();
 loadData();
+loadSchedule();
 setInterval(loadData, 90000);
+setInterval(loadSchedule, 15000);  // refresh countdown every 15s
 </script>
 </body>
 </html>

@@ -252,8 +252,19 @@ def export_csv(type):
     )
 
 
+_scheduler      = None
+_last_auto_scan = None   # ISO string of last auto-scan start time
+
+
+def _auto_scan_job():
+    global _last_auto_scan
+    _last_auto_scan = datetime.now().isoformat()
+    threading.Thread(target=run_scan_bg, daemon=True).start()
+
+
 def _start_scheduler():
     """Start background auto-scan scheduler (Railway + local)."""
+    global _scheduler
     if SCAN_INTERVAL_HOURS <= 0:
         print("Auto-scan disabled (SCAN_INTERVAL_HOURS=0)")
         return
@@ -263,27 +274,46 @@ def _start_scheduler():
         print("apscheduler not installed — auto-scan disabled. pip install apscheduler")
         return
 
-    scheduler = BackgroundScheduler(daemon=True)
+    _scheduler = BackgroundScheduler(daemon=True)
 
-    # Run on schedule
-    scheduler.add_job(
-        lambda: threading.Thread(target=run_scan_bg, daemon=True).start(),
+    _scheduler.add_job(
+        _auto_scan_job,
         "interval",
         hours=SCAN_INTERVAL_HOURS,
         id="auto_scan",
     )
 
-    # Also run once at startup (30s delay so the server is fully up first)
+    # Run once at startup after a short delay
     run_at = datetime.now() + timedelta(seconds=30)
-    scheduler.add_job(
-        lambda: threading.Thread(target=run_scan_bg, daemon=True).start(),
+    _scheduler.add_job(
+        _auto_scan_job,
         "date",
         run_date=run_at,
         id="startup_scan",
     )
 
-    scheduler.start()
+    _scheduler.start()
     print(f"Auto-scan scheduled every {SCAN_INTERVAL_HOURS}h (first run in 30s)")
+
+
+@app.route("/schedule")
+def schedule_status():
+    """Return scheduler state for the dashboard."""
+    if _scheduler is None or not _scheduler.running:
+        return jsonify({
+            "enabled":      False,
+            "interval_hrs": SCAN_INTERVAL_HOURS,
+            "next_run":     None,
+            "last_run":     _last_auto_scan,
+        })
+    job = _scheduler.get_job("auto_scan")
+    next_run = job.next_run_time.isoformat() if job and job.next_run_time else None
+    return jsonify({
+        "enabled":      True,
+        "interval_hrs": SCAN_INTERVAL_HOURS,
+        "next_run":     next_run,
+        "last_run":     _last_auto_scan,
+    })
 
 
 if __name__ == "__main__":
