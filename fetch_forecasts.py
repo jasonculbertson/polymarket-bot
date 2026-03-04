@@ -115,22 +115,28 @@ def _weighted_consensus(values: dict, weights: dict) -> float:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def fetch_wunderground_hourly(station: str, unit: str = "F",
+                               lat: float = 0.0, lon: float = 0.0,
                                _retry: bool = True) -> Optional[dict]:
     """
     Fetch 10-day hourly forecast from api.weather.com using WU's embedded public key.
 
-    This is the same data source Polymarket uses for resolution — the exact same
-    ICAO station, the same API, no paid key required.
+    Always fetches in imperial (°F) using the station's geocode — this is the same
+    grid point WU uses when displaying the hourly page, ensuring our temperatures
+    match exactly what WU shows (and what Polymarket resolves against).
 
-    station: ICAO code, e.g. "KLGA"
-    unit:    "F" (imperial/e) or "C" (metric/m)
+    For Celsius cities, temperatures are converted from °F using standard rounding,
+    matching WU's own Celsius display: round((F - 32) * 5 / 9).
+
+    station: ICAO code, e.g. "KLGA" (used for logging only)
+    unit:    "F" or "C" — determines output unit and conversion
+    lat/lon: WU-resolved station geocode (from config.py)
 
     Returns:
     {
         "YYYY-MM-DD": {
-            "max":       float,              # daily high = max of hourly temps
+            "max":       float,              # daily high in native unit
             "peak_hour": "14:00",            # local hour when high hits
-            "hours":     [("09:00", 61.0), ...]  # full curve for charting
+            "hours":     [("09:00", 61.0), ...]  # full curve in native unit
         }
     }
     """
@@ -139,19 +145,24 @@ def fetch_wunderground_hourly(station: str, unit: str = "F",
         print(f"    [WARN] WU: could not obtain embedded API key for {station}")
         return None
 
-    wu_units = "e" if unit == "F" else "m"
+    # Always fetch in imperial — WU stores all data in °F internally.
+    # Using geocode (not icaoCode) matches the exact forecast grid WU's website uses.
+    if lat and lon:
+        location_param = f"geocode={lat},{lon}"
+    else:
+        location_param = f"icaoCode={station}"
+
     url = (
         f"{WU_API_BASE}/v3/wx/forecast/hourly/10day"
-        f"?icaoCode={station}&units={wu_units}&language=en-US&format=json&apiKey={api_key}"
+        f"?{location_param}&units=e&language=en-US&format=json&apiKey={api_key}"
     )
 
     try:
         r = requests.get(url, headers=_WU_HEADERS, timeout=12)
 
         if r.status_code == 401 and _retry:
-            # Key rotated — force refresh and retry once
             _wu_key_cache["ts"] = 0.0
-            return fetch_wunderground_hourly(station, unit, _retry=False)
+            return fetch_wunderground_hourly(station, unit, lat, lon, _retry=False)
 
         if r.status_code != 200:
             print(f"    [WARN] WU API returned {r.status_code} for {station}")
@@ -164,13 +175,19 @@ def fetch_wunderground_hourly(station: str, unit: str = "F",
         if not temps or not times:
             return None
 
+        def _convert(f: float) -> float:
+            """Convert °F → °C using WU's display rounding, or keep as °F."""
+            if unit == "C":
+                return round((f - 32) * 5 / 9)
+            return float(f)
+
         daily: dict = {}
         for time_str, temp in zip(times, temps):
             if temp is None or not time_str:
                 continue
             date_str = time_str[:10]
             hour_str = time_str[11:16]
-            t = float(temp)
+            t = _convert(float(temp))
 
             if date_str not in daily:
                 daily[date_str] = {"max": t, "peak_hour": hour_str, "hours": []}
@@ -361,7 +378,7 @@ def fetch_city_forecast(city_name: str, days: int = 2) -> dict:
 
     with ThreadPoolExecutor(max_workers=3) as pool:
         fu = {}
-        fu["wu"] = pool.submit(fetch_wunderground_hourly, station, unit)
+        fu["wu"] = pool.submit(fetch_wunderground_hourly, station, unit, lat, lon)
         if is_us:
             fu["nws"]  = pool.submit(fetch_nws_forecast, lat, lon)
         if not is_us:
