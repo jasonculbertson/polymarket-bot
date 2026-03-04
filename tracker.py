@@ -7,6 +7,7 @@ Storage: DATA_DIR/outcomes.json  (persists across Railway deploys when volume is
 
 import json
 import os
+import re
 import requests
 from datetime import datetime, date
 from typing import Optional
@@ -151,6 +152,61 @@ def _fetch_market_yes_price(market_id: str) -> Optional[float]:
         return None
 
 
+def _parse_bracket_midpoint(text: str, unit: str = "F") -> Optional[float]:
+    """Parse bracket text and return its midpoint temperature."""
+    m = re.search(r"between (-?\d+)-(-?\d+)°[FC]", text)
+    if m:
+        return (float(m.group(1)) + float(m.group(2))) / 2.0
+    m = re.search(r"(-?\d+)-(-?\d+)°[FC]", text)
+    if m:
+        return (float(m.group(1)) + float(m.group(2))) / 2.0
+    m = re.search(r"be (-?\d+)°[FC] or (?:below|lower)", text)
+    if m:
+        return float(m.group(1)) - 0.5
+    m = re.search(r"(-?\d+)°[FC] or (?:below|lower)", text)
+    if m:
+        return float(m.group(1)) - 0.5
+    m = re.search(r"be (-?\d+)°[FC] or (?:above|higher)", text)
+    if m:
+        return float(m.group(1)) + 0.5
+    m = re.search(r"(-?\d+)°[FC] or (?:above|higher)", text)
+    if m:
+        return float(m.group(1)) + 0.5
+    return None
+
+
+def _fetch_actual_temp_from_gamma(event_slug: str) -> Optional[float]:
+    """
+    Infer actual temperature from the resolved Polymarket event.
+    Finds the bracket with YES price ≥ 0.95 and returns its midpoint.
+    """
+    try:
+        r = requests.get(
+            f"{GAMMA_API}/events",
+            params={"slug": event_slug, "closed": "true"},
+            timeout=10,
+        )
+        if r.status_code != 200:
+            return None
+        events = r.json()
+        if not events:
+            return None
+        event = events[0] if isinstance(events, list) else events
+        for mkt in event.get("markets", []):
+            prices_raw = mkt.get("outcomePrices", "[]")
+            if isinstance(prices_raw, str):
+                prices_raw = json.loads(prices_raw)
+            yes_price = float(prices_raw[0]) if prices_raw else 0.0
+            if yes_price >= 0.95:
+                label = mkt.get("groupItemTitle") or mkt.get("question", "")
+                t = _parse_bracket_midpoint(label)
+                if t is not None:
+                    return t
+    except Exception:
+        pass
+    return None
+
+
 def resolve_outcomes() -> int:
     """
     Check past-resolution-date opportunities and record wins/losses.
@@ -181,6 +237,14 @@ def resolve_outcomes() -> int:
                 opp["pnl_pct"] = -100.0
             else:
                 continue
+            # Record actual temperature for accuracy tracking
+            if opp.get("actual_temp") is None:
+                actual = _fetch_actual_temp_from_gamma(opp.get("event_slug", ""))
+                if actual is not None:
+                    opp["actual_temp"] = actual
+                    wu_pred = (opp.get("forecast_sources") or {}).get("wunderground")
+                    if wu_pred is not None:
+                        opp["wu_error"] = round(abs(wu_pred - actual), 1)
             resolved_count += 1
 
         elif opp["type"] == "yes":
@@ -201,6 +265,14 @@ def resolve_outcomes() -> int:
                 opp["pnl_pct"] = -100.0
             else:
                 continue
+            # Record actual temperature for accuracy tracking
+            if opp.get("actual_temp") is None:
+                actual = _fetch_actual_temp_from_gamma(opp.get("event_slug", ""))
+                if actual is not None:
+                    opp["actual_temp"] = actual
+                    wu_pred = (opp.get("forecast_sources") or {}).get("wunderground")
+                    if wu_pred is not None:
+                        opp["wu_error"] = round(abs(wu_pred - actual), 1)
             resolved_count += 1
 
     if resolved_count:
@@ -225,6 +297,15 @@ def get_summary() -> dict:
     avg_win = sum(o["pnl_pct"] for o in wins) / len(wins) if wins else None
     avg_loss = sum(o["pnl_pct"] for o in losses) / len(losses) if losses else None
 
+    # WU forecast accuracy: average absolute error on resolved opps with actual_temp
+    wu_errors = [o["wu_error"] for o in resolved if o.get("wu_error") is not None]
+    wu_avg_error = round(sum(wu_errors) / len(wu_errors), 2) if wu_errors else None
+
+    # Bracket hit rate: for YES clusters, was the actual temp inside the bracket?
+    yes_resolved = [o for o in resolved if o["type"] == "yes"]
+    bracket_hits = [o for o in yes_resolved if o["outcome"] == "win"]
+    bracket_hit_rate = round(len(bracket_hits) / len(yes_resolved) * 100, 1) if yes_resolved else None
+
     return {
         "total": len(opps),
         "resolved": len(resolved),
@@ -235,8 +316,11 @@ def get_summary() -> dict:
         "avg_win_pct": round(avg_win, 1) if avg_win is not None else None,
         "avg_loss_pct": round(avg_loss, 1) if avg_loss is not None else None,
         "total_pnl_pct": round(total_pnl, 1),
+        "wu_avg_error": wu_avg_error,
+        "wu_error_samples": len(wu_errors),
+        "bracket_hit_rate": bracket_hit_rate,
         "last_resolved": data.get("last_resolved"),
-        "recent": sorted(opps, key=lambda o: o["first_seen"], reverse=True)[:50],
+        "recent": sorted(opps, key=lambda o: o["first_seen"], reverse=True)[:100],
     }
 
 

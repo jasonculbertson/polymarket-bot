@@ -820,6 +820,8 @@ tr.taken-row:hover td { opacity: 0.55; }
       <div class="card yes"><div class="label">Avg Win</div><div class="value" id="oc-avg-win">—</div><div class="sub">return %</div></div>
       <div class="card no"><div class="label">Avg Loss</div><div class="value" id="oc-avg-loss">—</div><div class="sub">return %</div></div>
       <div class="card dep"><div class="label">Pending</div><div class="value" id="oc-pending">—</div><div class="sub">awaiting resolution</div></div>
+      <div class="card scan"><div class="label">WU Avg Error</div><div class="value" id="oc-wu-error">—</div><div class="sub" id="oc-wu-error-sub">forecast accuracy</div></div>
+      <div class="card scan" style="border-color:var(--purple-light)"><div class="label">Bracket Hit Rate</div><div class="value" id="oc-hit-rate">—</div><div class="sub">YES clusters won</div></div>
     </div>
 
     <!-- Learning stats -->
@@ -871,13 +873,15 @@ tr.taken-row:hover td { opacity: 0.55; }
               <th>Return</th>
               <th>Conf</th>
               <th>Res. Date</th>
-              <th>First Seen</th>
+              <th>WU Pred</th>
+              <th>Actual</th>
+              <th>Error</th>
               <th>Outcome</th>
               <th>P&amp;L</th>
             </tr>
           </thead>
           <tbody id="outcomes-body">
-            <tr><td colspan="10"><div class="empty"><div class="empty-icon">📈</div>Run a scan to start tracking outcomes</div></td></tr>
+            <tr><td colspan="12"><div class="empty"><div class="empty-icon">📈</div>Run a scan to start tracking outcomes</div></td></tr>
           </tbody>
         </table>
       </div>
@@ -1390,10 +1394,19 @@ function loadOutcomes() {
       $('oc-avg-loss').textContent  = data.avg_loss_pct != null ? data.avg_loss_pct.toFixed(1) + '%' : '—';
       $('oc-pending').textContent   = data.pending || 0;
 
+      // Accuracy cards
+      if (data.wu_avg_error != null) {
+        $('oc-wu-error').textContent     = data.wu_avg_error.toFixed(1) + '°';
+        $('oc-wu-error-sub').textContent = `avg abs error · ${data.wu_error_samples} samples`;
+      }
+      if (data.bracket_hit_rate != null) {
+        $('oc-hit-rate').textContent = data.bracket_hit_rate.toFixed(1) + '%';
+      }
+
       const tb = $('outcomes-body');
       const opps = data.recent || [];
       if (!opps.length) {
-        tb.innerHTML = '<tr><td colspan="10"><div class="empty"><div class="empty-icon">📈</div>No tracked opportunities yet — run a scan</div></td></tr>';
+        tb.innerHTML = '<tr><td colspan="12"><div class="empty"><div class="empty-icon">📈</div>No tracked opportunities yet — run a scan</div></td></tr>';
         return;
       }
 
@@ -1412,8 +1425,18 @@ function loadOutcomes() {
           pnlCell = `<span class="pnl-negative">${(o.pnl_pct||0).toFixed(1)}%</span>`;
         }
 
-        const firstSeen = o.first_seen ? o.first_seen.slice(0,16).replace('T',' ') : '—';
         const u = o.temp_unit || 'F';
+        const wuPred   = (o.forecast_sources||{}).wunderground;
+        const actual   = o.actual_temp;
+        const wuError  = o.wu_error;
+
+        const wuCell     = wuPred  != null ? `${wuPred.toFixed(1)}°${u}` : '<span style="color:var(--text-muted)">—</span>';
+        const actualCell = actual  != null ? `<strong>${actual.toFixed(1)}°${u}</strong>` : '<span style="color:var(--text-muted)">pending</span>';
+        let errorCell = '<span style="color:var(--text-muted)">—</span>';
+        if (wuError != null) {
+          const errColor = wuError <= 1 ? 'var(--green)' : wuError <= 3 ? 'var(--yellow)' : 'var(--red)';
+          errorCell = `<span style="color:${errColor};font-weight:600">${wuError.toFixed(1)}°</span>`;
+        }
 
         return `<tr>
           <td>${typeTag}</td>
@@ -1423,7 +1446,9 @@ function loadOutcomes() {
           <td class="ret-cell ${retClass(o.return_pct)}">${(o.return_pct||0).toFixed(1)}%</td>
           <td>${confBadge(o.confidence)}</td>
           <td class="date-cell">${o.resolution_date}</td>
-          <td class="date-cell">${firstSeen}</td>
+          <td class="price-cell">${wuCell}</td>
+          <td class="price-cell">${actualCell}</td>
+          <td class="price-cell">${errorCell}</td>
           <td>${outcomeCell}</td>
           <td>${pnlCell}</td>
         </tr>`;
