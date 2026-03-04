@@ -757,7 +757,7 @@ tr.taken-row:hover td { opacity: 0.55; }
       <div class="section-header">
         <span class="section-title fc-title">Forecasts</span>
         <span class="section-count badge-blue badge" id="fc-count">0</span>
-        <span style="font-size:.68rem; color:var(--text-muted);">Wunderground (70%) · NWS US (30%) — same source as Polymarket resolution</span>
+        <span style="font-size:.68rem; color:var(--text-muted);">Wunderground hourly max — same station Polymarket resolves against · click row to see hourly curve</span>
       </div>
       <div class="tbl-wrap">
         <table>
@@ -766,7 +766,8 @@ tr.taken-row:hover td { opacity: 0.55; }
               <th onclick="sortTable('fc','city',1)">City <span class="sort-arrow"></span></th>
               <th>Station</th>
               <th onclick="sortTable('fc','date',1)">Date <span class="sort-arrow"></span></th>
-              <th>Wunderground</th>
+              <th>WU Hourly Max</th>
+              <th>Peaks At</th>
               <th>NWS</th>
               <th>wttr.in</th>
               <th onclick="sortTable('fc','consensus',1)">Consensus <span class="sort-arrow"></span></th>
@@ -774,7 +775,7 @@ tr.taken-row:hover td { opacity: 0.55; }
             </tr>
           </thead>
           <tbody id="fc-body">
-            <tr><td colspan="8"><div class="empty">Run a scan to see forecasts</div></td></tr>
+            <tr><td colspan="9"><div class="empty">Run a scan to see forecasts</div></td></tr>
           </tbody>
         </table>
       </div>
@@ -883,6 +884,10 @@ let _pollTimer = null;
 const $ = id => document.getElementById(id);
 function fmt(v, d=1) { return v != null ? (+v).toFixed(d) : '--'; }
 function fmtTemp(v, unit) { return v != null ? `${(+v).toFixed(1)}°${unit||'F'}` : '--'; }
+function toggleRow(id) {
+  const el = document.getElementById(id);
+  if (el) el.style.display = el.style.display === 'none' ? 'table-row' : 'none';
+}
 
 function retClass(pct) {
   return pct >= 25 ? 'ret-high' : (pct >= 12 ? 'ret-med' : 'ret-low');
@@ -1136,26 +1141,55 @@ function renderFc(fcs) {
   $('fc-count').textContent = fcs.length;
 
   if (!fcs.length) {
-    tb.innerHTML = '<tr><td colspan="8"><div class="empty">Run a scan to see forecasts</div></td></tr>';
+    tb.innerHTML = '<tr><td colspan="9"><div class="empty">Run a scan to see forecasts</div></td></tr>';
     return;
   }
 
-  tb.innerHTML = fcs.map(f => {
+  tb.innerHTML = fcs.map((f, idx) => {
     const u = f.unit || 'F';
     const spread = (f.wunderground != null && f.nws != null)
       ? Math.abs(f.wunderground - f.nws).toFixed(1)
       : null;
 
-    return `<tr>
+    const peakHour = f.wu_peak_hour
+      ? `<span style="color:var(--yellow); font-size:.8rem">${f.wu_peak_hour}</span>`
+      : '<span style="color:var(--text-muted)">—</span>';
+
+    const hasHourly = f.wu_hours && f.wu_hours.length > 0;
+    const rowId = `fc-hourly-${idx}`;
+
+    const hourlyChart = hasHourly ? (() => {
+      const hrs = f.wu_hours;
+      const temps = hrs.map(h => h[1]);
+      const maxT = Math.max(...temps);
+      const minT = Math.min(...temps);
+      const range = maxT - minT || 1;
+      const bars = hrs.map(([hr, t]) => {
+        const pct = Math.round(((t - minT) / range) * 100);
+        const isMax = t === maxT;
+        return `<div style="display:flex;flex-direction:column;align-items:center;gap:2px;min-width:28px">
+          <span style="font-size:.6rem;color:${isMax ? 'var(--yellow)' : 'var(--text-muted)'};">${t.toFixed(0)}°</span>
+          <div style="height:${Math.max(pct,4)}px;width:12px;background:${isMax ? '#f97316' : '#334155'};border-radius:2px 2px 0 0;transition:height .3s"></div>
+          <span style="font-size:.55rem;color:var(--text-muted);transform:rotate(-45deg);display:block;width:20px">${hr.slice(0,5)}</span>
+        </div>`;
+      }).join('');
+      return `<tr id="${rowId}" style="display:none"><td colspan="9" style="padding:12px 16px;background:var(--card);border-bottom:1px solid var(--border)">
+        <div style="font-size:.72rem;color:var(--text-muted);margin-bottom:8px">Hourly forecast · ${f.city} · ${f.date} · peak at <strong style="color:var(--yellow)">${f.wu_peak_hour}</strong> → ${fmtTemp(maxT, u)}</div>
+        <div style="display:flex;align-items:flex-end;gap:2px;height:80px;overflow-x:auto;padding-bottom:24px">${bars}</div>
+      </td></tr>`;
+    })() : '';
+
+    return `<tr style="cursor:${hasHourly ? 'pointer' : 'default'}" onclick="${hasHourly ? `toggleRow('${rowId}')` : ''}">
       <td class="city-cell">${f.city}${cityBadge(f.city)}</td>
       <td style="color:var(--text-muted); font-size:.72rem">${f.station}</td>
       <td class="date-cell">${f.date}</td>
-      <td class="forecast-cell">${f.wunderground != null ? fmtTemp(f.wunderground, u) : '<span style="color:var(--text-muted)">—</span>'}</td>
-      <td class="forecast-cell">${f.nws   != null ? fmtTemp(f.nws, u)        : '<span style="color:var(--text-muted)">—</span>'}</td>
-      <td class="forecast-cell">${f.wttr  != null ? fmtTemp(f.wttr, u)       : '<span style="color:var(--text-muted)">—</span>'}</td>
-      <td style="font-weight:700">${fmtTemp(f.consensus, u)}${spread ? ` <span style="font-size:.65rem; font-weight:400; color:var(--text-muted)">±${spread}</span>` : ''}</td>
+      <td class="forecast-cell" style="font-weight:700;color:${f.wunderground != null ? '#f97316' : 'inherit'}">${f.wunderground != null ? fmtTemp(f.wunderground, u) : '<span style="color:var(--text-muted)">—</span>'}</td>
+      <td class="forecast-cell">${peakHour}</td>
+      <td class="forecast-cell">${f.nws   != null ? fmtTemp(f.nws, u)   : '<span style="color:var(--text-muted)">—</span>'}</td>
+      <td class="forecast-cell">${f.wttr  != null ? fmtTemp(f.wttr, u)  : '<span style="color:var(--text-muted)">—</span>'}</td>
+      <td style="font-weight:700">${fmtTemp(f.consensus, u)}${spread ? ` <span style="font-size:.65rem; font-weight:400; color:var(--text-muted)">±${spread}°</span>` : ''}</td>
       <td>${confBadge(f.confidence)}</td>
-    </tr>`;
+    </tr>${hourlyChart}`;
   }).join('');
 }
 

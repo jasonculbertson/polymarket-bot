@@ -35,11 +35,13 @@ def build_forecast_rows(forecasts: dict, target_date: str) -> list:
         if not day:
             continue
         rows.append({
-            "city": city,
-            "station": station,
-            "date": target_date,
-            "unit": unit,
+            "city":         city,
+            "station":      station,
+            "date":         target_date,
+            "unit":         unit,
             "wunderground": day.get("wunderground"),
+            "wu_peak_hour": day.get("wu_peak_hour"),
+            "wu_hours":     day.get("wu_hours", []),
             "nws":          day.get("nws"),
             "wttr":         day.get("wttr"),
             "consensus":    day.get("consensus"),

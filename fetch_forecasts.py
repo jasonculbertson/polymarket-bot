@@ -2,12 +2,13 @@
 Fetches temperature forecasts for each city in their NATIVE unit.
 
 Source priority:
-  1. Wunderground (api.weather.com) — PRIMARY. Polymarket resolves against Wunderground
-     station data, so this is the most direct possible signal. Set WU_API_KEY env var.
-  2. NWS — US only, free, used as secondary validation against Wunderground.
+  1. Wunderground HOURLY (api.weather.com) — PRIMARY.
+     Fetches the next 48 hours hour-by-hour from the exact station Polymarket resolves
+     against. The daily high = max of the hourly temps for that day. This is the most
+     precise signal possible: same data source, same station, hourly resolution.
+     Set WU_API_KEY env var (free from wunderground.com for PWS submitters).
+  2. NWS — US only, free, used as secondary validation.
   3. wttr.in — fallback only when WU_API_KEY is not set.
-
-Open-Meteo is removed — it added noise to the consensus.
 
 US cities  (unit="F"): forecasts in °F
 Intl cities (unit="C"): forecasts in °C
@@ -61,52 +62,119 @@ def _weighted_consensus(values: dict, weights: dict) -> float:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Wunderground / The Weather Company API  (api.weather.com)
+# Wunderground HOURLY  (api.weather.com — The Weather Company)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def fetch_wunderground_forecast(
-    lat: float, lon: float, days: int = 2, unit: str = "F"
+def fetch_wunderground_hourly(
+    lat: float, lon: float, unit: str = "F"
 ) -> Optional[dict]:
     """
-    Fetch daily high-temperature forecasts directly from The Weather Company API,
-    the backend that powers Wunderground.com.
+    Fetch the next 48-hour hourly forecast from The Weather Company API
+    (the backend powering Wunderground.com).
 
-    This is the SAME data source Polymarket uses to resolve temperature markets,
-    so this eliminates the biggest source-of-error in the consensus.
+    This is the KEY data source — Polymarket resolves against the Wunderground
+    daily high for each station, which equals the max of the hourly temps for
+    that day. Getting hourly data lets us:
+      1. Derive the expected daily high more precisely than the daily summary
+      2. See WHEN during the day the high is expected (critical for bracket edges)
+      3. Detect late-day warmth that daily summaries sometimes smooth over
 
-    Requires WU_API_KEY environment variable (free from wunderground.com or weather.com).
+    Requires WU_API_KEY env var.
 
-    Returns {date_str: max_temp} in °F (unit="F") or °C (unit="C"), or None on error.
+    Returns:
+    {
+        "YYYY-MM-DD": {
+            "max":      float,              # expected daily high (max of hourly temps)
+            "peak_hour": "14:00",           # local hour when high is expected
+            "hours":    [("09:00", 61.0), ("10:00", 63.0), ...]  # full curve
+        }
+    }
     """
     if not WU_API_KEY:
         return None
 
-    wu_unit = "e" if unit == "F" else "m"   # English (°F) or Metric (°C)
+    wu_unit = "e" if unit == "F" else "m"
 
     try:
-        # v3 endpoint returns one clean entry per day with temperatureMax array
         r = requests.get(
-            "https://api.weather.com/v3/wx/forecast/daily/10day",
+            "https://api.weather.com/v3/wx/forecast/hourly/48hour",
             params={
-                "geocode":   f"{lat},{lon}",
-                "format":    "json",
-                "units":     wu_unit,
-                "apiKey":    WU_API_KEY,
-                "language":  "en-US",
+                "geocode":  f"{lat},{lon}",
+                "format":   "json",
+                "units":    wu_unit,
+                "apiKey":   WU_API_KEY,
+                "language": "en-US",
             },
             headers={"Accept": "application/json"},
             timeout=10,
         )
 
         if r.status_code == 401:
-            print(f"    [WARN] Wunderground API: invalid key (401)")
+            print("    [WARN] Wunderground API: invalid key (401)")
             return None
         if r.status_code == 403:
-            print(f"    [WARN] Wunderground API: key lacks forecast access (403)")
+            print("    [WARN] Wunderground API: key lacks forecast access (403)")
             return None
         if r.status_code != 200:
-            # Try v1 geocode endpoint as fallback
-            return _fetch_wu_v1(lat, lon, days, unit)
+            return _fetch_wu_daily_fallback(lat, lon, unit)
+
+        data = r.json()
+        temps = data.get("temperature", [])
+        times = data.get("validTimeLocal", [])
+
+        # Group hourly readings by local date
+        daily: dict = {}
+        for time_str, temp in zip(times, temps):
+            if temp is None:
+                continue
+            date_str = str(time_str)[:10]   # "YYYY-MM-DD"
+            hour_str = str(time_str)[11:16]  # "HH:MM"
+            try:
+                t = float(temp)
+            except (ValueError, TypeError):
+                continue
+
+            if date_str not in daily:
+                daily[date_str] = {"max": t, "peak_hour": hour_str, "hours": []}
+
+            daily[date_str]["hours"].append((hour_str, t))
+            if t > daily[date_str]["max"]:
+                daily[date_str]["max"]       = t
+                daily[date_str]["peak_hour"] = hour_str
+
+        return daily if daily else None
+
+    except Exception as e:
+        print(f"    [WARN] Wunderground hourly failed ({lat},{lon}): {e}")
+        return _fetch_wu_daily_fallback(lat, lon, unit)
+
+
+def _fetch_wu_daily_fallback(
+    lat: float, lon: float, unit: str = "F"
+) -> Optional[dict]:
+    """
+    Fallback to the v3 10-day daily summary when the hourly endpoint fails.
+    Returns the same shape as fetch_wunderground_hourly but without hour detail.
+    """
+    if not WU_API_KEY:
+        return None
+
+    wu_unit = "e" if unit == "F" else "m"
+
+    try:
+        r = requests.get(
+            "https://api.weather.com/v3/wx/forecast/daily/10day",
+            params={
+                "geocode":  f"{lat},{lon}",
+                "format":   "json",
+                "units":    wu_unit,
+                "apiKey":   WU_API_KEY,
+                "language": "en-US",
+            },
+            timeout=10,
+        )
+        if r.status_code != 200:
+            return None
 
         data = r.json()
         dates = data.get("validTimeLocal", [])
@@ -116,65 +184,24 @@ def fetch_wunderground_forecast(
         for date_str_full, hi in zip(dates, highs):
             if hi is None:
                 continue
-            date_str = str(date_str_full)[:10]   # "YYYY-MM-DD"
+            date_str = str(date_str_full)[:10]
             try:
-                result[date_str] = float(hi)
+                result[date_str] = {"max": float(hi), "peak_hour": None, "hours": []}
             except (ValueError, TypeError):
                 pass
 
         return result if result else None
 
     except Exception as e:
-        print(f"    [WARN] Wunderground v3 failed ({lat},{lon}): {e}")
-        return _fetch_wu_v1(lat, lon, days, unit)
-
-
-def _fetch_wu_v1(
-    lat: float, lon: float, days: int = 2, unit: str = "F"
-) -> Optional[dict]:
-    """
-    Fallback: Weather Company v1 daily forecast by geocode.
-    Parses the alternating day/night period format.
-    """
-    if not WU_API_KEY:
+        print(f"    [WARN] Wunderground daily fallback failed ({lat},{lon}): {e}")
         return None
 
-    wu_unit = "e" if unit == "F" else "m"
 
-    try:
-        r = requests.get(
-            f"https://api.weather.com/v1/geocode/{lat}/{lon}/forecast/daily/10day.json",
-            params={
-                "apiKey":   WU_API_KEY,
-                "units":    wu_unit,
-                "language": "en-US",
-            },
-            timeout=10,
-        )
-        if r.status_code != 200:
-            return None
-
-        data = r.json()
-        result = {}
-
-        for fc in data.get("forecasts", []):
-            # Day-only periods (day_ind == "D") carry the high temperature
-            if fc.get("day_ind") != "D":
-                continue
-            local_time = fc.get("fcst_valid_local", "")
-            date_str = str(local_time)[:10]
-            hi = fc.get("hi") or fc.get("temp")
-            if hi is not None and date_str:
-                try:
-                    result[date_str] = float(hi)
-                except (ValueError, TypeError):
-                    pass
-
-        return result if result else None
-
-    except Exception as e:
-        print(f"    [WARN] Wunderground v1 failed ({lat},{lon}): {e}")
+def _wu_daily_max(wu_hourly_result: Optional[dict]) -> Optional[dict]:
+    """Extract {date: max_temp} from the hourly result dict for use in consensus."""
+    if not wu_hourly_result:
         return None
+    return {d: v["max"] for d, v in wu_hourly_result.items()}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -296,13 +323,15 @@ def fetch_city_forecast(city_name: str, days: int = 2) -> dict:
     Fetch forecasts for a city. All temperatures in the city's native unit (°F or °C).
 
     Source logic:
-      - Wunderground (api.weather.com) always attempted if WU_API_KEY is set.
-      - NWS used for US cities as validation.
-      - wttr.in used as fallback when WU_API_KEY is not configured.
+      - Wunderground HOURLY (api.weather.com): primary when WU_API_KEY is set.
+        Daily high = max of the 48-hour hourly forecast for that day.
+        Also stores peak hour and full hourly curve for dashboard display.
+      - NWS: US cities only, secondary validation.
+      - wttr.in: fallback when WU_API_KEY is not configured.
 
     Confidence:
-      - "high"   : primary sources agree within threshold (2°F or 1°C)
-      - "medium" : one source, or moderate disagreement
+      - "high"   : sources agree within threshold (2°F or 1°C)
+      - "medium" : single source or moderate disagreement
       - "low"    : sources disagree >5°F / >3°C → skip in analyzer
 
     Returns:
@@ -313,11 +342,13 @@ def fetch_city_forecast(city_name: str, days: int = 2) -> dict:
         "wu_active": bool,
         "forecasts": {
             "YYYY-MM-DD": {
-                "wunderground": float | None,
-                "nws":          float | None,
-                "wttr":         float | None,
-                "consensus":    float,
-                "confidence":   "high" | "medium" | "low",
+                "wunderground": float | None,   # max from hourly (most accurate)
+                "wu_peak_hour": str | None,      # e.g. "14:00" — when high hits
+                "wu_hours":    list | None,      # [(hour, temp), ...] full curve
+                "nws":         float | None,
+                "wttr":        float | None,
+                "consensus":   float,
+                "confidence":  "high" | "medium" | "low",
             }
         }
     }
@@ -333,23 +364,25 @@ def fetch_city_forecast(city_name: str, days: int = 2) -> dict:
     wu_active      = bool(WU_API_KEY)
 
     # Fetch sources concurrently within this city
-    wu_result   = None
-    nws_result  = None
-    wttr_result = None
+    wu_hourly_result = None
+    nws_result       = None
+    wttr_result      = None
 
     with ThreadPoolExecutor(max_workers=3) as pool:
         fu = {}
         if wu_active:
-            fu["wu"]   = pool.submit(fetch_wunderground_forecast, lat, lon, days, unit)
+            fu["wu"]   = pool.submit(fetch_wunderground_hourly, lat, lon, unit)
         if is_us:
             fu["nws"]  = pool.submit(fetch_nws_forecast, lat, lon)
         if not wu_active:
-            # Only fetch wttr.in if we don't have the WU API key
             fu["wttr"] = pool.submit(fetch_wttr_forecast, station, days, unit)
 
-        if "wu"   in fu: wu_result   = fu["wu"].result()
-        if "nws"  in fu: nws_result  = fu["nws"].result()
-        if "wttr" in fu: wttr_result = fu["wttr"].result()
+        if "wu"   in fu: wu_hourly_result = fu["wu"].result()
+        if "nws"  in fu: nws_result       = fu["nws"].result()
+        if "wttr" in fu: wttr_result      = fu["wttr"].result()
+
+    # Flatten hourly → daily max for consensus calculation
+    wu_daily = _wu_daily_max(wu_hourly_result)
 
     today = date.today()
     forecasts = {}
@@ -357,15 +390,19 @@ def fetch_city_forecast(city_name: str, days: int = 2) -> dict:
     for i in range(days):
         d = (today + timedelta(days=i)).isoformat()
 
-        wu_t   = wu_result.get(d)   if wu_result   else None
-        nws_t  = nws_result.get(d)  if nws_result  else None
-        wttr_t = wttr_result.get(d) if wttr_result else None
+        wu_day  = wu_hourly_result.get(d) if wu_hourly_result else None
+        wu_t    = wu_day["max"]       if wu_day else None
+        peak_hr = wu_day["peak_hour"] if wu_day else None
+        hours   = wu_day["hours"]     if wu_day else []
+
+        nws_t   = nws_result.get(d)  if nws_result  else None
+        wttr_t  = wttr_result.get(d) if wttr_result else None
 
         all_vals = [v for v in [wu_t, nws_t, wttr_t] if v is not None]
         if not all_vals:
             continue
 
-        # Weighted consensus — use WU weights if key is set, fallback otherwise
+        # Weighted consensus — WU weights when key is set, fallback otherwise
         default_weights = FORECAST_WEIGHTS if wu_active else FORECAST_WEIGHTS_FALLBACK
         unit_weights = load_source_weights().get(unit, default_weights.get(unit, {}))
         consensus = _weighted_consensus(
@@ -379,11 +416,13 @@ def fetch_city_forecast(city_name: str, days: int = 2) -> dict:
             confidence = "high"   if spread <= high_threshold else (
                          "medium" if spread <= low_threshold  else "low")
         else:
-            # Single source: Wunderground alone → treat as "high" since it IS the resolver
+            # WU hourly alone → "high" since it IS the resolution source
             confidence = "high" if wu_t is not None else "medium"
 
         forecasts[d] = {
             "wunderground": wu_t,
+            "wu_peak_hour": peak_hr,
+            "wu_hours":     hours,
             "nws":          nws_t,
             "wttr":         wttr_t,
             "consensus":    consensus,
@@ -424,9 +463,11 @@ def fetch_all_forecasts(cities=None, days: int = 2) -> dict:
                 f = result["forecasts"].get(tomorrow)
                 if f:
                     parts = []
-                    if f["wunderground"] is not None: parts.append(f"wu={f['wunderground']:.1f}")
-                    if f["nws"]          is not None: parts.append(f"nws={f['nws']:.1f}")
-                    if f["wttr"]         is not None: parts.append(f"wttr={f['wttr']:.1f}")
+                    if f["wunderground"] is not None:
+                        peak = f"@{f['wu_peak_hour']}" if f.get("wu_peak_hour") else ""
+                        parts.append(f"wu={f['wunderground']:.1f}{peak}")
+                    if f["nws"]  is not None: parts.append(f"nws={f['nws']:.1f}")
+                    if f["wttr"] is not None: parts.append(f"wttr={f['wttr']:.1f}")
                     print(f"  {city}: {f['consensus']:.1f}°{unit} conf={f['confidence']} ({', '.join(parts)})")
                 else:
                     print(f"  {city}: no tomorrow forecast")
