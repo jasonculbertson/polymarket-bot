@@ -14,10 +14,47 @@ Focus: NEXT DAY by default.
 
 from __future__ import annotations
 
+import json
+import os
 import requests
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, timedelta
 from typing import Optional
-from config import CITIES
+from config import CITIES, FORECAST_WEIGHTS
+
+DATA_DIR = os.environ.get("DATA_DIR", os.path.join(os.path.dirname(__file__), "data"))
+WEIGHTS_FILE = os.path.join(DATA_DIR, "forecast_weights.json")
+
+
+def load_source_weights() -> dict:
+    """
+    Load per-source accuracy weights from file (falls back to config defaults).
+    The weights file is updated automatically as historical accuracy data accumulates.
+    """
+    try:
+        if os.path.exists(WEIGHTS_FILE):
+            with open(WEIGHTS_FILE) as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return FORECAST_WEIGHTS
+
+
+def _weighted_consensus(values: dict, weights: dict) -> float:
+    """
+    Weighted average of non-None source values, renormalizing weights to sum to 1.
+    Falls back to simple mean if no weights are configured.
+    """
+    available = {k: v for k, v in values.items() if v is not None}
+    if not available:
+        raise ValueError("No values to average")
+    total_w = sum(weights.get(k, 0.0) for k in available)
+    if total_w == 0:
+        return round(sum(available.values()) / len(available), 1)
+    return round(
+        sum(v * weights.get(k, 0.0) / total_w for k, v in available.items()),
+        1,
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -224,21 +261,20 @@ def fetch_city_forecast(city_name: str, days: int = 2) -> dict:
         if not sources:
             continue
 
-        # Build consensus: prefer wttr (station-matched) + NWS/OM as second opinion
-        primary_a = wttr_t
-        primary_b = nws_t if nws_t is not None else om_t
+        # Weighted consensus using source accuracy weights
+        unit_weights = load_source_weights().get(unit, FORECAST_WEIGHTS.get(unit, {}))
+        consensus = _weighted_consensus(
+            {"wttr": wttr_t, "nws": nws_t, "open_meteo": om_t},
+            unit_weights,
+        )
 
-        if primary_a is not None and primary_b is not None:
-            spread = abs(primary_a - primary_b)
-            consensus = round((primary_a + primary_b) / 2, 1)
+        # Confidence based on spread between available sources
+        if len(sources) >= 2:
+            spread = max(sources) - min(sources)
             confidence = "high" if spread <= high_threshold else (
                 "medium" if spread <= low_threshold else "low"
             )
-        elif len(sources) == 1:
-            consensus = round(sources[0], 1)
-            confidence = "medium"
         else:
-            consensus = round(sum(sources) / len(sources), 1)
             confidence = "medium"
 
         forecasts[d] = {
@@ -254,34 +290,39 @@ def fetch_city_forecast(city_name: str, days: int = 2) -> dict:
 
 def fetch_all_forecasts(cities=None, days: int = 2) -> dict:
     """
-    Fetch forecasts for all (or specified) cities.
+    Fetch forecasts for all (or specified) cities in parallel.
     Returns {city_name: forecast_dict}
     """
     if cities is None:
         cities = list(CITIES.keys())
 
     all_forecasts = {}
-    for city in cities:
-        print(f"  Fetching forecast for {city}...")
-        result = fetch_city_forecast(city, days)
-        all_forecasts[city] = result
+    tomorrow = (date.today() + timedelta(days=1)).isoformat()
 
-        unit = result["unit"]
-        today = date.today()
-        tomorrow = (today + timedelta(days=1)).isoformat()
-        f = result["forecasts"].get(tomorrow)
-        if f:
-            sources = []
-            if f["wttr"] is not None:
-                sources.append(f"wttr={f['wttr']:.1f}")
-            if f["nws"] is not None:
-                sources.append(f"nws={f['nws']:.1f}")
-            if f["open_meteo"] is not None:
-                sources.append(f"om={f['open_meteo']:.1f}")
-            src_str = ", ".join(sources)
-            print(f"    {tomorrow} [TOMORROW]: {f['consensus']:.1f}°{unit}  conf={f['confidence']}  ({src_str})")
-        else:
-            print(f"    {tomorrow}: no forecast data")
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futures = {pool.submit(fetch_city_forecast, city, days): city for city in cities}
+        for future in as_completed(futures):
+            city = futures[future]
+            try:
+                result = future.result()
+                all_forecasts[city] = result
+                unit = result["unit"]
+                f = result["forecasts"].get(tomorrow)
+                if f:
+                    sources = []
+                    if f["wttr"] is not None:
+                        sources.append(f"wttr={f['wttr']:.1f}")
+                    if f["nws"] is not None:
+                        sources.append(f"nws={f['nws']:.1f}")
+                    if f["open_meteo"] is not None:
+                        sources.append(f"om={f['open_meteo']:.1f}")
+                    src_str = ", ".join(sources)
+                    print(f"  {city}: {f['consensus']:.1f}°{unit} conf={f['confidence']} ({src_str})")
+                else:
+                    print(f"  {city}: no tomorrow forecast")
+            except Exception as e:
+                print(f"  [ERROR] {city} forecast: {e}")
+                all_forecasts[city] = {"city": city, "station": "", "unit": "F", "forecasts": {}}
 
     return all_forecasts
 

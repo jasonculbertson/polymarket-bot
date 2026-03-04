@@ -30,6 +30,7 @@ Confidence:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from math import erf, sqrt
 from typing import Optional, Literal
 from config import STRATEGY
 
@@ -125,17 +126,119 @@ def sort_brackets(markets: list) -> list:
     return sorted(markets, key=sort_key)
 
 
-def no_size(return_pct: float, confidence: str, capital: float, n_opps: int) -> float:
-    cfg = STRATEGY
-    conf_factor = 1.0 if confidence == "high" else 0.7
-    base = min(cfg["default_no_size"], capital / max(n_opps, 1))
-    size = base * conf_factor * min(return_pct / 15.0, 1.5)
-    return max(round(size, 1), cfg["min_order_size"])
+def estimate_no_win_prob(distance: float, confidence: str, unit: str = "F") -> float:
+    """
+    Estimate probability that a NO bet wins (actual temp does NOT land in the bracket).
+
+    Models forecast error as Normal(0, sigma). The bracket is `distance` units away,
+    so NO wins unless the error pushes the actual temp INTO the bracket — roughly
+    a one-tailed probability beyond `distance` standard deviations.
+
+    Uses half-Kelly by default so we don't need a perfectly calibrated model.
+    """
+    if unit == "F":
+        sigma = 1.8 if confidence == "high" else 3.2
+    else:
+        sigma = 1.0 if confidence == "high" else 1.8
+
+    if distance <= 0:
+        return 0.5
+
+    # P(actual temp lands in bracket) ≈ one-tailed normal probability
+    z = distance / (sigma * sqrt(2))
+    p_in_bracket = 0.5 * (1.0 - erf(z))
+    win_prob = 1.0 - p_in_bracket
+    return max(0.55, min(0.97, win_prob))
 
 
-def yes_cluster_size_each(total_cost_target: float, cluster_size: int) -> float:
+def estimate_yes_win_prob(cluster_size: int, confidence: str, unit: str = "F") -> float:
+    """
+    Estimate probability that a YES cluster wins (actual temp lands in one of its brackets).
+    Each bracket is ~2°F / 1°C wide; cluster covers cluster_size × width.
+    """
+    bracket_width = 2.0 if unit == "F" else 1.0
+    cluster_range = cluster_size * bracket_width
+
+    if unit == "F":
+        sigma = 1.8 if confidence == "high" else 3.2
+    else:
+        sigma = 1.0 if confidence == "high" else 1.8
+
+    # P(|error| < half_range) where cluster is centered on forecast
+    half = cluster_range / 2.0
+    z = half / (sigma * sqrt(2))
+    win_prob = erf(z)
+    return max(0.40, min(0.95, win_prob))
+
+
+def kelly_size(
+    win_prob: float,
+    price: float,
+    capital: float,
+    kelly_fraction: float = 0.5,
+    min_size: float = 5.0,
+    max_size: float = 50.0,
+) -> float:
+    """
+    Compute fractional Kelly position size.
+
+    win_prob : estimated probability of winning
+    price    : cost per $1 payout (the stake; price < 1 means positive expected value)
+    capital  : total available capital
+    """
+    if price <= 0 or price >= 1:
+        return min_size
+
+    b = (1.0 / price) - 1          # net odds: win b for each $1 risked
+    q = 1.0 - win_prob
+    full_kelly = (win_prob * b - q) / b
+
+    if full_kelly <= 0:
+        return min_size
+
+    size = capital * full_kelly * kelly_fraction
+    return max(min_size, min(round(size, 1), max_size))
+
+
+def no_size(
+    return_pct: float,
+    confidence: str,
+    capital: float,
+    n_opps: int,
+    distance: float = 4.0,
+    unit: str = "F",
+) -> float:
     cfg = STRATEGY
-    per = total_cost_target / cluster_size
+    win_prob = estimate_no_win_prob(distance, confidence, unit)
+    no_price = 100.0 / (100.0 + return_pct)   # derived from return_pct definition
+    cap_per_opp = capital / max(n_opps / 3, 1)
+    return kelly_size(
+        win_prob,
+        no_price,
+        capital,
+        kelly_fraction=cfg.get("kelly_fraction", 0.5),
+        min_size=cfg["min_order_size"],
+        max_size=min(cfg.get("max_single_bet", 50), cfg["default_no_size"] * 2, cap_per_opp),
+    )
+
+
+def yes_cluster_size_each(
+    total_cost_target: float,
+    cluster_size: int,
+    win_prob: float = 0.75,
+    total_price: float = 0.75,
+    capital: float = 400.0,
+) -> float:
+    cfg = STRATEGY
+    total_kelly = kelly_size(
+        win_prob,
+        total_price,
+        capital,
+        kelly_fraction=cfg.get("kelly_fraction", 0.5),
+        min_size=cfg["min_order_size"] * cluster_size,
+        max_size=min(cfg.get("max_single_bet", 50) * cluster_size, total_cost_target * 1.5),
+    )
+    per = total_kelly / cluster_size
     return max(round(per, 1), cfg["min_order_size"])
 
 
@@ -180,7 +283,7 @@ def find_no_opps(event: dict, forecast_temp: float, confidence: str,
                     no_token_id=mkt["no_token_id"],
                     liquidity=mkt["liquidity"],
                     accepting_orders=mkt["accepting_orders"],
-                    recommended_size=no_size(ret_pct, confidence, capital, n_opps),
+                    recommended_size=no_size(ret_pct, confidence, capital, n_opps, dist, unit),
                     temp_unit=unit,
                 ))
     return opps
@@ -245,9 +348,11 @@ def find_yes_clusters(event: dict, forecast_temp: float, confidence: str,
         win_lo_val = slots[0].bracket_lo if slots[0].bracket_lo is not None else float("-inf")
         win_hi_val = slots[-1].bracket_hi  # None = open high
 
-        # Size: target ~$15 total for 3-cluster, ~$12 for 2-cluster
+        # Size: Kelly-based, targeting cluster as a unit
+        unit_val = event.get("temp_unit", "F")
+        win_prob = estimate_yes_win_prob(len(slots), confidence, unit_val)
         total_target = min(cfg["default_yes_size"] * len(slots), capital * 0.05)
-        size_each = yes_cluster_size_each(total_target, len(slots))
+        size_each = yes_cluster_size_each(total_target, len(slots), win_prob, total_price, capital)
         total_cost = round(size_each * len(slots), 2)
 
         unit = event.get("temp_unit", "F")

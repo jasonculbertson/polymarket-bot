@@ -253,6 +253,28 @@ def main():
     # 7. Save
     save_results(clusters, no_opps, markets, forecasts, scan_time)
 
+    # 8. Notifications
+    try:
+        from notify import notify_opportunities
+        notified = notify_opportunities(clusters, no_opps, scan_time)
+        if notified:
+            print(f"  → Sent Slack alert for {notified} high-confidence opportunities")
+    except Exception as e:
+        print(f"  [WARN] Notifications skipped: {e}")
+
+    # 9. Outcome tracking
+    try:
+        from tracker import record_scan, resolve_outcomes
+        total_tracked = record_scan(clusters, no_opps)
+        resolved = resolve_outcomes()
+        print(f"  → Tracker: {total_tracked} opportunities on record", end="")
+        if resolved:
+            print(f", resolved {resolved} new outcomes")
+        else:
+            print()
+    except Exception as e:
+        print(f"  [WARN] Tracker skipped: {e}")
+
 
 if __name__ == "__main__":
     main()

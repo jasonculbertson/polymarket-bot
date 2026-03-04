@@ -15,6 +15,7 @@ from __future__ import annotations
 import re
 import json
 import requests
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional
 from config import CITIES, GAMMA_API, CLOB_API
 
@@ -208,37 +209,71 @@ def fetch_city_markets(city_name: str, days_ahead: int = 7) -> list:
 
 
 def fetch_all_markets(cities=None, days_ahead: int = 7) -> dict:
-    """Fetch markets for all (or specified) cities. Returns {city_name: [event, ...]}"""
+    """Fetch markets for all (or specified) cities in parallel. Returns {city_name: [event, ...]}"""
     if cities is None:
         cities = list(CITIES.keys())
 
     all_markets = {}
-    for city in cities:
-        print(f"  Fetching {city}...")
-        events = fetch_city_markets(city, days_ahead=days_ahead)
-        all_markets[city] = events
-        print(f"    → {len(events)} open events")
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futures = {
+            pool.submit(fetch_city_markets, city, days_ahead): city
+            for city in cities
+        }
+        for future in as_completed(futures):
+            city = futures[future]
+            try:
+                events = future.result()
+                all_markets[city] = events
+                print(f"  {city}: {len(events)} open events")
+            except Exception as e:
+                print(f"  [ERROR] {city} markets: {e}")
+                all_markets[city] = []
 
     return all_markets
 
 
 def enrich_with_clob_prices(all_markets: dict) -> dict:
-    """Fetch live CLOB orderbook prices and overlay on gamma snapshot prices."""
+    """Fetch live CLOB orderbook prices in parallel and overlay on gamma snapshot prices."""
     print("\nEnriching with CLOB live prices...")
+
+    # Collect all tokens that need enrichment
+    tasks = []
+    for city, events in all_markets.items():
+        for ei, event in enumerate(events):
+            for mi, mkt in enumerate(event["markets"]):
+                if mkt["accepting_orders"] and mkt["yes_token_id"]:
+                    tasks.append((city, ei, mi, mkt["yes_token_id"]))
+
+    if not tasks:
+        return all_markets
+
+    # Fetch all CLOB prices concurrently (20 parallel workers)
+    clob_results: dict = {}
+    with ThreadPoolExecutor(max_workers=20) as pool:
+        futures = {
+            pool.submit(fetch_clob_price, token_id): (city, ei, mi)
+            for city, ei, mi, token_id in tasks
+        }
+        for future in as_completed(futures):
+            key = futures[future]
+            try:
+                clob_results[key] = future.result()
+            except Exception:
+                clob_results[key] = None
+
+    # Apply results back to market dicts
     count = 0
     for city, events in all_markets.items():
-        for event in events:
-            for mkt in event["markets"]:
-                if not mkt["accepting_orders"] or not mkt["yes_token_id"]:
-                    continue
-                clob = fetch_clob_price(mkt["yes_token_id"])
+        for ei, event in enumerate(events):
+            for mi, mkt in enumerate(event["markets"]):
+                clob = clob_results.get((city, ei, mi))
                 if clob:
                     mkt["clob_best_bid"] = clob["best_bid"]
                     mkt["clob_best_ask"] = clob["best_ask"]
                     if clob["best_ask"] is not None:
                         mkt["yes_price_live"] = clob["best_ask"]
                         mkt["no_price_live"] = round(1.0 - clob["best_ask"], 4)
-                    count += 1
+                        count += 1
 
     print(f"  Enriched {count} markets with live CLOB prices")
     return all_markets

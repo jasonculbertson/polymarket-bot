@@ -6,6 +6,8 @@ unit: "F" = US cities (brackets in °F, Polymarket resolves in °F)
       "C" = international cities (brackets in °C, Polymarket resolves in °C)
 """
 
+import os
+
 CITIES = {
     "NYC": {
         "series_id": 10005,
@@ -158,10 +160,28 @@ STRATEGY = {
     "min_return_pct": 8.0,
     # Minimum order size (USDC) — Polymarket minimum is 5
     "min_order_size": 5,
-    # Default order size for NO bets (USDC)
+    # Default order size for NO bets (USDC) — used as Kelly cap
     "default_no_size": 20,
-    # Default order size for YES bets (USDC)
+    # Default order size for YES bets (USDC) — used as Kelly cap
     "default_yes_size": 10,
     # Max total capital to deploy per run (USDC)
     "max_capital": 400,
+    # Kelly criterion fraction (0.5 = half-Kelly for safety)
+    "kelly_fraction": 0.5,
+    # Hard cap per single bet (USDC) — overrides Kelly if larger
+    "max_single_bet": 50,
+}
+
+# Notification settings (override via env vars)
+NOTIFY = {
+    "slack_webhook": os.environ.get("SLACK_WEBHOOK_URL", ""),
+    "min_return_pct": float(os.environ.get("NOTIFY_MIN_RETURN_PCT", "20")),
+}
+
+# Forecast source weights for weighted consensus
+# wttr.in uses the same ICAO station codes as Wunderground (Polymarket's resolver)
+# so it gets higher weight. NWS is US-only. Open-Meteo covers all cities.
+FORECAST_WEIGHTS = {
+    "F": {"wttr": 0.50, "nws": 0.35, "open_meteo": 0.15},
+    "C": {"wttr": 0.55, "nws": 0.00, "open_meteo": 0.45},
 }

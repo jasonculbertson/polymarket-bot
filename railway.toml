@@ -1,0 +1,21 @@
+[build]
+builder = "NIXPACKS"
+
+[deploy]
+startCommand = "python app.py"
+healthcheckPath = "/"
+healthcheckTimeout = 300
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 3
+
+# ── Persistent storage ────────────────────────────────────────────────────────
+# Railway ephemeral filesystem loses data on each redeploy.
+# To persist scan history and outcomes across deploys:
+#
+#   1. Railway Dashboard → your service → Volumes → Add Volume
+#      Mount path: /data
+#
+#   2. Railway Dashboard → Variables → Add:
+#      DATA_DIR = /data
+#
+# Without a volume, the bot still works but scan history resets on redeploy.
