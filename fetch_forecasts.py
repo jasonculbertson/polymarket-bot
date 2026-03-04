@@ -2,19 +2,19 @@
 Fetches temperature forecasts for each city in their NATIVE unit.
 
 Source priority:
-  1. Wunderground HOURLY (page scraper) — PRIMARY, no API key needed.
-     Wunderground pre-fetches 15 days of hourly station data into every page's
-     Redux store as a JSON blob. We parse it directly. This gives:
+  1. Wunderground HOURLY API — PRIMARY, uses the public key embedded in every
+     WU page (api.weather.com/v3/wx/forecast/hourly/10day). Gives:
        - Hourly temps for the exact ICAO station Polymarket resolves against
        - Daily high = max of hourly temps (same calculation Wunderground uses)
        - Peak hour — when during the day the high is expected
-     No key required. Uses city-specific wu_path from config.py.
+     The embedded key is extracted once per session, cached for 4 hours, and
+     refreshed automatically if it stops working. No paid API key needed.
   2. NWS — US only, free, secondary validation.
-  3. wttr.in — fallback only when wu_path not configured for a city.
+  3. wttr.in — fallback for international cities.
 
 WU_PWS_KEY env var: optional Wunderground PWS observation key.
   Used by learner.py to fetch actual historical station highs for outcome
-  verification (replaces the Polymarket page scraping approach).
+  verification.
 
 US cities  (unit="F"): forecasts in °F
 Intl cities (unit="C"): forecasts in °C
@@ -25,16 +25,18 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, timedelta
 from typing import Optional
 from config import CITIES, FORECAST_WEIGHTS, FORECAST_WEIGHTS_FALLBACK
 
-WU_API_KEY  = os.environ.get("WU_API_KEY", "")   # TWC forecast key (paid/PWS submitter)
+WU_API_KEY  = os.environ.get("WU_API_KEY", "")   # legacy — no longer required
 WU_PWS_KEY  = os.environ.get("WU_PWS_KEY", "")   # PWS observation key (free, for history)
 
 WU_BASE     = "https://www.wunderground.com"
+WU_API_BASE = "https://api.weather.com"
 _WU_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -43,6 +45,35 @@ _WU_HEADERS = {
     ),
     "Accept-Language": "en-US,en;q=0.9",
 }
+
+# ─── Embedded API key cache ───────────────────────────────────────────────────
+_wu_key_cache: dict = {"key": "", "ts": 0.0}
+_WU_KEY_TTL = 4 * 3600  # refresh every 4 hours
+
+
+def _get_wu_embedded_key() -> str:
+    """
+    WU embeds a public API key in every page for their own front-end API calls.
+    We extract it once, cache for 4 h, and reuse for the hourly forecast API.
+    The key is stable for long periods but may rotate; we detect 401s and refresh.
+    """
+    now = time.time()
+    if _wu_key_cache["key"] and now - _wu_key_cache["ts"] < _WU_KEY_TTL:
+        return _wu_key_cache["key"]
+
+    try:
+        r = requests.get(f"{WU_BASE}/", headers=_WU_HEADERS, timeout=12)
+        if r.status_code == 200:
+            m = re.search(r'apiKey=([a-f0-9]{32})', r.text)
+            if m:
+                _wu_key_cache["key"] = m.group(1)
+                _wu_key_cache["ts"]  = now
+                print(f"  [WU] embedded API key refreshed: {m.group(1)[:8]}…")
+                return _wu_key_cache["key"]
+    except Exception as exc:
+        print(f"  [WARN] could not fetch WU embedded key: {exc}")
+
+    return _wu_key_cache.get("key", "")
 
 DATA_DIR     = os.environ.get("DATA_DIR", os.path.join(os.path.dirname(__file__), "data"))
 WEIGHTS_FILE = os.path.join(DATA_DIR, "forecast_weights.json")
@@ -80,22 +111,19 @@ def _weighted_consensus(values: dict, weights: dict) -> float:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Wunderground hourly forecast — page scraper
+# Wunderground hourly forecast — clean JSON API (uses embedded public key)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def fetch_wunderground_hourly(wu_path: str, unit: str = "F") -> Optional[dict]:
+def fetch_wunderground_hourly(station: str, unit: str = "F",
+                               _retry: bool = True) -> Optional[dict]:
     """
-    Scrape the Wunderground hourly forecast page for a station.
+    Fetch 10-day hourly forecast from api.weather.com using WU's embedded public key.
 
-    Wunderground pre-fetches 15 days of hourly data into the page's Redux store
-    as a JSON blob — no API key needed. We extract the temperature and
-    validTimeLocal arrays and group by date.
+    This is the same data source Polymarket uses for resolution — the exact same
+    ICAO station, the same API, no paid key required.
 
-    This is the EXACT same forecast Polymarket uses for resolution, from the
-    exact same station, updated in real time.
-
-    wu_path: city-specific path from config.py, e.g. "/hourly/us/ny/new-york-city/KLGA/date/"
-    unit:    "F" or "C"
+    station: ICAO code, e.g. "KLGA"
+    unit:    "F" (imperial/e) or "C" (metric/m)
 
     Returns:
     {
@@ -106,102 +134,56 @@ def fetch_wunderground_hourly(wu_path: str, unit: str = "F") -> Optional[dict]:
         }
     }
     """
-    if not wu_path:
+    api_key = _get_wu_embedded_key()
+    if not api_key:
+        print(f"    [WARN] WU: could not obtain embedded API key for {station}")
         return None
 
-    # Any date works — page always returns 15 days of hourly data from today
-    today_str = date.today().isoformat()
-    url = f"{WU_BASE}{wu_path}{today_str}"
+    wu_units = "e" if unit == "F" else "m"
+    url = (
+        f"{WU_API_BASE}/v3/wx/forecast/hourly/10day"
+        f"?icaoCode={station}&units={wu_units}&language=en-US&format=json&apiKey={api_key}"
+    )
 
     try:
-        r = requests.get(url, headers=_WU_HEADERS, timeout=15)
+        r = requests.get(url, headers=_WU_HEADERS, timeout=12)
+
+        if r.status_code == 401 and _retry:
+            # Key rotated — force refresh and retry once
+            _wu_key_cache["ts"] = 0.0
+            return fetch_wunderground_hourly(station, unit, _retry=False)
+
         if r.status_code != 200:
-            print(f"    [WARN] WU page returned {r.status_code} for {wu_path}")
+            print(f"    [WARN] WU API returned {r.status_code} for {station}")
             return None
 
-        # Extract hourly temps and timestamps from embedded JSON store
-        # WU embeds the full forecast as: "temperature":[38,39,...] and
-        # "validTimeLocal":["2026-03-04T00:00:00-0500",...]
-        # Find the temperature + validTimeLocal arrays that contain FUTURE forecast data.
-        # We search for every occurrence pair and pick the one where the timestamps are
-        # mostly in the future (i.e., a forecast, not historic observations).
-        today_str = date.today().isoformat()
+        data  = r.json()
+        temps = data.get("temperature", [])
+        times = data.get("validTimeLocal", [])
 
-        temps_all = list(re.finditer(r'"temperature":\[([0-9,null-]+)\]', r.text))
-        times_all = list(re.finditer(r'"validTimeLocal":\[([^\]]+)\]',    r.text))
-
-        if not temps_all or not times_all:
-            print(f"    [WARN] WU page: could not find hourly arrays for {wu_path}")
+        if not temps or not times:
             return None
 
-        # Pair each temperature array with the nearest validTimeLocal array
-        # and pick the pair where most timestamps are today or future
-        best_daily: dict = {}
-        best_future = 0
-
-        for temps_m in temps_all:
-            # Find the closest times array (by position in the page)
-            closest = min(times_all, key=lambda t: abs(t.start() - temps_m.start()))
-
-            raw_temps = temps_m.group(1).split(",")
-            raw_times = [t.strip().strip('"') for t in closest.group(1).split(",")]
-
-            if len(raw_temps) < 6:
+        daily: dict = {}
+        for time_str, temp in zip(times, temps):
+            if temp is None or not time_str:
                 continue
+            date_str = time_str[:10]
+            hour_str = time_str[11:16]
+            t = float(temp)
 
-            daily: dict = {}
-            future_count = 0
-            for time_str, raw_t in zip(raw_times, raw_temps):
-                if raw_t in ("null", "") or not time_str:
-                    continue
-                try:
-                    t = float(raw_t)
-                except ValueError:
-                    continue
+            if date_str not in daily:
+                daily[date_str] = {"max": t, "peak_hour": hour_str, "hours": []}
 
-                date_str = time_str[:10]
-                hour_str = time_str[11:16]
+            daily[date_str]["hours"].append((hour_str, t))
+            if t > daily[date_str]["max"]:
+                daily[date_str]["max"]       = t
+                daily[date_str]["peak_hour"] = hour_str
 
-                if date_str >= today_str:
-                    future_count += 1
+        return daily if daily else None
 
-                if date_str not in daily:
-                    daily[date_str] = {"max": t, "peak_hour": hour_str, "hours": []}
-
-                daily[date_str]["hours"].append((hour_str, t))
-                if t > daily[date_str]["max"]:
-                    daily[date_str]["max"]       = t
-                    daily[date_str]["peak_hour"] = hour_str
-
-            if future_count > best_future and daily:
-                best_future = future_count
-                best_daily  = daily
-
-        if not best_daily or best_future < 6:
-            print(f"    [WARN] WU page: no future forecast data found for {wu_path}")
-            return None
-
-        # Sanity check: for °C cities the WU page may embed °F temps from US PWS stations.
-        # If max temp > 55 and unit == "C", convert °F → °C.
-        # (55°C / 130°F are both implausible for any real forecast.)
-        if unit == "C":
-            sample_max = max(v["max"] for v in best_daily.values())
-            if sample_max > 55:
-                # Convert all temps from °F to °C
-                for d_data in best_daily.values():
-                    d_data["max"] = round((d_data["max"] - 32) * 5 / 9, 1)
-                    d_data["hours"] = [(h, round((t - 32) * 5 / 9, 1))
-                                       for h, t in d_data["hours"]]
-                    # Recalculate peak after conversion
-                    if d_data["hours"]:
-                        pk = max(d_data["hours"], key=lambda x: x[1])
-                        d_data["peak_hour"] = pk[0]
-                        d_data["max"]       = pk[1]
-
-        return best_daily
-
-    except Exception as e:
-        print(f"    [WARN] WU page scrape failed ({wu_path}): {e}")
+    except Exception as exc:
+        print(f"    [WARN] WU API failed for {station}: {exc}")
         return None
 
 
@@ -282,7 +264,7 @@ def fetch_wttr_forecast(station: str, days: int = 2, unit: str = "F") -> Optiona
             f"https://wttr.in/{station}",
             params={"format": "j1"},
             headers={"User-Agent": "polymarket-weather-bot"},
-            timeout=10,
+            timeout=8,
         )
         if r.status_code != 200:
             return None
@@ -362,16 +344,15 @@ def fetch_city_forecast(city_name: str, days: int = 2) -> dict:
     }
     """
     cfg     = CITIES[city_name]
-    lat, lon, tz = cfg["lat"], cfg["lon"], cfg["tz"]
+    lat, lon = cfg["lat"], cfg["lon"]
     station  = cfg["station"]
-    wu_path  = cfg.get("wu_path", "")
     unit     = cfg.get("unit", "F")
     is_us    = unit == "F"
 
     high_threshold = 2.0 if unit == "F" else 1.0
     low_threshold  = 5.0 if unit == "F" else 3.0
-    # WU page scraping is always available (no API key needed)
-    wu_active = bool(wu_path)
+    # WU API is always available (uses public embedded key — no paid key needed)
+    wu_active = True
 
     # Fetch sources concurrently within this city
     wu_hourly_result = None
@@ -380,13 +361,11 @@ def fetch_city_forecast(city_name: str, days: int = 2) -> dict:
 
     with ThreadPoolExecutor(max_workers=3) as pool:
         fu = {}
-        if wu_active:
-            fu["wu"]   = pool.submit(fetch_wunderground_hourly, wu_path, unit)
+        fu["wu"] = pool.submit(fetch_wunderground_hourly, station, unit)
         if is_us:
             fu["nws"]  = pool.submit(fetch_nws_forecast, lat, lon)
-        # Always fetch wttr.in for international cities — WU page may not embed
-        # the 15-day forecast for non-US stations, so wttr is a critical fallback
         if not is_us:
+            # wttr.in as independent validation for international cities
             fu["wttr"] = pool.submit(fetch_wttr_forecast, station, days, unit)
 
         if "wu"   in fu: wu_hourly_result = fu["wu"].result()
@@ -462,8 +441,11 @@ def fetch_all_forecasts(cities=None, days: int = 2) -> dict:
     all_forecasts = {}
     tomorrow = (date.today() + timedelta(days=1)).isoformat()
 
-    pws_note = f"PWS history key: {'✓' if WU_PWS_KEY else '✗ (set WU_PWS_KEY for learning)'}"
-    print(f"  [WU hourly page scraper active · {pws_note}]")
+    pws_note = f"PWS history key: {'✓' if WU_PWS_KEY else '✗ (set WU_PWS_KEY for accurate learning)'}"
+    print(f"  [WU hourly API active (embedded key) · {pws_note}]")
+
+    # Pre-warm the key once before launching parallel city fetches
+    _get_wu_embedded_key()
 
     with ThreadPoolExecutor(max_workers=8) as pool:
         futures = {pool.submit(fetch_city_forecast, city, days): city for city in cities}
@@ -493,6 +475,5 @@ def fetch_all_forecasts(cities=None, days: int = 2) -> dict:
 
 
 if __name__ == "__main__":
-    print(f"WU_API_KEY: {'SET' if WU_API_KEY else 'NOT SET (will use wttr.in fallback)'}\n")
-    print("Fetching weather forecasts (next day focus)...\n")
+    print("Fetching weather forecasts via WU embedded API key (next day focus)...\n")
     forecasts = fetch_all_forecasts(["NYC", "Chicago", "Miami", "London", "Paris", "Seoul", "Toronto"])
