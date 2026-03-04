@@ -262,10 +262,10 @@ def main():
     except Exception as e:
         print(f"  [WARN] Notifications skipped: {e}")
 
-    # 9. Outcome tracking
+    # 9. Outcome tracking + recursive learning
     try:
         from tracker import record_scan, resolve_outcomes
-        total_tracked = record_scan(clusters, no_opps)
+        total_tracked = record_scan(clusters, no_opps, forecasts)
         resolved = resolve_outcomes()
         print(f"  → Tracker: {total_tracked} opportunities on record", end="")
         if resolved:
@@ -274,6 +274,22 @@ def main():
             print()
     except Exception as e:
         print(f"  [WARN] Tracker skipped: {e}")
+
+    try:
+        from learner import learn_from_outcomes
+        result = learn_from_outcomes()
+        if result["learned"]:
+            print(f"  → Learner: processed {result['learned']} resolved outcomes "
+                  f"({result['temps_fetched']} actual temps fetched)")
+            if result["weights_updated"]:
+                w = result["current_weights"]
+                print(f"    Source weights F: wttr={w.get('F',{}).get('wttr',0):.2f} "
+                      f"nws={w.get('F',{}).get('nws',0):.2f} "
+                      f"om={w.get('F',{}).get('open_meteo',0):.2f}")
+            if result["calib_updated"]:
+                print(f"    Sigma calibration updated")
+    except Exception as e:
+        print(f"  [WARN] Learner skipped: {e}")
 
 
 if __name__ == "__main__":

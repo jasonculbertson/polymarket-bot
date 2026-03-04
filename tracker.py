@@ -45,15 +45,29 @@ def _yes_id(event_slug: str, market_ids: list) -> str:
 
 # ─── Record ───────────────────────────────────────────────────────────────────
 
-def record_scan(yes_clusters, no_opps) -> int:
+def record_scan(yes_clusters, no_opps, all_forecasts: dict = None) -> int:
     """
     Add newly found opportunities to the tracker (skips duplicates).
+
+    all_forecasts: the full forecast dict from fetch_all_forecasts(), used to store
+                   per-source temperature predictions for post-resolution learning.
     Returns total tracked opportunity count.
     """
     data = _load()
     existing_ids = {o["id"] for o in data["opportunities"]}
     now = datetime.utcnow().isoformat()
     added = 0
+
+    def _get_sources(city: str, resolution_date: str) -> dict:
+        """Extract raw source forecasts for a city/date for later accuracy tracking."""
+        if not all_forecasts:
+            return {}
+        day_fc = all_forecasts.get(city, {}).get("forecasts", {}).get(resolution_date, {})
+        return {
+            "wttr":       day_fc.get("wttr"),
+            "nws":        day_fc.get("nws"),
+            "open_meteo": day_fc.get("open_meteo"),
+        }
 
     for o in no_opps:
         oid = _no_id(o.market_id)
@@ -64,6 +78,7 @@ def record_scan(yes_clusters, no_opps) -> int:
             "type": "no",
             "city": o.city,
             "bracket": o.group_title,
+            "event_slug": o.event_slug,
             "market_id": o.market_id,
             "no_token_id": o.no_token_id,
             "entry_price": round(o.no_price, 4),
@@ -71,11 +86,14 @@ def record_scan(yes_clusters, no_opps) -> int:
             "forecast_temp": o.forecast_temp,
             "temp_unit": o.temp_unit,
             "confidence": o.forecast_confidence,
+            "predicted_win_prob": round(getattr(o, "predicted_win_prob", 0.75), 4),
+            "forecast_sources": _get_sources(o.city, o.date),
             "resolution_date": o.date,
             "first_seen": now,
             "outcome": None,
             "final_yes_price": None,
             "pnl_pct": None,
+            "learned": False,
         })
         existing_ids.add(oid)
         added += 1
@@ -90,6 +108,7 @@ def record_scan(yes_clusters, no_opps) -> int:
             "type": "yes",
             "city": c.city,
             "bracket": " + ".join(b.group_title for b in c.brackets),
+            "event_slug": c.event_slug,
             "market_ids": mids,
             "yes_token_ids": [b.yes_token_id for b in c.brackets],
             "entry_price": round(c.total_price, 4),
@@ -98,11 +117,14 @@ def record_scan(yes_clusters, no_opps) -> int:
             "forecast_temp": c.forecast_temp,
             "temp_unit": c.temp_unit,
             "confidence": c.forecast_confidence,
+            "predicted_win_prob": round(getattr(c, "predicted_win_prob", 0.75), 4),
+            "forecast_sources": _get_sources(c.city, c.date),
             "resolution_date": c.date,
             "first_seen": now,
             "outcome": None,
             "final_yes_price": None,
             "pnl_pct": None,
+            "learned": False,
         })
         existing_ids.add(oid)
         added += 1

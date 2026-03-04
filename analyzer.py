@@ -29,10 +29,29 @@ Confidence:
 
 from __future__ import annotations
 
+import json
+import os
 from dataclasses import dataclass, field
 from math import erf, sqrt
 from typing import Optional, Literal
 from config import STRATEGY
+
+
+def _load_calibrated_sigma() -> dict:
+    """Load sigma values calibrated by learner.py. Falls back to defaults."""
+    defaults = {"F": {"high": 1.8, "medium": 3.2}, "C": {"high": 1.0, "medium": 1.8}}
+    try:
+        calib_file = os.path.join(
+            os.environ.get("DATA_DIR", os.path.join(os.path.dirname(__file__), "data")),
+            "calibration.json",
+        )
+        if os.path.exists(calib_file):
+            with open(calib_file) as f:
+                data = json.load(f)
+            return data.get("no_sigma", defaults)
+    except Exception:
+        pass
+    return defaults
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -61,6 +80,7 @@ class NoOpp:
     liquidity: float
     accepting_orders: bool
     recommended_size: float
+    predicted_win_prob: float = 0.75
     temp_unit: str = "F"     # "F" or "C"
 
 
@@ -95,6 +115,7 @@ class YesCluster:
     size_each: float         # USDC per bracket
     total_cost: float        # size_each × cluster_size
     liquidity_min: float     # min liquidity across brackets
+    predicted_win_prob: float = 0.75
     temp_unit: str = "F"     # "F" or "C"
 
     def bracket_labels(self) -> str:
@@ -130,21 +151,15 @@ def estimate_no_win_prob(distance: float, confidence: str, unit: str = "F") -> f
     """
     Estimate probability that a NO bet wins (actual temp does NOT land in the bracket).
 
-    Models forecast error as Normal(0, sigma). The bracket is `distance` units away,
-    so NO wins unless the error pushes the actual temp INTO the bracket — roughly
-    a one-tailed probability beyond `distance` standard deviations.
-
-    Uses half-Kelly by default so we don't need a perfectly calibrated model.
+    Models forecast error as Normal(0, sigma). Sigma is loaded from calibration.json
+    if available — learner.py adjusts it over time based on actual vs predicted outcomes.
     """
-    if unit == "F":
-        sigma = 1.8 if confidence == "high" else 3.2
-    else:
-        sigma = 1.0 if confidence == "high" else 1.8
+    sigma_cfg = _load_calibrated_sigma()
+    sigma = sigma_cfg.get(unit, {}).get(confidence, 1.8 if unit == "F" else 1.0)
 
     if distance <= 0:
         return 0.5
 
-    # P(actual temp lands in bracket) ≈ one-tailed normal probability
     z = distance / (sigma * sqrt(2))
     p_in_bracket = 0.5 * (1.0 - erf(z))
     win_prob = 1.0 - p_in_bracket
@@ -155,16 +170,14 @@ def estimate_yes_win_prob(cluster_size: int, confidence: str, unit: str = "F") -
     """
     Estimate probability that a YES cluster wins (actual temp lands in one of its brackets).
     Each bracket is ~2°F / 1°C wide; cluster covers cluster_size × width.
+    Sigma is loaded from calibration.json if available.
     """
+    sigma_cfg = _load_calibrated_sigma()
+    sigma = sigma_cfg.get(unit, {}).get(confidence, 1.8 if unit == "F" else 1.0)
+
     bracket_width = 2.0 if unit == "F" else 1.0
     cluster_range = cluster_size * bracket_width
 
-    if unit == "F":
-        sigma = 1.8 if confidence == "high" else 3.2
-    else:
-        sigma = 1.0 if confidence == "high" else 1.8
-
-    # P(|error| < half_range) where cluster is centered on forecast
     half = cluster_range / 2.0
     z = half / (sigma * sqrt(2))
     win_prob = erf(z)
@@ -284,6 +297,7 @@ def find_no_opps(event: dict, forecast_temp: float, confidence: str,
                     liquidity=mkt["liquidity"],
                     accepting_orders=mkt["accepting_orders"],
                     recommended_size=no_size(ret_pct, confidence, capital, n_opps, dist, unit),
+                    predicted_win_prob=estimate_no_win_prob(dist, confidence, unit),
                     temp_unit=unit,
                 ))
     return opps
@@ -357,6 +371,7 @@ def find_yes_clusters(event: dict, forecast_temp: float, confidence: str,
 
         unit = event.get("temp_unit", "F")
         return YesCluster(
+            predicted_win_prob=round(win_prob, 4),
             city=event["city"],
             date=event["date"],
             event_slug=event["event_slug"],

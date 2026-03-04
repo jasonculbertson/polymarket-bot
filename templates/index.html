@@ -469,6 +469,62 @@ tr.taken-row:hover td { opacity: 0.55; }
 .pnl-positive { color: var(--green); font-weight: 700; }
 .pnl-negative { color: var(--red); font-weight: 700; }
 
+/* ─── Learning stats ────────────────────────────────────────────────── */
+.learn-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  margin-bottom: 20px;
+}
+.learn-box {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px 16px;
+}
+.learn-box-title {
+  font-size: .63rem;
+  text-transform: uppercase;
+  letter-spacing: .8px;
+  color: var(--text-muted);
+  margin-bottom: 10px;
+}
+.weight-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+  font-size: .75rem;
+}
+.weight-label { width: 72px; color: var(--text-dim); flex-shrink: 0; }
+.weight-bar-wrap {
+  flex: 1;
+  background: var(--surface2);
+  border-radius: 3px;
+  height: 6px;
+  overflow: hidden;
+}
+.weight-bar {
+  height: 100%;
+  border-radius: 3px;
+  background: var(--purple);
+  transition: width .4s ease;
+}
+.weight-bar.w-wttr    { background: #34d399; }
+.weight-bar.w-nws     { background: #38bdf8; }
+.weight-bar.w-om      { background: #a78bfa; }
+.weight-pct { width: 36px; text-align: right; color: var(--text-dim); font-size: .72rem; }
+.sigma-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: .75rem;
+  color: var(--text-dim);
+  padding: 3px 0;
+  border-bottom: 1px solid var(--border2);
+}
+.sigma-row:last-child { border-bottom: none; }
+.sigma-val { color: var(--yellow); font-weight: 600; font-variant-numeric: tabular-nums; }
+
 /* ─── Scrollbar ─────────────────────────────────────────────────────── */
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
@@ -745,6 +801,37 @@ tr.taken-row:hover td { opacity: 0.55; }
       <div class="card yes"><div class="label">Avg Win</div><div class="value" id="oc-avg-win">—</div><div class="sub">return %</div></div>
       <div class="card no"><div class="label">Avg Loss</div><div class="value" id="oc-avg-loss">—</div><div class="sub">return %</div></div>
       <div class="card dep"><div class="label">Pending</div><div class="value" id="oc-pending">—</div><div class="sub">awaiting resolution</div></div>
+    </div>
+
+    <!-- Learning stats -->
+    <div class="learn-grid" id="learn-grid" style="display:none">
+      <div class="learn-box">
+        <div class="learn-box-title">📡 Source Weights <span id="learn-samples" style="font-weight:400; text-transform:none; letter-spacing:0; color:var(--text-muted)"></span></div>
+        <div style="margin-bottom:10px;">
+          <div style="font-size:.62rem; color:var(--text-muted); margin-bottom:4px;">US cities (°F)</div>
+          <div class="weight-row"><span class="weight-label">wttr.in</span><div class="weight-bar-wrap"><div class="weight-bar w-wttr" id="wf-wttr" style="width:50%"></div></div><span class="weight-pct" id="wt-wttr-F">50%</span></div>
+          <div class="weight-row"><span class="weight-label">NWS</span><div class="weight-bar-wrap"><div class="weight-bar w-nws" id="wf-nws" style="width:35%"></div></div><span class="weight-pct" id="wt-nws-F">35%</span></div>
+          <div class="weight-row"><span class="weight-label">Open-Meteo</span><div class="weight-bar-wrap"><div class="weight-bar w-om" id="wf-om-F" style="width:15%"></div></div><span class="weight-pct" id="wt-om-F">15%</span></div>
+        </div>
+        <div>
+          <div style="font-size:.62rem; color:var(--text-muted); margin-bottom:4px;">Intl cities (°C)</div>
+          <div class="weight-row"><span class="weight-label">wttr.in</span><div class="weight-bar-wrap"><div class="weight-bar w-wttr" id="wf-wttr-C" style="width:55%"></div></div><span class="weight-pct" id="wt-wttr-C">55%</span></div>
+          <div class="weight-row"><span class="weight-label">Open-Meteo</span><div class="weight-bar-wrap"><div class="weight-bar w-om" id="wf-om-C" style="width:45%"></div></div><span class="weight-pct" id="wt-om-C">45%</span></div>
+        </div>
+        <div style="margin-top:8px; font-size:.62rem; color:var(--text-muted)">Updated: <span id="learn-updated">—</span></div>
+      </div>
+      <div class="learn-box">
+        <div class="learn-box-title">🎯 Win Prob Calibration <span id="calib-samples" style="font-weight:400; text-transform:none; letter-spacing:0; color:var(--text-muted)"></span></div>
+        <div style="font-size:.68rem; color:var(--text-muted); margin-bottom:8px;">Forecast error σ (lower = model is more confident)</div>
+        <div class="sigma-row"><span>US High conf</span> <span class="sigma-val" id="sig-F-high">1.8°F</span></div>
+        <div class="sigma-row"><span>US Medium conf</span> <span class="sigma-val" id="sig-F-med">3.2°F</span></div>
+        <div class="sigma-row"><span>Intl High conf</span> <span class="sigma-val" id="sig-C-high">1.0°C</span></div>
+        <div class="sigma-row"><span>Intl Medium conf</span> <span class="sigma-val" id="sig-C-med">1.8°C</span></div>
+        <div style="margin-top:10px; font-size:.62rem; color:var(--text-muted)">
+          EMA learning rate: <span id="learn-rate" style="color:var(--text-dim)">0.15</span>
+          · σ adjusts automatically as outcomes resolve
+        </div>
+      </div>
     </div>
     <div class="section">
       <div class="section-header">
@@ -1151,8 +1238,51 @@ function loadHistory() {
     });
 }
 
+// ─── Learning stats ───────────────────────────────────────────────────
+function loadLearning() {
+  fetch('/learning')
+    .then(r => r.json())
+    .then(data => {
+      if (data.error) return;
+      $('learn-grid').style.display = 'grid';
+
+      const w = data.weights || {};
+      const wF = w.F || {};
+      const wC = w.C || {};
+
+      function setPct(barId, pctId, val) {
+        const pct = Math.round((val || 0) * 100);
+        document.getElementById(barId).style.width = pct + '%';
+        document.getElementById(pctId).textContent = pct + '%';
+      }
+      setPct('wf-wttr',   'wt-wttr-F', wF.wttr);
+      setPct('wf-nws',    'wt-nws-F',  wF.nws);
+      setPct('wf-om-F',   'wt-om-F',   wF.open_meteo);
+      setPct('wf-wttr-C', 'wt-wttr-C', wC.wttr);
+      // NWS not used for C; open_meteo takes remainder
+      document.getElementById('wf-om-C').style.width = Math.round((wC.open_meteo||0.45)*100) + '%';
+      document.getElementById('wt-om-C').textContent  = Math.round((wC.open_meteo||0.45)*100) + '%';
+
+      const samples = w.samples || 0;
+      $('learn-samples').textContent = samples ? `· ${samples} samples` : '· no data yet';
+      $('learn-updated').textContent = w.updated ? w.updated.slice(0,16).replace('T',' ') + ' UTC' : 'never (defaults)';
+
+      const calib = data.calibration || {};
+      const sig = calib.no_sigma || {};
+      $('sig-F-high').textContent = ((sig.F||{}).high || 1.8).toFixed(2) + '°F';
+      $('sig-F-med').textContent  = ((sig.F||{}).medium || 3.2).toFixed(2) + '°F';
+      $('sig-C-high').textContent = ((sig.C||{}).high || 1.0).toFixed(2) + '°C';
+      $('sig-C-med').textContent  = ((sig.C||{}).medium || 1.8).toFixed(2) + '°C';
+      const csamples = calib.samples || 0;
+      $('calib-samples').textContent = csamples ? `· ${csamples} samples` : '· no data yet';
+      $('learn-rate').textContent = data.learning_rate || 0.15;
+    })
+    .catch(() => {});
+}
+
 // ─── Outcomes ────────────────────────────────────────────────────────
 function loadOutcomes() {
+  loadLearning();
   fetch('/outcomes')
     .then(r => r.json())
     .then(data => {

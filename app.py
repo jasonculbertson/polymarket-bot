@@ -175,6 +175,15 @@ def outcomes():
                         "wins": 0, "losses": 0, "pending": 0, "recent": []})
 
 
+@app.route("/learning")
+def learning():
+    try:
+        from learner import get_learning_stats
+        return jsonify(get_learning_stats())
+    except Exception as e:
+        return jsonify({"error": str(e)})
+
+
 @app.route("/scan", methods=["POST"])
 def trigger_scan():
     global _scan_running
