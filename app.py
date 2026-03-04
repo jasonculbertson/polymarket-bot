@@ -179,7 +179,10 @@ def outcomes():
 def learning():
     try:
         from learner import get_learning_stats
-        return jsonify(get_learning_stats())
+        from fetch_forecasts import WU_API_KEY
+        stats = get_learning_stats()
+        stats["wu_active"] = bool(WU_API_KEY)
+        return jsonify(stats)
     except Exception as e:
         return jsonify({"error": str(e)})
 

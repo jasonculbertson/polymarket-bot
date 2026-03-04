@@ -510,9 +510,9 @@ tr.taken-row:hover td { opacity: 0.55; }
   background: var(--purple);
   transition: width .4s ease;
 }
-.weight-bar.w-wttr    { background: #34d399; }
+.weight-bar.w-wu      { background: #f97316; }
 .weight-bar.w-nws     { background: #38bdf8; }
-.weight-bar.w-om      { background: #a78bfa; }
+.weight-bar.w-wttr    { background: #34d399; }
 .weight-pct { width: 36px; text-align: right; color: var(--text-dim); font-size: .72rem; }
 .sigma-row {
   display: flex;
@@ -757,7 +757,7 @@ tr.taken-row:hover td { opacity: 0.55; }
       <div class="section-header">
         <span class="section-title fc-title">Forecasts</span>
         <span class="section-count badge-blue badge" id="fc-count">0</span>
-        <span style="font-size:.68rem; color:var(--text-muted);">wttr.in (50%) · NWS US (35%) · Open-Meteo (15%) — weighted consensus</span>
+        <span style="font-size:.68rem; color:var(--text-muted);">Wunderground (70%) · NWS US (30%) — same source as Polymarket resolution</span>
       </div>
       <div class="tbl-wrap">
         <table>
@@ -766,9 +766,9 @@ tr.taken-row:hover td { opacity: 0.55; }
               <th onclick="sortTable('fc','city',1)">City <span class="sort-arrow"></span></th>
               <th>Station</th>
               <th onclick="sortTable('fc','date',1)">Date <span class="sort-arrow"></span></th>
-              <th>wttr.in</th>
+              <th>Wunderground</th>
               <th>NWS</th>
-              <th>Open-Meteo</th>
+              <th>wttr.in</th>
               <th onclick="sortTable('fc','consensus',1)">Consensus <span class="sort-arrow"></span></th>
               <th onclick="sortTable('fc','confidence',1)">Confidence <span class="sort-arrow"></span></th>
             </tr>
@@ -809,16 +809,18 @@ tr.taken-row:hover td { opacity: 0.55; }
         <div class="learn-box-title">📡 Source Weights <span id="learn-samples" style="font-weight:400; text-transform:none; letter-spacing:0; color:var(--text-muted)"></span></div>
         <div style="margin-bottom:10px;">
           <div style="font-size:.62rem; color:var(--text-muted); margin-bottom:4px;">US cities (°F)</div>
-          <div class="weight-row"><span class="weight-label">wttr.in</span><div class="weight-bar-wrap"><div class="weight-bar w-wttr" id="wf-wttr" style="width:50%"></div></div><span class="weight-pct" id="wt-wttr-F">50%</span></div>
-          <div class="weight-row"><span class="weight-label">NWS</span><div class="weight-bar-wrap"><div class="weight-bar w-nws" id="wf-nws" style="width:35%"></div></div><span class="weight-pct" id="wt-nws-F">35%</span></div>
-          <div class="weight-row"><span class="weight-label">Open-Meteo</span><div class="weight-bar-wrap"><div class="weight-bar w-om" id="wf-om-F" style="width:15%"></div></div><span class="weight-pct" id="wt-om-F">15%</span></div>
+          <div class="weight-row"><span class="weight-label">Wunderground</span><div class="weight-bar-wrap"><div class="weight-bar w-wu"   id="wf-wu-F"   style="width:70%"></div></div><span class="weight-pct" id="wt-wu-F">70%</span></div>
+          <div class="weight-row"><span class="weight-label">NWS</span><div class="weight-bar-wrap"><div class="weight-bar w-nws"  id="wf-nws-F"  style="width:30%"></div></div><span class="weight-pct" id="wt-nws-F">30%</span></div>
+          <div class="weight-row"><span class="weight-label">wttr.in</span><div class="weight-bar-wrap"><div class="weight-bar w-wttr" id="wf-wttr-F" style="width:0%"></div></div><span class="weight-pct" id="wt-wttr-F">0%</span></div>
         </div>
         <div>
           <div style="font-size:.62rem; color:var(--text-muted); margin-bottom:4px;">Intl cities (°C)</div>
-          <div class="weight-row"><span class="weight-label">wttr.in</span><div class="weight-bar-wrap"><div class="weight-bar w-wttr" id="wf-wttr-C" style="width:55%"></div></div><span class="weight-pct" id="wt-wttr-C">55%</span></div>
-          <div class="weight-row"><span class="weight-label">Open-Meteo</span><div class="weight-bar-wrap"><div class="weight-bar w-om" id="wf-om-C" style="width:45%"></div></div><span class="weight-pct" id="wt-om-C">45%</span></div>
+          <div class="weight-row"><span class="weight-label">Wunderground</span><div class="weight-bar-wrap"><div class="weight-bar w-wu"   id="wf-wu-C"   style="width:100%"></div></div><span class="weight-pct" id="wt-wu-C">100%</span></div>
+          <div class="weight-row"><span class="weight-label">wttr.in</span><div class="weight-bar-wrap"><div class="weight-bar w-wttr" id="wf-wttr-C" style="width:0%"></div></div><span class="weight-pct" id="wt-wttr-C">0%</span></div>
         </div>
-        <div style="margin-top:8px; font-size:.62rem; color:var(--text-muted)">Updated: <span id="learn-updated">—</span></div>
+        <div style="margin-top:8px; font-size:.62rem; color:var(--text-muted)">
+          <span id="wu-status"></span> · Updated: <span id="learn-updated">—</span>
+        </div>
       </div>
       <div class="learn-box">
         <div class="learn-box-title">🎯 Win Prob Calibration <span id="calib-samples" style="font-weight:400; text-transform:none; letter-spacing:0; color:var(--text-muted)"></span></div>
@@ -1140,17 +1142,17 @@ function renderFc(fcs) {
 
   tb.innerHTML = fcs.map(f => {
     const u = f.unit || 'F';
-    const spread = (f.wttr != null && f.open_meteo != null)
-      ? Math.abs(f.wttr - f.open_meteo).toFixed(1)
+    const spread = (f.wunderground != null && f.nws != null)
+      ? Math.abs(f.wunderground - f.nws).toFixed(1)
       : null;
 
     return `<tr>
       <td class="city-cell">${f.city}${cityBadge(f.city)}</td>
       <td style="color:var(--text-muted); font-size:.72rem">${f.station}</td>
       <td class="date-cell">${f.date}</td>
-      <td class="forecast-cell">${f.wttr  != null ? fmtTemp(f.wttr, u)       : '<span style="color:var(--text-muted)">—</span>'}</td>
+      <td class="forecast-cell">${f.wunderground != null ? fmtTemp(f.wunderground, u) : '<span style="color:var(--text-muted)">—</span>'}</td>
       <td class="forecast-cell">${f.nws   != null ? fmtTemp(f.nws, u)        : '<span style="color:var(--text-muted)">—</span>'}</td>
-      <td class="forecast-cell">${f.open_meteo != null ? fmtTemp(f.open_meteo, u) : '<span style="color:var(--text-muted)">—</span>'}</td>
+      <td class="forecast-cell">${f.wttr  != null ? fmtTemp(f.wttr, u)       : '<span style="color:var(--text-muted)">—</span>'}</td>
       <td style="font-weight:700">${fmtTemp(f.consensus, u)}${spread ? ` <span style="font-size:.65rem; font-weight:400; color:var(--text-muted)">±${spread}</span>` : ''}</td>
       <td>${confBadge(f.confidence)}</td>
     </tr>`;
@@ -1255,17 +1257,19 @@ function loadLearning() {
         document.getElementById(barId).style.width = pct + '%';
         document.getElementById(pctId).textContent = pct + '%';
       }
-      setPct('wf-wttr',   'wt-wttr-F', wF.wttr);
-      setPct('wf-nws',    'wt-nws-F',  wF.nws);
-      setPct('wf-om-F',   'wt-om-F',   wF.open_meteo);
+      setPct('wf-wu-F',   'wt-wu-F',   wF.wunderground);
+      setPct('wf-nws-F',  'wt-nws-F',  wF.nws);
+      setPct('wf-wttr-F', 'wt-wttr-F', wF.wttr);
+      setPct('wf-wu-C',   'wt-wu-C',   wC.wunderground);
       setPct('wf-wttr-C', 'wt-wttr-C', wC.wttr);
-      // NWS not used for C; open_meteo takes remainder
-      document.getElementById('wf-om-C').style.width = Math.round((wC.open_meteo||0.45)*100) + '%';
-      document.getElementById('wt-om-C').textContent  = Math.round((wC.open_meteo||0.45)*100) + '%';
 
       const samples = w.samples || 0;
       $('learn-samples').textContent = samples ? `· ${samples} samples` : '· no data yet';
       $('learn-updated').textContent = w.updated ? w.updated.slice(0,16).replace('T',' ') + ' UTC' : 'never (defaults)';
+
+      if (data.wu_active !== undefined) {
+        $('wu-status').textContent = data.wu_active ? '🟢 WU API active' : '🟡 WU API key not set — using wttr.in fallback';
+      }
 
       const calib = data.calibration || {};
       const sig = calib.no_sigma || {};

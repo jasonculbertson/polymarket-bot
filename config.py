@@ -1,6 +1,6 @@
 """
-City configs: series IDs, Wunderground stations, Open-Meteo coordinates.
-Station is parsed live from the resolutionSource field — this is the fallback/reference map.
+City configs: series IDs, Wunderground station codes, and coordinates.
+Station codes match the ICAO identifiers Wunderground uses for resolution.
 
 unit: "F" = US cities (brackets in °F, Polymarket resolves in °F)
       "C" = international cities (brackets in °C, Polymarket resolves in °C)
@@ -178,10 +178,16 @@ NOTIFY = {
     "min_return_pct": float(os.environ.get("NOTIFY_MIN_RETURN_PCT", "20")),
 }
 
-# Forecast source weights for weighted consensus
-# wttr.in uses the same ICAO station codes as Wunderground (Polymarket's resolver)
-# so it gets higher weight. NWS is US-only. Open-Meteo covers all cities.
+# Forecast source weights when WU_API_KEY is configured (primary setup)
+# Wunderground IS the resolution source, so it gets dominant weight.
+# NWS provides an independent US-only sanity check.
 FORECAST_WEIGHTS = {
-    "F": {"wttr": 0.50, "nws": 0.35, "open_meteo": 0.15},
-    "C": {"wttr": 0.55, "nws": 0.00, "open_meteo": 0.45},
+    "F": {"wunderground": 0.70, "nws": 0.30, "wttr": 0.00},
+    "C": {"wunderground": 1.00, "nws": 0.00, "wttr": 0.00},
+}
+
+# Fallback weights when WU_API_KEY is not set (uses wttr.in + NWS)
+FORECAST_WEIGHTS_FALLBACK = {
+    "F": {"wunderground": 0.00, "nws": 0.40, "wttr": 0.60},
+    "C": {"wunderground": 0.00, "nws": 0.00, "wttr": 1.00},
 }

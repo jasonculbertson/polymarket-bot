@@ -64,9 +64,9 @@ def record_scan(yes_clusters, no_opps, all_forecasts: dict = None) -> int:
             return {}
         day_fc = all_forecasts.get(city, {}).get("forecasts", {}).get(resolution_date, {})
         return {
-            "wttr":       day_fc.get("wttr"),
-            "nws":        day_fc.get("nws"),
-            "open_meteo": day_fc.get("open_meteo"),
+            "wunderground": day_fc.get("wunderground"),
+            "nws":          day_fc.get("nws"),
+            "wttr":         day_fc.get("wttr"),
         }
 
     for o in no_opps:

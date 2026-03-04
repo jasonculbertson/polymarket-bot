@@ -38,8 +38,8 @@ LEARNING_RATE = float(os.environ.get("LEARNING_RATE", "0.15"))
 
 # Defaults (mirrors config.py — kept here to avoid circular import)
 _DEFAULT_WEIGHTS = {
-    "F": {"wttr": 0.50, "nws": 0.35, "open_meteo": 0.15},
-    "C": {"wttr": 0.55, "nws": 0.00, "open_meteo": 0.45},
+    "F": {"wunderground": 0.70, "nws": 0.30, "wttr": 0.00},
+    "C": {"wunderground": 1.00, "nws": 0.00, "wttr": 0.00},
 }
 _DEFAULT_CALIBRATION = {
     "no_sigma":  {"F": {"high": 1.8, "medium": 3.2}, "C": {"high": 1.0, "medium": 1.8}},
@@ -200,8 +200,8 @@ def learn_from_outcomes() -> dict:
 
     # Accumulate errors and calibration samples across all newly resolved opps
     source_errors: dict[str, dict[str, list]] = {
-        "F": {"wttr": [], "nws": [], "open_meteo": []},
-        "C": {"wttr": [], "nws": [], "open_meteo": []},
+        "F": {"wunderground": [], "nws": [], "wttr": []},
+        "C": {"wunderground": [], "nws": [], "wttr": []},
     }
     # Separate by confidence for sigma calibration
     win_prob_samples: dict[str, dict[str, list]] = {
@@ -229,7 +229,7 @@ def learn_from_outcomes() -> dict:
             actual = fetch_actual_temperature(slug)
             if actual is not None:
                 temp_found += 1
-                for src in ["wttr", "nws", "open_meteo"]:
+                for src in ["wunderground", "nws", "wttr"]:
                     val = sources.get(src)
                     if val is not None:
                         source_errors[unit][src].append(abs(val - actual))
@@ -254,15 +254,15 @@ def learn_from_outcomes() -> dict:
         if unit not in weights or not isinstance(weights.get(unit), dict):
             weights[unit] = dict(_DEFAULT_WEIGHTS.get(unit, {}))
 
-        for src in ("wttr", "nws", "open_meteo"):
+        for src in ("wunderground", "nws", "wttr"):
             if src in new_w:
                 old = weights[unit].get(src, _DEFAULT_WEIGHTS.get(unit, {}).get(src, 0.33))
                 weights[unit][src] = _ema_update(old, new_w[src], alpha)
 
         # Renormalize so weights sum to 1
-        total = sum(weights[unit].get(s, 0) for s in ("wttr", "nws", "open_meteo"))
+        total = sum(weights[unit].get(s, 0) for s in ("wunderground", "nws", "wttr"))
         if total > 0:
-            for src in ("wttr", "nws", "open_meteo"):
+            for src in ("wunderground", "nws", "wttr"):
                 weights[unit][src] = round(weights[unit].get(src, 0) / total, 4)
 
         n_samples = sum(len(e) for e in source_errors[unit].values())
