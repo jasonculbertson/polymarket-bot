@@ -261,7 +261,11 @@ def enrich_with_clob_prices(all_markets: dict) -> dict:
             except Exception:
                 clob_results[key] = None
 
-    # Apply results back to market dicts
+    # Apply results back to market dicts.
+    # Polymarket weather markets are neg-risk AMM pools — the Gamma outcomePrices
+    # are the real executable prices. CLOB may show stale limit orders at 0.99
+    # that nobody accepts. Only override Gamma price when CLOB ask is materially
+    # LOWER (i.e., a genuine seller offering a discount vs the AMM).
     count = 0
     for city, events in all_markets.items():
         for ei, event in enumerate(events):
@@ -270,12 +274,15 @@ def enrich_with_clob_prices(all_markets: dict) -> dict:
                 if clob:
                     mkt["clob_best_bid"] = clob["best_bid"]
                     mkt["clob_best_ask"] = clob["best_ask"]
-                    if clob["best_ask"] is not None:
-                        mkt["yes_price_live"] = clob["best_ask"]
-                        mkt["no_price_live"] = round(1.0 - clob["best_ask"], 4)
+                    gamma_yes = mkt["yes_price"]
+                    ask = clob["best_ask"]
+                    if ask is not None and ask < gamma_yes * 0.95 and ask > 0.01:
+                        # Genuine discount vs AMM — use CLOB price
+                        mkt["yes_price_live"] = ask
+                        mkt["no_price_live"] = round(1.0 - ask, 4)
                         count += 1
 
-    print(f"  Enriched {count} markets with live CLOB prices")
+    print(f"  Enriched {count} markets with better CLOB prices")
     return all_markets
 
 

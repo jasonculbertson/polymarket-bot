@@ -51,7 +51,7 @@ def build_forecast_rows(forecasts: dict, target_date: str) -> list:
     return rows
 
 
-def save_results(clusters, no_opps, markets, forecasts, scan_time: str):
+def save_results(clusters, no_opps, markets, forecasts, scan_time: str, target_date: str = ""):
     """Save scan results to data/ directory."""
     clusters_data = []
     for c in clusters:
@@ -117,10 +117,10 @@ def save_results(clusters, no_opps, markets, forecasts, scan_time: str):
         sum(o["recommended_size"] for o in no_opps_data)
     )
 
-    # Forecast rows for dashboard
-    today = date.today()
-    tomorrow = (today + timedelta(days=1)).isoformat()
-    forecast_rows = build_forecast_rows(forecasts, tomorrow)
+    # Forecast rows for dashboard — use the scanned target_date, fall back to tomorrow
+    if not target_date:
+        target_date = (date.today() + timedelta(days=1)).isoformat()
+    forecast_rows = build_forecast_rows(forecasts, target_date)
 
     out = {
         "scan_time": scan_time,
@@ -356,7 +356,7 @@ def main():
     print_links(clusters, no_opps, limit=10)
 
     # 7. Save
-    save_results(clusters, no_opps, markets, forecasts, scan_time)
+    save_results(clusters, no_opps, markets, forecasts, scan_time, target_date)
 
     # 8. Notifications
     try:
