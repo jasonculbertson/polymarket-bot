@@ -1301,9 +1301,9 @@ function loadLearning() {
       $('learn-samples').textContent = samples ? `· ${samples} samples` : '· no data yet';
       $('learn-updated').textContent = w.updated ? w.updated.slice(0,16).replace('T',' ') + ' UTC' : 'never (defaults)';
 
-      if (data.wu_active !== undefined) {
-        $('wu-status').textContent = data.wu_active ? '🟢 WU API active' : '🟡 WU API key not set — using wttr.in fallback';
-      }
+      $('wu-status').textContent = data.pws_active
+        ? '🟢 WU hourly + PWS history active'
+        : '🟡 WU hourly active · set WU_PWS_KEY for accurate learning';
 
       const calib = data.calibration || {};
       const sig = calib.no_sigma || {};

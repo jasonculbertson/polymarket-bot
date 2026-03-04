@@ -83,6 +83,62 @@ def _save_calibration(c: dict):
         json.dump(c, f, indent=2)
 
 
+# ─── Wunderground PWS history — actual station temperature verification ───────
+
+WU_PWS_KEY = os.environ.get("WU_PWS_KEY", "")
+WU_PWS_API = "https://api.weather.com/v2/pws"
+
+# Maps each city to a nearby high-quality PWS station (qcStatus=1 from WU near search)
+# These are fallbacks — used when PWS key is set to verify actual temps
+_CITY_PWS_STATION = {
+    "NYC":          "KNYNEWYO1509",   # Upper East Side, qcStatus=1
+    "Chicago":      "KILILLIN294",    # fallback: use Gamma API if missing
+    "Miami":        "KFLMIAMI3180",
+    "Dallas":       "KTXDALLA1890",
+    "Seattle":      "KWASEATL1243",
+    "Atlanta":      "KGAATLAN1156",
+    "Toronto":      "ONTORONT1195",
+    "London":       "IENGLOND101",
+    "Paris":        "IILEDEFA101",
+    "Munich":       "IBAVARIA101",
+}
+
+
+def fetch_actual_temp_pws(station_id: str, date_str: str, unit: str = "F") -> Optional[float]:
+    """
+    Fetch the actual recorded daily high from a Wunderground PWS station.
+    Requires WU_PWS_KEY env var (free Wunderground.com account key).
+
+    date_str: "YYYY-MM-DD"
+    Returns the daily high temperature or None on error.
+    """
+    if not WU_PWS_KEY or not station_id:
+        return None
+    try:
+        date_compact = date_str.replace("-", "")   # "20260302"
+        r = requests.get(
+            f"{WU_PWS_API}/history/daily",
+            params={
+                "stationId": station_id,
+                "format":    "json",
+                "units":     "e" if unit == "F" else "m",
+                "date":      date_compact,
+                "apiKey":    WU_PWS_KEY,
+            },
+            timeout=10,
+        )
+        if r.status_code != 200:
+            return None
+        data = r.json()
+        obs = data.get("observations", [])
+        if not obs:
+            return None
+        hi = obs[0].get("imperial" if unit == "F" else "metric", {}).get("tempHigh")
+        return float(hi) if hi is not None else None
+    except Exception:
+        return None
+
+
 # ─── Gamma API helpers ────────────────────────────────────────────────────────
 
 def _parse_bracket_bounds(text: str):
@@ -104,11 +160,26 @@ def _parse_bracket_bounds(text: str):
     return None, None
 
 
-def fetch_actual_temperature(event_slug: str) -> Optional[float]:
+def fetch_actual_temperature(event_slug: str, city: str = "", unit: str = "F",
+                             resolution_date: str = "") -> Optional[float]:
     """
-    Fetch the actual temperature for a resolved event by finding which YES bracket resolved.
-    Returns the midpoint of the winning bracket, or None if not yet resolved / API error.
+    Fetch the actual recorded temperature for a resolved event.
+
+    Strategy (in order):
+      1. WU PWS key: fetch actual daily high directly from the PWS station.
+         Most accurate — same network Wunderground uses for station history.
+      2. Polymarket Gamma API: infer temperature from which YES bracket resolved.
+         Fallback when PWS key not available or station unknown.
+
+    Returns the actual temperature, or None if not yet resolved / unavailable.
     """
+    # Strategy 1: direct PWS station history (most accurate)
+    if WU_PWS_KEY and city and resolution_date:
+        pws_id = _CITY_PWS_STATION.get(city)
+        if pws_id:
+            actual = fetch_actual_temp_pws(pws_id, resolution_date, unit)
+            if actual is not None:
+                return actual
     try:
         r = requests.get(
             f"{GAMMA_API}/events",
@@ -219,14 +290,17 @@ def learn_from_outcomes() -> dict:
         if opp.get("learned"):
             continue
 
-        unit       = opp.get("temp_unit", "F")
-        confidence = opp.get("confidence", "medium")
-        sources    = opp.get("forecast_sources") or {}
-        slug       = opp.get("event_slug", "")
+        unit            = opp.get("temp_unit", "F")
+        confidence      = opp.get("confidence", "medium")
+        sources         = opp.get("forecast_sources") or {}
+        slug            = opp.get("event_slug", "")
+        city            = opp.get("city", "")
+        resolution_date = opp.get("resolution_date", "")
 
         # ── Source weight learning ────────────────────────────────────────
-        if sources and slug:
-            actual = fetch_actual_temperature(slug)
+        if sources and (slug or (WU_PWS_KEY and city and resolution_date)):
+            actual = fetch_actual_temperature(slug, city=city, unit=unit,
+                                              resolution_date=resolution_date)
             if actual is not None:
                 temp_found += 1
                 for src in ["wunderground", "nws", "wttr"]:

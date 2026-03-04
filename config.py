@@ -16,6 +16,7 @@ CITIES = {
         "lon": -73.8740,
         "tz": "America/New_York",
         "unit": "F",
+        "wu_path": "/hourly/us/ny/new-york-city/KLGA/date/",
     },
     "Chicago": {
         "series_id": 10726,
@@ -24,6 +25,7 @@ CITIES = {
         "lon": -87.9073,
         "tz": "America/Chicago",
         "unit": "F",
+        "wu_path": "/hourly/us/il/chicago/KORD/date/",
     },
     "Miami": {
         "series_id": 10728,
@@ -32,6 +34,7 @@ CITIES = {
         "lon": -80.2870,
         "tz": "America/New_York",
         "unit": "F",
+        "wu_path": "/hourly/us/fl/miami/KMIA/date/",
     },
     "Dallas": {
         "series_id": 10727,
@@ -40,6 +43,7 @@ CITIES = {
         "lon": -96.8512,
         "tz": "America/Chicago",
         "unit": "F",
+        "wu_path": "/hourly/us/tx/dallas/KDAL/date/",
     },
     "Seattle": {
         "series_id": 10734,
@@ -48,6 +52,7 @@ CITIES = {
         "lon": -122.3094,
         "tz": "America/Los_Angeles",
         "unit": "F",
+        "wu_path": "/hourly/us/wa/seattle/KSEA/date/",
     },
     "Atlanta": {
         "series_id": 10739,
@@ -56,6 +61,7 @@ CITIES = {
         "lon": -84.4277,
         "tz": "America/New_York",
         "unit": "F",
+        "wu_path": "/hourly/us/ga/atlanta/KATL/date/",
     },
     "Toronto": {
         "series_id": 10743,
@@ -64,6 +70,7 @@ CITIES = {
         "lon": -79.6306,
         "tz": "America/Toronto",
         "unit": "C",
+        "wu_path": "/hourly/ca/on/toronto/CYYZ/date/",
     },
     "London": {
         "series_id": 10006,
@@ -72,6 +79,7 @@ CITIES = {
         "lon": 0.0495,
         "tz": "Europe/London",
         "unit": "C",
+        "wu_path": "/hourly/gb/england/london/EGLC/date/",
     },
     "Paris": {
         "series_id": 11168,
@@ -80,6 +88,7 @@ CITIES = {
         "lon": 2.5479,
         "tz": "Europe/Paris",
         "unit": "C",
+        "wu_path": "/hourly/fr/ile-de-france/paris/LFPG/date/",
     },
     "Munich": {
         "series_id": 11272,
@@ -88,6 +97,7 @@ CITIES = {
         "lon": 11.7861,
         "tz": "Europe/Berlin",
         "unit": "C",
+        "wu_path": "/hourly/de/bavaria/munich/EDDM/date/",
     },
     "Buenos Aires": {
         "series_id": 10744,
@@ -96,6 +106,7 @@ CITIES = {
         "lon": -58.5358,
         "tz": "America/Argentina/Buenos_Aires",
         "unit": "C",
+        "wu_path": "/hourly/ar/buenos-aires/buenos-aires/SAEZ/date/",
     },
     "Sao Paulo": {
         "series_id": 11169,
@@ -104,6 +115,7 @@ CITIES = {
         "lon": -46.4731,
         "tz": "America/Sao_Paulo",
         "unit": "C",
+        "wu_path": "/hourly/br/sao-paulo/sao-paulo/SBGR/date/",
     },
     "Seoul": {
         "series_id": 10742,
@@ -112,6 +124,7 @@ CITIES = {
         "lon": 126.4510,
         "tz": "Asia/Seoul",
         "unit": "C",
+        "wu_path": "/hourly/kr/incheon/incheon/RKSI/date/",
     },
     "Lucknow": {
         "series_id": 11271,
@@ -120,6 +133,7 @@ CITIES = {
         "lon": 80.8893,
         "tz": "Asia/Kolkata",
         "unit": "C",
+        "wu_path": "/hourly/in/uttar-pradesh/lucknow/VILK/date/",
     },
     "Ankara": {
         "series_id": 10900,
@@ -128,6 +142,7 @@ CITIES = {
         "lon": 32.9951,
         "tz": "Europe/Istanbul",
         "unit": "C",
+        "wu_path": "/hourly/tr/ankara/ankara/LTAC/date/",
     },
     "Wellington": {
         "series_id": 10902,
@@ -136,6 +151,7 @@ CITIES = {
         "lon": 174.8052,
         "tz": "Pacific/Auckland",
         "unit": "C",
+        "wu_path": "/hourly/nz/wellington/wellington/NZWN/date/",
     },
 }
 

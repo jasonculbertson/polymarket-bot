@@ -178,10 +178,10 @@ def outcomes():
 @app.route("/learning")
 def learning():
     try:
-        from learner import get_learning_stats
-        from fetch_forecasts import WU_API_KEY
+        from learner import get_learning_stats, WU_PWS_KEY
         stats = get_learning_stats()
-        stats["wu_active"] = bool(WU_API_KEY)
+        stats["wu_active"]  = True   # page scraper always available
+        stats["pws_active"] = bool(WU_PWS_KEY)
         return jsonify(stats)
     except Exception as e:
         return jsonify({"error": str(e)})
