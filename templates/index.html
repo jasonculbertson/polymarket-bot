@@ -165,6 +165,14 @@ input[type=number] { width: 80px; }
 .btn-primary { background: var(--purple); color: #fff; }
 .btn-secondary { background: var(--surface2); color: var(--text-dim); border: 1px solid var(--border); }
 .btn-danger { background: var(--red-dim); color: var(--red); border: 1px solid #7f1d1d; }
+.date-quick-btn {
+  height: 28px; padding: 0 10px; font-size: .75rem; border-radius: 4px; cursor: pointer;
+  background: var(--surface2); color: var(--text-dim); border: 1px solid var(--border);
+  transition: background .15s, color .15s;
+}
+.date-quick-btn.active {
+  background: var(--purple); color: #fff; border-color: var(--purple);
+}
 .scanner-status {
   font-size: .72rem;
   color: var(--text-muted);
@@ -655,12 +663,17 @@ tr.taken-row:hover td { opacity: 0.55; }
     <div class="spinner" id="spinner"></div>
     <div class="scanner-status" id="scan-status">Ready</div>
     <div class="form-group">
+      <span class="form-label">Date</span>
+      <div style="display:flex; gap:4px; align-items:center">
+        <button class="date-quick-btn" id="btn-today"     onclick="setDate('today')">Today</button>
+        <button class="date-quick-btn" id="btn-tomorrow"  onclick="setDate('tomorrow')">Tomorrow</button>
+        <input type="date" id="scan-date" style="height:28px; padding:2px 6px; font-size:.78rem; background:var(--card); border:1px solid var(--border); color:var(--text); border-radius:4px; cursor:pointer" oninput="onDateInput()">
+      </div>
+    </div>
+    <div class="divider"></div>
+    <div class="form-group">
       <span class="form-label">Capital $</span>
       <input type="number" id="capital" value="400" min="50" step="50">
-    </div>
-    <div class="form-group">
-      <span class="form-label">Days</span>
-      <input type="number" id="days" value="1" min="1" max="7" style="width:56px">
     </div>
     <div class="divider"></div>
     <button class="btn btn-secondary" onclick="toggleLog()" id="log-toggle-btn">Log</button>
@@ -888,6 +901,41 @@ function toggleRow(id) {
   const el = document.getElementById(id);
   if (el) el.style.display = el.style.display === 'none' ? 'table-row' : 'none';
 }
+
+// ─── Date picker helpers ──────────────────────────────────────────────────
+function _isoToday() {
+  const d = new Date();
+  return d.toISOString().slice(0, 10);
+}
+function _isoTomorrow() {
+  const d = new Date();
+  d.setDate(d.getDate() + 1);
+  return d.toISOString().slice(0, 10);
+}
+function setDate(which) {
+  const input = $('scan-date');
+  if (which === 'today') {
+    input.value = _isoToday();
+  } else if (which === 'tomorrow') {
+    input.value = _isoTomorrow();
+  }
+  _updateDateButtons();
+}
+function onDateInput() {
+  _updateDateButtons();
+}
+function _updateDateButtons() {
+  const v = ($('scan-date') || {}).value || '';
+  const btnT  = $('btn-today');
+  const btnTm = $('btn-tomorrow');
+  if (btnT)  btnT.classList.toggle('active',  v === _isoToday());
+  if (btnTm) btnTm.classList.toggle('active', v === _isoTomorrow());
+}
+// Initialise date to tomorrow on page load
+(function() {
+  const input = $('scan-date');
+  if (input) { input.value = _isoTomorrow(); _updateDateButtons(); }
+})();
 
 function retClass(pct) {
   return pct >= 25 ? 'ret-high' : (pct >= 12 ? 'ret-med' : 'ret-low');
@@ -1382,18 +1430,18 @@ function loadOutcomes() {
 // ─── Scan ────────────────────────────────────────────────────────────
 function runScan() {
   if ($('scanbar').classList.contains('scanning')) return;
-  const capital = $('capital').value || 400;
-  const days    = $('days').value    || 1;
+  const capital   = $('capital').value   || 400;
+  const scanDate  = ($('scan-date') || {}).value || _isoTomorrow();
   $('scanbar').classList.add('scanning');
   $('log-wrap').style.display = 'block';
   _logVisible = true;
-  $('scan-status').textContent = 'Scanning...';
-  $('log-wrap').textContent = 'Starting scan...';
+  $('scan-status').textContent = `Scanning ${scanDate}…`;
+  $('log-wrap').textContent = `Starting scan for ${scanDate}...`;
 
   fetch('/scan', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ capital: parseInt(capital), days: parseInt(days) })
+    body: JSON.stringify({ capital: parseInt(capital), date: scanDate })
   });
 
   _pollTimer = setInterval(pollScan, 1500);
@@ -1409,7 +1457,7 @@ function pollScan() {
       if (!s.running) {
         clearInterval(_pollTimer);
         $('scanbar').classList.remove('scanning');
-        $('scan-status').textContent = 'Done';
+        $('scan-status').textContent = 'Done ✓';
         setTimeout(() => { $('scan-status').textContent = 'Ready'; }, 3000);
         loadData();
         toast('Scan complete!');

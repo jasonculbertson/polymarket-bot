@@ -122,37 +122,83 @@ def fetch_wunderground_hourly(wu_path: str, unit: str = "F") -> Optional[dict]:
         # Extract hourly temps and timestamps from embedded JSON store
         # WU embeds the full forecast as: "temperature":[38,39,...] and
         # "validTimeLocal":["2026-03-04T00:00:00-0500",...]
-        temps_m = re.search(r'"temperature":\[([0-9,null]+)\]', r.text)
-        times_m = re.search(r'"validTimeLocal":\[([^\]]+)\]',    r.text)
+        # Find the temperature + validTimeLocal arrays that contain FUTURE forecast data.
+        # We search for every occurrence pair and pick the one where the timestamps are
+        # mostly in the future (i.e., a forecast, not historic observations).
+        today_str = date.today().isoformat()
 
-        if not temps_m or not times_m:
-            print(f"    [WARN] WU page: could not find hourly data for {wu_path}")
+        temps_all = list(re.finditer(r'"temperature":\[([0-9,null-]+)\]', r.text))
+        times_all = list(re.finditer(r'"validTimeLocal":\[([^\]]+)\]',    r.text))
+
+        if not temps_all or not times_all:
+            print(f"    [WARN] WU page: could not find hourly arrays for {wu_path}")
             return None
 
-        raw_temps = temps_m.group(1).split(",")
-        raw_times = [t.strip().strip('"') for t in times_m.group(1).split(",")]
+        # Pair each temperature array with the nearest validTimeLocal array
+        # and pick the pair where most timestamps are today or future
+        best_daily: dict = {}
+        best_future = 0
 
-        daily: dict = {}
-        for time_str, raw_t in zip(raw_times, raw_temps):
-            if raw_t == "null" or not time_str:
+        for temps_m in temps_all:
+            # Find the closest times array (by position in the page)
+            closest = min(times_all, key=lambda t: abs(t.start() - temps_m.start()))
+
+            raw_temps = temps_m.group(1).split(",")
+            raw_times = [t.strip().strip('"') for t in closest.group(1).split(",")]
+
+            if len(raw_temps) < 6:
                 continue
-            try:
-                t = float(raw_t)
-            except ValueError:
-                continue
 
-            date_str = time_str[:10]   # "YYYY-MM-DD"
-            hour_str = time_str[11:16] # "HH:MM"
+            daily: dict = {}
+            future_count = 0
+            for time_str, raw_t in zip(raw_times, raw_temps):
+                if raw_t in ("null", "") or not time_str:
+                    continue
+                try:
+                    t = float(raw_t)
+                except ValueError:
+                    continue
 
-            if date_str not in daily:
-                daily[date_str] = {"max": t, "peak_hour": hour_str, "hours": []}
+                date_str = time_str[:10]
+                hour_str = time_str[11:16]
 
-            daily[date_str]["hours"].append((hour_str, t))
-            if t > daily[date_str]["max"]:
-                daily[date_str]["max"]       = t
-                daily[date_str]["peak_hour"] = hour_str
+                if date_str >= today_str:
+                    future_count += 1
 
-        return daily if daily else None
+                if date_str not in daily:
+                    daily[date_str] = {"max": t, "peak_hour": hour_str, "hours": []}
+
+                daily[date_str]["hours"].append((hour_str, t))
+                if t > daily[date_str]["max"]:
+                    daily[date_str]["max"]       = t
+                    daily[date_str]["peak_hour"] = hour_str
+
+            if future_count > best_future and daily:
+                best_future = future_count
+                best_daily  = daily
+
+        if not best_daily or best_future < 6:
+            print(f"    [WARN] WU page: no future forecast data found for {wu_path}")
+            return None
+
+        # Sanity check: for °C cities the WU page may embed °F temps from US PWS stations.
+        # If max temp > 55 and unit == "C", convert °F → °C.
+        # (55°C / 130°F are both implausible for any real forecast.)
+        if unit == "C":
+            sample_max = max(v["max"] for v in best_daily.values())
+            if sample_max > 55:
+                # Convert all temps from °F to °C
+                for d_data in best_daily.values():
+                    d_data["max"] = round((d_data["max"] - 32) * 5 / 9, 1)
+                    d_data["hours"] = [(h, round((t - 32) * 5 / 9, 1))
+                                       for h, t in d_data["hours"]]
+                    # Recalculate peak after conversion
+                    if d_data["hours"]:
+                        pk = max(d_data["hours"], key=lambda x: x[1])
+                        d_data["peak_hour"] = pk[0]
+                        d_data["max"]       = pk[1]
+
+        return best_daily
 
     except Exception as e:
         print(f"    [WARN] WU page scrape failed ({wu_path}): {e}")
@@ -338,7 +384,9 @@ def fetch_city_forecast(city_name: str, days: int = 2) -> dict:
             fu["wu"]   = pool.submit(fetch_wunderground_hourly, wu_path, unit)
         if is_us:
             fu["nws"]  = pool.submit(fetch_nws_forecast, lat, lon)
-        if not wu_active:
+        # Always fetch wttr.in for international cities — WU page may not embed
+        # the 15-day forecast for non-US stations, so wttr is a critical fallback
+        if not is_us:
             fu["wttr"] = pool.submit(fetch_wttr_forecast, station, days, unit)
 
         if "wu"   in fu: wu_hourly_result = fu["wu"].result()
@@ -380,7 +428,8 @@ def fetch_city_forecast(city_name: str, days: int = 2) -> dict:
             confidence = "high"   if spread <= high_threshold else (
                          "medium" if spread <= low_threshold  else "low")
         else:
-            # WU hourly alone → "high" since it IS the resolution source
+            # Single source: WU alone is "high" (IS the resolution source);
+            # wttr or NWS alone is "medium"
             confidence = "high" if wu_t is not None else "medium"
 
         forecasts[d] = {

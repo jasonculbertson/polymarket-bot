@@ -148,6 +148,83 @@ def save_results(clusters, no_opps, markets, forecasts, scan_time: str):
     return out_path
 
 
+def _print_bracket_proximity(forecasts: dict, markets: dict, target_date: str, cities: list):
+    """
+    For each city on target_date, print the WU hourly forecast alongside every
+    open bracket and how far the forecast sits from each edge.
+    This shows at a glance which NO bets and YES clusters are closest.
+    """
+    print(f"── Bracket proximity for {target_date} ──")
+    any_printed = False
+
+    for city in cities:
+        fc_data  = forecasts.get(city, {})
+        unit     = fc_data.get("unit", "F")
+        day      = fc_data.get("forecasts", {}).get(target_date)
+        if not day:
+            continue
+
+        consensus  = day.get("consensus")
+        wu_max     = day.get("wunderground")
+        peak_hr    = day.get("wu_peak_hour", "")
+        confidence = day.get("confidence", "?")
+        if consensus is None:
+            continue
+
+        city_events = markets.get(city, [])
+        target_event = next((e for e in city_events if e.get("date") == target_date), None)
+        if not target_event:
+            continue
+
+        wu_str = f"WU={wu_max:.1f}°{unit}@{peak_hr}" if wu_max else ""
+        print(f"\n  {city} [{unit}]  forecast={consensus:.1f}°{unit}  {wu_str}  conf={confidence}")
+
+        brackets = target_event.get("markets", [])
+        # Sort brackets by midpoint
+        def _mid(b):
+            lo, hi = b.get("bracket_lo"), b.get("bracket_hi")
+            if lo is not None and hi is not None: return (lo + hi) / 2
+            if lo is not None: return lo + 5
+            return (b.get("bracket_hi") or 0) - 5
+
+        for b in sorted(brackets, key=_mid):
+            lo  = b.get("bracket_lo")
+            hi  = b.get("bracket_hi")
+            yp  = b.get("yes_price") or b.get("price_yes")
+            np_ = b.get("no_price")  or b.get("price_no")
+
+            if lo is not None and hi is not None:
+                label = f"{int(lo)}-{int(hi)}°{unit}"
+                # Distance from forecast to nearest edge
+                if consensus < lo:
+                    dist = lo - consensus
+                    side = f"↑{dist:.1f}° to low edge"
+                elif consensus > hi:
+                    dist = consensus - hi
+                    side = f"↓{dist:.1f}° past high edge"
+                else:
+                    dist_lo = consensus - lo
+                    dist_hi = hi - consensus
+                    side = f"INSIDE (lo+{dist_lo:.1f} hi-{dist_hi:.1f})"
+            elif hi is not None:
+                label = f"≤{int(hi)}°{unit}"
+                dist = hi - consensus
+                side = f"{'INSIDE' if consensus <= hi else f'{consensus-hi:.1f}° above'}"
+            else:
+                label = f"≥{int(lo)}°{unit}"
+                side = f"{'INSIDE' if consensus >= lo else f'{lo-consensus:.1f}° below'}"
+
+            yp_s  = f"YES={yp:.2f}" if yp  else "YES=?"
+            np_s  = f"NO={np_:.2f}" if np_ else "NO=?"
+            print(f"    {label:<14} {yp_s}  {np_s}  {side}")
+
+        any_printed = True
+
+    if not any_printed:
+        print(f"  No open markets found for {target_date}")
+    print()
+
+
 def print_forecast_summary(forecasts: dict, cities: list, target_date: str):
     """Print forecast table for tomorrow across all cities."""
     print(f"\n{'='*90}")
@@ -195,6 +272,8 @@ def main():
     parser.add_argument("--cities", nargs="+", choices=list(CITIES.keys()), help="Cities to scan")
     parser.add_argument("--days", type=int, default=1,
                         help="Days ahead to scan (default: 1 = tomorrow only)")
+    parser.add_argument("--date", type=str, default=None,
+                        help="Target resolution date to focus on: YYYY-MM-DD, 'today', or 'tomorrow'")
     parser.add_argument("--capital", type=float, default=STRATEGY["max_capital"],
                         help="Capital budget in USDC")
     parser.add_argument("--no-clob", action="store_true",
@@ -208,30 +287,44 @@ def main():
     cities = args.cities or list(CITIES.keys())
     scan_time = datetime.now().isoformat()
 
-    # Target date: tomorrow (or further if --days specified)
+    # Resolve target date
     today = date.today()
-    tomorrow = (today + timedelta(days=1)).isoformat()
-    target_date = tomorrow  # always highlight tomorrow
+    tomorrow = today + timedelta(days=1)
+
+    if args.date in (None, "tomorrow"):
+        target_date = tomorrow.isoformat()
+        date_label = "tomorrow"
+    elif args.date == "today":
+        target_date = today.isoformat()
+        date_label = "today"
+    else:
+        target_date = args.date
+        delta = (date.fromisoformat(target_date) - today).days
+        date_label = f"+{delta}d" if delta >= 0 else f"{delta}d"
+
+    # How many days ahead to fetch (ensure target_date is covered)
+    target_dt   = date.fromisoformat(target_date)
+    days_needed = max((target_dt - today).days + 1, 1)
+    fetch_days  = max(args.days + 1, days_needed + 1, 2)
 
     print(f"\nPolymarket Weather Arbitrage Scanner")
     print(f"Scan time:   {scan_time}")
-    print(f"Target date: {target_date} (tomorrow)")
+    print(f"Target date: {target_date} ({date_label})")
     print(f"Cities:      {', '.join(cities)}")
-    print(f"Days ahead:  {args.days} | Capital: ${args.capital} | Min return: {args.min_return}%\n")
+    print(f"Days ahead:  {fetch_days} | Capital: ${args.capital} | Min return: {args.min_return}%\n")
 
-    # 1. Fetch markets (fetch days+1 to ensure tomorrow is included)
-    fetch_days = max(args.days + 1, 2)
+    # 1. Fetch markets
     print("── Fetching markets ──")
     markets = fetch_all_markets(cities, days_ahead=fetch_days)
 
     if not args.no_clob:
         markets = enrich_with_clob_prices(markets)
 
-    # 2. Fetch forecasts (always fetch 2 days minimum)
+    # 2. Fetch forecasts
     print("\n── Fetching forecasts ──")
     forecasts = fetch_all_forecasts(cities, days=fetch_days)
 
-    # 3. Print forecast summary for tomorrow
+    # 3. Print forecast summary for target date
     print_forecast_summary(forecasts, cities, target_date)
 
     # 4. Analyze — override min_return if specified
@@ -243,9 +336,19 @@ def main():
 
     STRATEGY["min_return_pct"] = original_min
 
-    print(f"Found {len(clusters)} YES clusters, {len(no_opps)} NO bets\n")
+    # Filter to target date (keep all if no match, to avoid empty output)
+    td_clusters = [c for c in clusters if c.date == target_date]
+    td_no_opps  = [o for o in no_opps  if o.date == target_date]
+    if td_clusters or td_no_opps:
+        clusters, no_opps = td_clusters, td_no_opps
+        print(f"Found {len(clusters)} YES clusters, {len(no_opps)} NO bets for {target_date}\n")
+    else:
+        print(f"No opportunities for {target_date} — showing all dates\n")
 
-    # 5. Print results
+    # 5. Print bracket proximity for target date (how close each city's forecast is)
+    _print_bracket_proximity(forecasts, markets, target_date, cities)
+
+    # 6. Print results
     print_yes_clusters(clusters, limit=args.limit)
     print_no_opps(no_opps, limit=args.limit)
 

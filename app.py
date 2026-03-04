@@ -46,7 +46,7 @@ def list_scans():
     return files[:20]
 
 
-def run_scan_bg(cities=None, capital=None, days=1):
+def run_scan_bg(cities=None, capital=None, days=1, target_date=None):
     global _scan_running, _scan_log
     if _scan_running:
         return
@@ -55,6 +55,8 @@ def run_scan_bg(cities=None, capital=None, days=1):
     capital = capital or SCAN_CAPITAL
     # Use sys.executable so Railway uses the correct venv Python
     cmd = [sys.executable, "scan.py", "--days", str(days), "--capital", str(capital)]
+    if target_date:
+        cmd += ["--date", target_date]
     if cities:
         cmd += ["--cities"] + cities
     try:
@@ -193,9 +195,12 @@ def trigger_scan():
     if _scan_running:
         return jsonify({"status": "already running"})
     body = request.get_json(silent=True) or {}
-    capital = body.get("capital", 400)
-    days    = body.get("days", 1)
-    t = threading.Thread(target=run_scan_bg, args=(None, capital, days), daemon=True)
+    capital     = body.get("capital", 400)
+    days        = body.get("days", 1)
+    target_date = body.get("date") or None
+    t = threading.Thread(target=run_scan_bg,
+                         kwargs=dict(capital=capital, days=days, target_date=target_date),
+                         daemon=True)
     t.start()
     return jsonify({"status": "started"})
 
