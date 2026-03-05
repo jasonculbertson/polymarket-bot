@@ -144,6 +144,8 @@ def fetch_city_markets(city_name: str, days_ahead: int = 7) -> list:
             slug = event.get("slug", "")
             m = re.search(r"(\d{4}-\d{2}-\d{2})", slug)
             date_str = m.group(1) if m else ""
+        # Full ISO resolution timestamp (UTC) e.g. "2026-03-05T12:00:00Z"
+        resolution_time = markets_raw[0].get("endDate") or event.get("endDate") or ""
 
         markets_out = []
         for m_raw in markets_raw:
@@ -176,6 +178,7 @@ def fetch_city_markets(city_name: str, days_ahead: int = 7) -> list:
             markets_out.append(
                 {
                     "market_id": str(m_raw.get("id", "")),
+                    "market_slug": m_raw.get("slug", ""),
                     "question": question,
                     "group_title": group_title,
                     "bracket_lo": lo,
@@ -190,6 +193,8 @@ def fetch_city_markets(city_name: str, days_ahead: int = 7) -> list:
                     "accepting_orders": m_raw.get("acceptingOrders", False),
                     "neg_risk": m_raw.get("negRisk", False),
                     "neg_risk_market_id": m_raw.get("negRiskMarketID", ""),
+                    "best_bid": m_raw.get("bestBid"),
+                    "best_ask": m_raw.get("bestAsk"),
                 }
             )
 
@@ -199,6 +204,7 @@ def fetch_city_markets(city_name: str, days_ahead: int = 7) -> list:
                 "event_id": str(event.get("id", "")),
                 "event_slug": event.get("slug", ""),
                 "date": date_str,
+                "resolution_time": resolution_time,
                 "station": station,
                 "temp_unit": city_unit,
                 "markets": markets_out,

@@ -82,6 +82,7 @@ class NoOpp:
     recommended_size: float
     predicted_win_prob: float = 0.75
     temp_unit: str = "F"     # "F" or "C"
+    market_slug: str = ""
 
 
 @dataclass
@@ -95,6 +96,7 @@ class BracketSlot:
     yes_token_id: str
     liquidity: float
     is_forecast_bracket: bool   # True for the bracket directly containing the forecast
+    market_slug: str = ""
 
 
 @dataclass
@@ -104,6 +106,7 @@ class YesCluster:
     date: str
     event_slug: str
     station: str
+    resolution_time: str = ""  # ISO UTC timestamp from Gamma endDate
     brackets: list           # list of BracketSlot
     cluster_size: int
     total_price: float       # sum of yes_prices → your total cost per $1 payout
@@ -299,6 +302,7 @@ def find_no_opps(event: dict, forecast_temp: float, confidence: str,
                     recommended_size=no_size(ret_pct, confidence, capital, n_opps, dist, unit),
                     predicted_win_prob=estimate_no_win_prob(dist, confidence, unit),
                     temp_unit=unit,
+                    market_slug=mkt.get("market_slug", ""),
                 ))
     return opps
 
@@ -348,6 +352,7 @@ def find_yes_clusters(event: dict, forecast_temp: float, confidence: str,
                 yes_token_id=m["yes_token_id"],
                 liquidity=m["liquidity"],
                 is_forecast_bracket=(idx == center_idx),
+                market_slug=m.get("market_slug", ""),
             ))
 
         total_price = round(sum(s.yes_price for s in slots), 4)
@@ -376,6 +381,7 @@ def find_yes_clusters(event: dict, forecast_temp: float, confidence: str,
             date=event["date"],
             event_slug=event["event_slug"],
             station=event["station"],
+            resolution_time=event.get("resolution_time", ""),
             brackets=slots,
             cluster_size=len(slots),
             total_price=total_price,

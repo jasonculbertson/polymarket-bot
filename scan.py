@@ -58,6 +58,7 @@ def save_results(clusters, no_opps, markets, forecasts, scan_time: str, target_d
             "type": "YES_CLUSTER",
             "city": c.city,
             "date": c.date,
+            "resolution_time": getattr(c, "resolution_time", ""),
             "station": c.station,
             "event_slug": c.event_slug,
             "temp_unit": c.temp_unit,
@@ -69,6 +70,11 @@ def save_results(clusters, no_opps, markets, forecasts, scan_time: str, target_d
                     "yes_token_id": b.yes_token_id,
                     "is_forecast_bracket": b.is_forecast_bracket,
                     "liquidity": b.liquidity,
+                    "market_slug": b.market_slug,
+                    "market_url": (
+                        f"https://polymarket.com/event/{c.event_slug}/{b.market_slug}"
+                        if b.market_slug else ""
+                    ),
                 }
                 for b in c.brackets
             ],
@@ -95,6 +101,7 @@ def save_results(clusters, no_opps, markets, forecasts, scan_time: str, target_d
 
     no_opps_data = []
     for o in no_opps:
+        market_slug = getattr(o, "market_slug", "")
         no_opps_data.append({
             "type": "NO",
             "city": o.city,
@@ -102,6 +109,7 @@ def save_results(clusters, no_opps, markets, forecasts, scan_time: str, target_d
             "station": o.station,
             "event_slug": o.event_slug,
             "market_id": o.market_id,
+            "market_slug": market_slug,
             "bracket": o.group_title,
             "bracket_lo": o.bracket_lo,
             "bracket_hi": o.bracket_hi,
@@ -116,7 +124,10 @@ def save_results(clusters, no_opps, markets, forecasts, scan_time: str, target_d
             "recommended_size": o.recommended_size,
             "yes_token_id": o.yes_token_id,
             "no_token_id": o.no_token_id,
-            "polymarket_url": f"https://polymarket.com/event/{o.event_slug}",
+            "polymarket_url": (
+                f"https://polymarket.com/event/{o.event_slug}/{market_slug}"
+                if market_slug else f"https://polymarket.com/event/{o.event_slug}"
+            ),
         })
 
     total_deploy = (

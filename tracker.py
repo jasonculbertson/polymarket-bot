@@ -2,6 +2,10 @@
 Outcome tracker: records scanned opportunities and resolves their P&L
 after the market resolution date passes.
 
+Paper trading is simulated at PAPER_SIZE_USD per position.
+  - Win  P&L = PAPER_SIZE_USD × (return_pct / 100)
+  - Loss P&L = −PAPER_SIZE_USD
+
 Storage: DATA_DIR/outcomes.json  (persists across Railway deploys when volume is mounted)
 """
 
@@ -15,6 +19,9 @@ from typing import Optional
 DATA_DIR = os.environ.get("DATA_DIR", os.path.join(os.path.dirname(__file__), "data"))
 OUTCOMES_FILE = os.path.join(DATA_DIR, "outcomes.json")
 GAMMA_API = "https://gamma-api.polymarket.com"
+
+# Paper trading stake per position (USDC). Override via env var.
+PAPER_SIZE_USD = float(os.environ.get("PAPER_SIZE_USD", "10.0"))
 
 
 # ─── Storage ──────────────────────────────────────────────────────────────────
@@ -70,35 +77,6 @@ def record_scan(yes_clusters, no_opps, all_forecasts: dict = None) -> int:
             "wttr":         day_fc.get("wttr"),
         }
 
-    for o in no_opps:
-        oid = _no_id(o.market_id)
-        if oid in existing_ids:
-            continue
-        data["opportunities"].append({
-            "id": oid,
-            "type": "no",
-            "city": o.city,
-            "bracket": o.group_title,
-            "event_slug": o.event_slug,
-            "market_id": o.market_id,
-            "no_token_id": o.no_token_id,
-            "entry_price": round(o.no_price, 4),
-            "return_pct": round(o.return_pct, 2),
-            "forecast_temp": o.forecast_temp,
-            "temp_unit": o.temp_unit,
-            "confidence": o.forecast_confidence,
-            "predicted_win_prob": round(getattr(o, "predicted_win_prob", 0.75), 4),
-            "forecast_sources": _get_sources(o.city, o.date),
-            "resolution_date": o.date,
-            "first_seen": now,
-            "outcome": None,
-            "final_yes_price": None,
-            "pnl_pct": None,
-            "learned": False,
-        })
-        existing_ids.add(oid)
-        added += 1
-
     for c in yes_clusters:
         mids = [b.market_id for b in c.brackets]
         oid = _yes_id(c.event_slug, mids)
@@ -121,10 +99,13 @@ def record_scan(yes_clusters, no_opps, all_forecasts: dict = None) -> int:
             "predicted_win_prob": round(getattr(c, "predicted_win_prob", 0.75), 4),
             "forecast_sources": _get_sources(c.city, c.date),
             "resolution_date": c.date,
+            "resolution_time": getattr(c, "resolution_time", ""),
             "first_seen": now,
+            "paper_size_usd": PAPER_SIZE_USD,
             "outcome": None,
             "final_yes_price": None,
             "pnl_pct": None,
+            "paper_pnl_usd": None,
             "learned": False,
         })
         existing_ids.add(oid)
@@ -237,6 +218,9 @@ def resolve_outcomes() -> int:
                 opp["pnl_pct"] = -100.0
             else:
                 continue
+            stake = opp.get("paper_size_usd", PAPER_SIZE_USD)
+            opp["paper_size_usd"] = stake
+            opp["paper_pnl_usd"] = round(stake * (opp["pnl_pct"] / 100.0), 2)
             # Record actual temperature for accuracy tracking
             if opp.get("actual_temp") is None:
                 actual = _fetch_actual_temp_from_gamma(opp.get("event_slug", ""))
@@ -265,6 +249,9 @@ def resolve_outcomes() -> int:
                 opp["pnl_pct"] = -100.0
             else:
                 continue
+            stake = opp.get("paper_size_usd", PAPER_SIZE_USD)
+            opp["paper_size_usd"] = stake
+            opp["paper_pnl_usd"] = round(stake * (opp["pnl_pct"] / 100.0), 2)
             # Record actual temperature for accuracy tracking
             if opp.get("actual_temp") is None:
                 actual = _fetch_actual_temp_from_gamma(opp.get("event_slug", ""))
@@ -293,9 +280,28 @@ def get_summary() -> dict:
     losses = [o for o in resolved if o["outcome"] == "loss"]
     pending = [o for o in opps if o["outcome"] is None]
 
-    total_pnl = sum(o["pnl_pct"] or 0 for o in resolved)
+    total_pnl_pct = sum(o["pnl_pct"] or 0 for o in resolved)
     avg_win = sum(o["pnl_pct"] for o in wins) / len(wins) if wins else None
     avg_loss = sum(o["pnl_pct"] for o in losses) / len(losses) if losses else None
+
+    # Paper trading dollar P&L
+    # Use paper_pnl_usd if stored; otherwise derive from paper_size_usd (or default $10)
+    def _paper_pnl(o: dict) -> float:
+        if o.get("paper_pnl_usd") is not None:
+            return o["paper_pnl_usd"]
+        stake = o.get("paper_size_usd", PAPER_SIZE_USD)
+        pnl_pct = o.get("pnl_pct")
+        if pnl_pct is None:
+            return 0.0
+        return round(stake * (pnl_pct / 100.0), 2)
+
+    paper_pnl_total = round(sum(_paper_pnl(o) for o in resolved), 2)
+    paper_staked_total = round(sum(o.get("paper_size_usd", PAPER_SIZE_USD) for o in resolved), 2)
+    paper_roi = round(paper_pnl_total / paper_staked_total * 100, 1) if paper_staked_total else None
+    paper_bankroll = round(paper_staked_total + paper_pnl_total, 2)  # if you reinvested nothing
+
+    paper_wins_pnl  = round(sum(_paper_pnl(o) for o in wins), 2)
+    paper_losses_pnl = round(sum(_paper_pnl(o) for o in losses), 2)
 
     # WU forecast accuracy: average absolute error on resolved opps with actual_temp
     wu_errors = [o["wu_error"] for o in resolved if o.get("wu_error") is not None]
@@ -306,6 +312,15 @@ def get_summary() -> dict:
     bracket_hits = [o for o in yes_resolved if o["outcome"] == "win"]
     bracket_hit_rate = round(len(bracket_hits) / len(yes_resolved) * 100, 1) if yes_resolved else None
 
+    # Attach computed paper_pnl_usd to each row for the dashboard (don't mutate stored data)
+    recent_rows = sorted(opps, key=lambda o: o["first_seen"], reverse=True)[:100]
+    for row in recent_rows:
+        if row.get("paper_pnl_usd") is None and row.get("pnl_pct") is not None:
+            row = dict(row)  # shallow copy so we don't dirty the original
+        row["paper_size_usd"] = row.get("paper_size_usd", PAPER_SIZE_USD)
+        if row.get("paper_pnl_usd") is None and row.get("pnl_pct") is not None:
+            row["paper_pnl_usd"] = round(row["paper_size_usd"] * (row["pnl_pct"] / 100.0), 2)
+
     return {
         "total": len(opps),
         "resolved": len(resolved),
@@ -315,12 +330,21 @@ def get_summary() -> dict:
         "win_rate": round(len(wins) / len(resolved) * 100, 1) if resolved else None,
         "avg_win_pct": round(avg_win, 1) if avg_win is not None else None,
         "avg_loss_pct": round(avg_loss, 1) if avg_loss is not None else None,
-        "total_pnl_pct": round(total_pnl, 1),
+        "total_pnl_pct": round(total_pnl_pct, 1),
+        # Paper trading
+        "paper_size_usd": PAPER_SIZE_USD,
+        "paper_pnl_total": paper_pnl_total,
+        "paper_staked_total": paper_staked_total,
+        "paper_roi": paper_roi,
+        "paper_bankroll": paper_bankroll,
+        "paper_wins_pnl": paper_wins_pnl,
+        "paper_losses_pnl": paper_losses_pnl,
+        # Accuracy
         "wu_avg_error": wu_avg_error,
         "wu_error_samples": len(wu_errors),
         "bracket_hit_rate": bracket_hit_rate,
         "last_resolved": data.get("last_resolved"),
-        "recent": sorted(opps, key=lambda o: o["first_seen"], reverse=True)[:100],
+        "recent": recent_rows,
     }
 
 

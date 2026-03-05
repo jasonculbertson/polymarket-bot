@@ -217,7 +217,12 @@ def _wu_daily_max(wu_hourly_result: Optional[dict]) -> Optional[dict]:
 
 def fetch_nws_forecast(lat: float, lon: float) -> Optional[dict]:
     """
-    Fetch daily max temperatures (°F) from the NWS API (US only).
+    Fetch hourly max temperatures (°F) from the NWS API (US only).
+
+    Uses the /forecast/hourly endpoint so we compute the daily high the same
+    way Wunderground does — max of all hours — rather than relying on NWS's
+    own "daytime high" summary which can differ by 1-3°F.
+
     Returns {date_str: max_temp_f} or None on failure.
     """
     try:
@@ -228,35 +233,32 @@ def fetch_nws_forecast(lat: float, lon: float) -> Optional[dict]:
         )
         if r.status_code != 200:
             return None
-        grid = r.json()
-        props = grid.get("properties", {})
-        forecast_url = props.get("forecast")
-        if not forecast_url:
+        props = r.json().get("properties", {})
+        hourly_url = props.get("forecastHourly")
+        if not hourly_url:
             return None
 
         r2 = requests.get(
-            forecast_url,
+            hourly_url,
             headers={"User-Agent": "polymarket-weather-bot"},
-            timeout=8,
+            timeout=10,
         )
         if r2.status_code != 200:
             return None
-        forecast = r2.json()
-        periods = forecast.get("properties", {}).get("periods", [])
 
-        result = {}
+        periods = r2.json().get("properties", {}).get("periods", [])
+        result: dict = {}
         for period in periods:
-            if not period.get("isDaytime"):
-                continue
             start = period.get("startTime", "")[:10]
             temp  = period.get("temperature")
             unit_p = period.get("temperatureUnit", "F")
-            if temp is None:
+            if not start or temp is None:
                 continue
+            temp = float(temp)
             if unit_p == "C":
                 temp = temp * 9 / 5 + 32
             if start not in result or temp > result[start]:
-                result[start] = float(temp)
+                result[start] = temp
 
         return result if result else None
     except Exception:

@@ -815,10 +815,43 @@ tr.taken-row:hover td { opacity: 0.55; }
 
   <!-- ── Outcomes tab ────────────────────────────────────────────────── -->
   <div class="tab-panel" id="panel-outcomes">
+    <!-- Paper trade banner -->
+    <div id="paper-banner" style="background:rgba(124,58,237,.08);border:1px solid rgba(124,58,237,.3);border-radius:8px;padding:10px 16px;margin-bottom:16px;display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+      <span style="font-size:.7rem;font-weight:700;color:var(--purple-light);text-transform:uppercase;letter-spacing:.5px">📄 Paper Trading</span>
+      <span style="font-size:.72rem;color:var(--text-muted)"><span id="paper-size-label" style="color:var(--text-dim)">$10</span> per position · simulated only</span>
+      <div style="margin-left:auto;display:flex;gap:20px;align-items:center">
+        <div style="text-align:right">
+          <div style="font-size:.62rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Total P&L</div>
+          <div style="font-size:1.1rem;font-weight:700" id="paper-pnl-banner">—</div>
+        </div>
+        <div style="text-align:right">
+          <div style="font-size:.62rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">ROI</div>
+          <div style="font-size:1.1rem;font-weight:700" id="paper-roi-banner">—</div>
+        </div>
+        <div style="text-align:right">
+          <div style="font-size:.62rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Staked</div>
+          <div style="font-size:.9rem;font-weight:600;color:var(--text-dim)" id="paper-staked-banner">—</div>
+        </div>
+      </div>
+    </div>
+
     <div class="cards" id="outcomes-cards">
       <div class="card win-rate"><div class="label">Win Rate</div><div class="value" id="oc-win-rate">—</div><div class="sub" id="oc-resolved">Loading...</div></div>
-      <div class="card yes"><div class="label">Avg Win</div><div class="value" id="oc-avg-win">—</div><div class="sub">return %</div></div>
-      <div class="card no"><div class="label">Avg Loss</div><div class="value" id="oc-avg-loss">—</div><div class="sub">return %</div></div>
+      <div class="card yes">
+        <div class="label">Paper P&L</div>
+        <div class="value" id="oc-paper-pnl">—</div>
+        <div class="sub" id="oc-paper-pnl-sub">total $ gain/loss</div>
+      </div>
+      <div class="card scan" style="border-color:var(--green)">
+        <div class="label">Wins $</div>
+        <div class="value" id="oc-wins-pnl" style="color:var(--green)">—</div>
+        <div class="sub" id="oc-avg-win-sub">avg return %</div>
+      </div>
+      <div class="card scan" style="border-color:var(--red)">
+        <div class="label">Losses $</div>
+        <div class="value" id="oc-losses-pnl" style="color:var(--red)">—</div>
+        <div class="sub" id="oc-avg-loss-sub">avg return %</div>
+      </div>
       <div class="card dep"><div class="label">Pending</div><div class="value" id="oc-pending">—</div><div class="sub">awaiting resolution</div></div>
       <div class="card scan"><div class="label">WU Avg Error</div><div class="value" id="oc-wu-error">—</div><div class="sub" id="oc-wu-error-sub">forecast accuracy</div></div>
       <div class="card scan" style="border-color:var(--purple-light)"><div class="label">Bracket Hit Rate</div><div class="value" id="oc-hit-rate">—</div><div class="sub">YES clusters won</div></div>
@@ -870,18 +903,19 @@ tr.taken-row:hover td { opacity: 0.55; }
               <th>City</th>
               <th>Bracket</th>
               <th>Entry</th>
-              <th>Return</th>
+              <th>Return %</th>
               <th>Conf</th>
-              <th>Res. Date</th>
+              <th>Resolves</th>
               <th>WU Pred</th>
               <th>Actual</th>
               <th>Error</th>
               <th>Outcome</th>
-              <th>P&amp;L</th>
+              <th>P&amp;L %</th>
+              <th>P&amp;L $</th>
             </tr>
           </thead>
           <tbody id="outcomes-body">
-            <tr><td colspan="12"><div class="empty"><div class="empty-icon">📈</div>Run a scan to start tracking outcomes</div></td></tr>
+            <tr><td colspan="13"><div class="empty"><div class="empty-icon">📈</div>Run a scan to start tracking outcomes</div></td></tr>
           </tbody>
         </table>
       </div>
@@ -906,6 +940,44 @@ let _pollTimer = null;
 const $ = id => document.getElementById(id);
 function fmt(v, d=1) { return v != null ? (+v).toFixed(d) : '--'; }
 function fmtTemp(v, unit) { return v != null ? `${(+v).toFixed(1)}°${unit||'F'}` : '--'; }
+
+// City → IANA timezone for resolution time display
+const _CITY_TZ = {
+  'NYC': 'America/New_York', 'Chicago': 'America/Chicago',
+  'Miami': 'America/New_York', 'Dallas': 'America/Chicago',
+  'Seattle': 'America/Los_Angeles', 'Atlanta': 'America/New_York',
+  'Toronto': 'America/Toronto', 'London': 'Europe/London',
+  'Paris': 'Europe/Paris', 'Munich': 'Europe/Berlin',
+  'Buenos Aires': 'America/Argentina/Buenos_Aires',
+  'Sao Paulo': 'America/Sao_Paulo', 'Seoul': 'Asia/Seoul',
+  'Lucknow': 'Asia/Kolkata', 'Ankara': 'Europe/Istanbul',
+  'Wellington': 'Pacific/Auckland',
+};
+function fmtResolution(dateStr, isoTime, city) {
+  if (!isoTime) return `<span>${dateStr}</span>`;
+  try {
+    const tz = _CITY_TZ[city] || 'UTC';
+    const dt = new Date(isoTime);
+    const localTime = dt.toLocaleTimeString('en-US', {
+      timeZone: tz, hour: 'numeric', minute: '2-digit', hour12: true
+    });
+    const localDate = dt.toLocaleDateString('en-US', {
+      timeZone: tz, month: 'short', day: 'numeric'
+    });
+    // Show countdown if within 24h
+    const minsUntil = Math.round((dt - Date.now()) / 60000);
+    let countdown = '';
+    if (minsUntil > 0 && minsUntil < 1440) {
+      const h = Math.floor(minsUntil / 60), m = minsUntil % 60;
+      countdown = `<span style="color:var(--yellow);font-size:.6rem;display:block">⏱ ${h}h ${m}m</span>`;
+    } else if (minsUntil <= 0 && minsUntil > -60) {
+      countdown = `<span style="color:var(--green);font-size:.6rem;display:block">resolving…</span>`;
+    }
+    return `<span>${localDate}</span><span style="color:var(--text-muted);font-size:.68rem;display:block">${localTime} local</span>${countdown}`;
+  } catch(e) {
+    return `<span>${dateStr}</span>`;
+  }
+}
 function toggleRow(id) {
   const el = document.getElementById(id);
   if (el) el.style.display = el.style.display === 'none' ? 'table-row' : 'none';
@@ -1114,7 +1186,9 @@ function renderYes(clusters) {
     const winRange = `${winLo}-${winHi}`;
     const retCls   = retClass(c.return_pct);
     const liqCls   = liqClass(c.liquidity_min);
-    const link = c.polymarket_url || '#';
+    // Link to the forecast bracket directly if available, else the event page
+    const firstBktUrl = (c.brackets[0] && c.brackets[0].market_url) ? c.brackets[0].market_url : null;
+    const link = firstBktUrl || c.polymarket_url || '#';
     const id = yesId(c);
     const taken = _takenSet.has(id);
 
@@ -1136,10 +1210,14 @@ function renderYes(clusters) {
 
     const bktDetails = c.brackets.map(b => {
       const fc = b.is_forecast_bracket ? ' ⭐' : '';
+      const bktLink = b.market_url
+        ? `<a href="${b.market_url}" target="_blank" style="color:var(--purple-light);font-size:.65rem;text-decoration:none;opacity:.8" title="Open this bracket on Polymarket">↗ Bet</a>`
+        : '';
       return `<div class="bracket-row">`
         + (b.is_forecast_bracket ? '<span class="forecast-dot"></span>' : '<span style="width:6px;display:inline-block"></span>')
         + `<span style="color:#c4b5fd">${b.group_title}${fc}</span>`
         + `<span style="margin-left:auto; color:var(--text-dim)">YES: ${(+b.yes_price).toFixed(3)}</span>`
+        + `${bktLink}`
         + `<button class="copy-btn" onclick="copyText('${b.yes_token_id}')">📋 token</button>`
         + `</div>`;
     }).join('');
@@ -1157,7 +1235,10 @@ function renderYes(clusters) {
       <td class="${liqCls}">$${Math.round(c.liquidity_min)}</td>
       <td class="size-cell">$${fmt(c.size_each, 0)}</td>
       <td class="size-cell">$${fmt(c.total_cost, 0)}</td>
-      <td class="link-cell"><a href="${link}" target="_blank">Open ↗</a></td>
+      <td class="link-cell">
+        <a href="${link}" target="_blank">Open ↗</a>
+        <div style="font-size:.6rem;color:var(--text-muted);margin-top:2px;cursor:pointer" onclick="toggleRow('detail-yes-${i}')">▾ brackets</div>
+      </td>
       <td><button class="take-btn ${taken?'is-taken':''}" onclick="markTaken('${id}',this)">${taken?'✓ Taken':'Take'}</button></td>
     </tr>
     <tr id="detail-yes-${i}" class="bracket-detail">
@@ -1184,6 +1265,7 @@ function renderNo(opps) {
     const dist    = o.distance == null ? 'far' : fmt(o.distance, 0) + '°' + u;
     const retCls  = retClass(o.return_pct);
     const liqCls  = liqClass(o.liquidity);
+    // Use direct market URL if available (deep-links to the exact bracket)
     const link    = o.polymarket_url || '#';
     const id = noId(o);
     const taken = _takenSet.has(id);
@@ -1403,11 +1485,45 @@ function loadOutcomes() {
       $('outcomes-badge').textContent = data.total || 0;
       $('oc-total-badge').textContent = data.total || 0;
 
+      // Paper trading banner
+      const paperSize = data.paper_size_usd || 10;
+      $('paper-size-label').textContent = `$${paperSize}`;
+      const pnlTotal = data.paper_pnl_total;
+      const pnlEl = $('paper-pnl-banner');
+      if (pnlTotal != null) {
+        pnlEl.textContent = (pnlTotal >= 0 ? '+' : '') + '$' + pnlTotal.toFixed(2);
+        pnlEl.style.color = pnlTotal >= 0 ? 'var(--green)' : 'var(--red)';
+      }
+      const roiEl = $('paper-roi-banner');
+      if (data.paper_roi != null) {
+        roiEl.textContent = (data.paper_roi >= 0 ? '+' : '') + data.paper_roi.toFixed(1) + '%';
+        roiEl.style.color = data.paper_roi >= 0 ? 'var(--green)' : 'var(--red)';
+      }
+      if (data.paper_staked_total != null) {
+        $('paper-staked-banner').textContent = '$' + data.paper_staked_total.toFixed(2);
+      }
+
       // Summary cards
       $('oc-win-rate').textContent  = data.win_rate != null ? data.win_rate.toFixed(1) + '%' : '—';
       $('oc-resolved').textContent  = `${data.wins||0}W / ${data.losses||0}L of ${data.resolved||0} resolved`;
-      $('oc-avg-win').textContent   = data.avg_win_pct  != null ? '+' + data.avg_win_pct.toFixed(1) + '%' : '—';
-      $('oc-avg-loss').textContent  = data.avg_loss_pct != null ? data.avg_loss_pct.toFixed(1) + '%' : '—';
+
+      // Paper P&L card
+      if (pnlTotal != null) {
+        const ppEl = $('oc-paper-pnl');
+        ppEl.textContent = (pnlTotal >= 0 ? '+' : '') + '$' + pnlTotal.toFixed(2);
+        ppEl.style.color = pnlTotal >= 0 ? 'var(--green)' : 'var(--red)';
+        $('oc-paper-pnl-sub').textContent = `on $${(data.paper_staked_total||0).toFixed(0)} staked`;
+      }
+      // Wins / Losses $ cards
+      if (data.paper_wins_pnl != null) {
+        $('oc-wins-pnl').textContent = '+$' + data.paper_wins_pnl.toFixed(2);
+        $('oc-avg-win-sub').textContent = data.avg_win_pct != null ? 'avg +' + data.avg_win_pct.toFixed(1) + '%' : '';
+      }
+      if (data.paper_losses_pnl != null) {
+        $('oc-losses-pnl').textContent = '$' + data.paper_losses_pnl.toFixed(2);
+        $('oc-avg-loss-sub').textContent = data.avg_loss_pct != null ? 'avg ' + data.avg_loss_pct.toFixed(1) + '%' : '';
+      }
+
       $('oc-pending').textContent   = data.pending || 0;
 
       // Accuracy cards
@@ -1422,7 +1538,7 @@ function loadOutcomes() {
       const tb = $('outcomes-body');
       const opps = data.recent || [];
       if (!opps.length) {
-        tb.innerHTML = '<tr><td colspan="12"><div class="empty"><div class="empty-icon">📈</div>No tracked opportunities yet — run a scan</div></td></tr>';
+        tb.innerHTML = '<tr><td colspan="13"><div class="empty"><div class="empty-icon">📈</div>No tracked opportunities yet — run a scan</div></td></tr>';
         return;
       }
 
@@ -1432,22 +1548,32 @@ function loadOutcomes() {
           : '<span class="conf conf-low" style="font-size:.6rem; background:rgba(248,113,113,.1); color:var(--red)">NO</span>';
 
         let outcomeCell = '<span class="outcome-pend">Pending</span>';
-        let pnlCell = '<span style="color:var(--text-muted)">—</span>';
+        let pnlPctCell  = '<span style="color:var(--text-muted)">—</span>';
+        let pnlUsdCell  = '<span style="color:var(--text-muted)">—</span>';
+
         if (o.outcome === 'win') {
-          outcomeCell = '<span class="outcome-win">✓ Win</span>';
-          pnlCell = `<span class="pnl-positive">+${(o.pnl_pct||0).toFixed(1)}%</span>`;
+          outcomeCell  = '<span class="outcome-win">✓ Win</span>';
+          pnlPctCell   = `<span class="pnl-positive">+${(o.pnl_pct||0).toFixed(1)}%</span>`;
+          const usd    = o.paper_pnl_usd != null ? o.paper_pnl_usd
+                         : (o.paper_size_usd||10) * ((o.pnl_pct||0)/100);
+          pnlUsdCell   = `<span class="pnl-positive" style="font-variant-numeric:tabular-nums">+$${usd.toFixed(2)}</span>`;
         } else if (o.outcome === 'loss') {
-          outcomeCell = '<span class="outcome-loss">✗ Loss</span>';
-          pnlCell = `<span class="pnl-negative">${(o.pnl_pct||0).toFixed(1)}%</span>`;
+          outcomeCell  = '<span class="outcome-loss">✗ Loss</span>';
+          pnlPctCell   = `<span class="pnl-negative">${(o.pnl_pct||0).toFixed(1)}%</span>`;
+          const usd    = o.paper_pnl_usd != null ? o.paper_pnl_usd : -(o.paper_size_usd||10);
+          pnlUsdCell   = `<span class="pnl-negative" style="font-variant-numeric:tabular-nums">$${usd.toFixed(2)}</span>`;
         }
+
+        const stake = o.paper_size_usd || 10;
+        const stakeLabel = `<span style="font-size:.62rem;color:var(--text-muted)">$${stake}</span>`;
 
         const u = o.temp_unit || 'F';
         const wuPred   = (o.forecast_sources||{}).wunderground;
         const actual   = o.actual_temp;
         const wuError  = o.wu_error;
 
-        const wuCell     = wuPred  != null ? `${wuPred.toFixed(1)}°${u}` : '<span style="color:var(--text-muted)">—</span>';
-        const actualCell = actual  != null ? `<strong>${actual.toFixed(1)}°${u}</strong>` : '<span style="color:var(--text-muted)">pending</span>';
+        const wuCell     = wuPred != null ? `${wuPred.toFixed(1)}°${u}` : '<span style="color:var(--text-muted)">—</span>';
+        const actualCell = actual != null ? `<strong>${actual.toFixed(1)}°${u}</strong>` : '<span style="color:var(--text-muted)">pending</span>';
         let errorCell = '<span style="color:var(--text-muted)">—</span>';
         if (wuError != null) {
           const errColor = wuError <= 1 ? 'var(--green)' : wuError <= 3 ? 'var(--yellow)' : 'var(--red)';
@@ -1461,12 +1587,13 @@ function loadOutcomes() {
           <td class="price-cell">${(o.entry_price||0).toFixed(3)}</td>
           <td class="ret-cell ${retClass(o.return_pct)}">${(o.return_pct||0).toFixed(1)}%</td>
           <td>${confBadge(o.confidence)}</td>
-          <td class="date-cell">${o.resolution_date}</td>
+          <td class="date-cell">${fmtResolution(o.resolution_date, o.resolution_time, o.city)}</td>
           <td class="price-cell">${wuCell}</td>
           <td class="price-cell">${actualCell}</td>
           <td class="price-cell">${errorCell}</td>
           <td>${outcomeCell}</td>
-          <td>${pnlCell}</td>
+          <td>${pnlPctCell}</td>
+          <td>${o.outcome ? pnlUsdCell : stakeLabel}</td>
         </tr>`;
       }).join('');
     })
