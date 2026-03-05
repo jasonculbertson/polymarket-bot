@@ -83,6 +83,7 @@ class NoOpp:
     predicted_win_prob: float = 0.75
     temp_unit: str = "F"     # "F" or "C"
     market_slug: str = ""
+    resolution_time: str = ""
 
 
 @dataclass
@@ -303,6 +304,7 @@ def find_no_opps(event: dict, forecast_temp: float, confidence: str,
                     predicted_win_prob=estimate_no_win_prob(dist, confidence, unit),
                     temp_unit=unit,
                     market_slug=mkt.get("market_slug", ""),
+                    resolution_time=event.get("resolution_time", ""),
                 ))
     return opps
 

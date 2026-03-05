@@ -77,6 +77,38 @@ def record_scan(yes_clusters, no_opps, all_forecasts: dict = None) -> int:
             "wttr":         day_fc.get("wttr"),
         }
 
+    for o in no_opps:
+        oid = _no_id(o.market_id)
+        if oid in existing_ids:
+            continue
+        data["opportunities"].append({
+            "id": oid,
+            "type": "no",
+            "city": o.city,
+            "bracket": o.group_title,
+            "event_slug": o.event_slug,
+            "market_id": o.market_id,
+            "no_token_id": o.no_token_id,
+            "entry_price": round(o.no_price, 4),
+            "return_pct": round(o.return_pct, 2),
+            "forecast_temp": o.forecast_temp,
+            "temp_unit": o.temp_unit,
+            "confidence": o.forecast_confidence,
+            "predicted_win_prob": round(getattr(o, "predicted_win_prob", 0.75), 4),
+            "forecast_sources": _get_sources(o.city, o.date),
+            "resolution_date": o.date,
+            "resolution_time": getattr(o, "resolution_time", ""),
+            "first_seen": now,
+            "paper_size_usd": PAPER_SIZE_USD,
+            "outcome": None,
+            "final_yes_price": None,
+            "pnl_pct": None,
+            "paper_pnl_usd": None,
+            "learned": False,
+        })
+        existing_ids.add(oid)
+        added += 1
+
     for c in yes_clusters:
         mids = [b.market_id for b in c.brackets]
         oid = _yes_id(c.event_slug, mids)
