@@ -220,6 +220,41 @@ def _fetch_actual_temp_from_gamma(event_slug: str) -> Optional[float]:
     return None
 
 
+def _backfill_resolution_times(data: dict) -> bool:
+    """
+    One-time backfill: fetch resolution_time from Gamma for any entry missing it.
+    Called automatically from resolve_outcomes(). Returns True if any were filled.
+    """
+    missing = [o for o in data["opportunities"] if not o.get("resolution_time")]
+    if not missing:
+        return False
+
+    filled = 0
+    for o in missing:
+        slug = o.get("event_slug", "")
+        if not slug:
+            continue
+        for closed in ("false", "true"):
+            try:
+                r = requests.get(
+                    f"{GAMMA_API}/events",
+                    params={"slug": slug, "closed": closed},
+                    timeout=8,
+                )
+                if r.status_code == 200:
+                    events = r.json()
+                    if events:
+                        end = events[0].get("endDate", "")
+                        if end:
+                            o["resolution_time"] = end
+                            filled += 1
+                            break
+            except Exception:
+                pass
+
+    return filled > 0
+
+
 def resolve_outcomes() -> int:
     """
     Check past-resolution-date opportunities and record wins/losses.
@@ -229,6 +264,10 @@ def resolve_outcomes() -> int:
     data = _load()
     today = date.today().isoformat()
     resolved_count = 0
+
+    # Auto-backfill any entries missing resolution_time
+    if _backfill_resolution_times(data):
+        _save(data)
 
     for opp in data["opportunities"]:
         if opp["outcome"] is not None:

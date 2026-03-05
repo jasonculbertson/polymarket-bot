@@ -170,7 +170,11 @@ def take():
 @app.route("/outcomes")
 def outcomes():
     try:
-        from tracker import get_summary
+        from tracker import get_summary, _load, _save, _backfill_resolution_times
+        # Backfill resolution_time for any entries that are missing it
+        data = _load()
+        if _backfill_resolution_times(data):
+            _save(data)
         return jsonify(get_summary())
     except Exception as e:
         return jsonify({"error": str(e), "total": 0, "resolved": 0,
