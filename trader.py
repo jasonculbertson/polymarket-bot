@@ -12,11 +12,16 @@ Entry point functions:
 """
 
 import os
-import math
 import logging
 from typing import Optional
 
 from config import TRADING, CLOB_API
+
+try:
+    import py_clob_client  # noqa: F401
+    _CLOB_AVAILABLE = True
+except ImportError:
+    _CLOB_AVAILABLE = False
 
 log = logging.getLogger(__name__)
 
@@ -100,6 +105,9 @@ def buy(token_id: str, size_usd: float, price: float,
             "live": False,
         }
 
+    if not _CLOB_AVAILABLE:
+        raise RuntimeError("py-clob-client is not installed. Live trading unavailable.")
+
     from py_clob_client.clob_types import OrderArgs, OrderType
     from py_clob_client.order_builder.constants import BUY as _BUY
 
@@ -143,6 +151,9 @@ def sell(token_id: str, shares: float, price: Optional[float] = None) -> dict:
 
     if not LIVE_MODE:
         return {"order_id": f"paper_sell_{token_id[:12]}", "exit_price": exit_price, "live": False}
+
+    if not _CLOB_AVAILABLE:
+        raise RuntimeError("py-clob-client is not installed. Live trading unavailable.")
 
     from py_clob_client.clob_types import MarketOrderArgs, OrderType
     from py_clob_client.order_builder.constants import SELL as _SELL
