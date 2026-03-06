@@ -173,6 +173,17 @@ input[type=number] { width: 80px; }
 .date-quick-btn.active {
   background: var(--purple); color: #fff; border-color: var(--purple);
 }
+.date-tab-btn {
+  height: 26px; padding: 0 12px; font-size: .72rem; border-radius: 4px; cursor: pointer;
+  background: var(--surface2); color: var(--text-dim); border: 1px solid var(--border);
+  transition: background .15s, color .15s; white-space: nowrap;
+}
+.date-tab-btn.active {
+  background: var(--green); color: #000; border-color: var(--green); font-weight: 600;
+}
+.date-tab-btn:hover:not(.active) {
+  background: var(--surface3); color: var(--text);
+}
 .scanner-status {
   font-size: .72rem;
   color: var(--text-muted);
@@ -743,6 +754,13 @@ tr.taken-row:hover td { opacity: 0.55; }
     <button class="btn btn-secondary" onclick="toggleLog()" id="log-toggle-btn">Log</button>
   </div>
   <div id="log-wrap"></div>
+
+  <!-- ── Saved-scan date tabs ──────────────────────────────────────── -->
+  <div id="date-tabs-bar" style="display:flex; gap:6px; flex-wrap:wrap; padding:6px 16px 0; border-bottom:1px solid var(--border); background:var(--bg); align-items:center; min-height:36px;">
+    <span style="font-size:.68rem; color:var(--text-muted); margin-right:4px;">Saved scans:</span>
+    <div id="date-tabs" style="display:flex; gap:4px; flex-wrap:wrap;"></div>
+    <span id="date-tabs-empty" style="font-size:.72rem; color:var(--text-muted); display:none;">No saved scans yet — run a scan to save results</span>
+  </div>
 
   <!-- ── Main tab ───────────────────────────────────────────────────── -->
   <div class="tab-panel active" id="panel-main">
@@ -1447,12 +1465,63 @@ function render(d) {
 }
 
 // ─── Data load ───────────────────────────────────────────────────────
-function loadData(file) {
-  const url = file ? `/data?file=${encodeURIComponent(file)}` : '/data';
+let _activeScanDate = null;  // null = latest
+
+function loadData(file, scanDate) {
+  let url;
+  if (scanDate) {
+    url = `/data?date=${encodeURIComponent(scanDate)}`;
+    _activeScanDate = scanDate;
+  } else if (file) {
+    url = `/data?file=${encodeURIComponent(file)}`;
+    _activeScanDate = null;
+  } else {
+    url = '/data';
+    _activeScanDate = null;
+  }
   fetch(url)
     .then(r => r.json())
-    .then(render)
+    .then(d => { render(d); _highlightDateTab(scanDate || '__latest__'); })
     .catch(() => {});
+}
+
+// ─── Saved-scan date tabs ─────────────────────────────────────────────
+let _dateTabs = [];
+
+function loadDateTabs() {
+  fetch('/data/dates')
+    .then(r => r.json())
+    .then(dates => {
+      _dateTabs = dates;
+      const container = $('date-tabs');
+      const empty = $('date-tabs-empty');
+      if (!dates.length) {
+        container.innerHTML = '';
+        empty.style.display = '';
+        return;
+      }
+      empty.style.display = 'none';
+      const today = new Date().toISOString().slice(0, 10);
+      const tomorrow = (() => { const d = new Date(); d.setDate(d.getDate()+1); return d.toISOString().slice(0,10); })();
+
+      function labelFor(d) {
+        if (d === today)    return `Today (${d})`;
+        if (d === tomorrow) return `Tomorrow (${d})`;
+        return d;
+      }
+
+      container.innerHTML = `<button class="date-tab-btn active" id="dtab-__latest__" onclick="loadData(null,null)">Latest</button>` +
+        dates.map(({date: d}) =>
+          `<button class="date-tab-btn" id="dtab-${d}" onclick="loadData(null,'${d}')">${labelFor(d)}</button>`
+        ).join('');
+    })
+    .catch(() => {});
+}
+
+function _highlightDateTab(id) {
+  document.querySelectorAll('.date-tab-btn').forEach(b => b.classList.remove('active'));
+  const btn = $(`dtab-${id}`);
+  if (btn) btn.classList.add('active');
 }
 
 // ─── History ─────────────────────────────────────────────────────────
@@ -1700,6 +1769,7 @@ function pollScan() {
         $('scan-status').textContent = 'Done ✓';
         setTimeout(() => { $('scan-status').textContent = 'Ready'; }, 3000);
         loadData();
+        loadDateTabs();
         toast('Scan complete!');
       }
     });
@@ -1858,8 +1928,10 @@ document.getElementById('trade-modal-bg').addEventListener('click', function(e) 
 // ─── Init ────────────────────────────────────────────────────────────
 loadTaken();
 loadData();
+loadDateTabs();
 loadSchedule();
 setInterval(loadData, 90000);
+setInterval(loadDateTabs, 60000);   // refresh date tabs every 60s
 setInterval(loadSchedule, 15000);  // refresh countdown every 15s
 </script>
 

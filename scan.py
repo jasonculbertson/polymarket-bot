@@ -165,8 +165,49 @@ def save_results(clusters, no_opps, markets, forecasts, scan_time: str, target_d
     with open(latest_path, "w") as f:
         json.dump(out, f, indent=2)
 
+    # Persist each date's results separately in Postgres so they survive redeployments
+    _pg_save_scan_dates(out, dates_in_results)
+
     print(f"\nResults saved to: {out_path}")
     return out_path
+
+
+def _pg_save_scan_dates(out: dict, dates: list):
+    """Store scan results per-date in Postgres kv_store under key 'scan_YYYY-MM-DD'."""
+    database_url = os.environ.get("DATABASE_URL", "")
+    if not database_url:
+        return
+    try:
+        import psycopg2
+        conn = psycopg2.connect(database_url)
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS kv_store (
+                        key TEXT PRIMARY KEY,
+                        data JSONB NOT NULL,
+                        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    )
+                """)
+                for d in dates:
+                    date_out = {
+                        **out,
+                        "yes_clusters":    [c for c in out["yes_clusters"]    if c.get("date") == d],
+                        "no_opportunities":[o for o in out["no_opportunities"] if o.get("date") == d],
+                        "forecasts":       [f for f in out["forecasts"]        if f.get("date") == d],
+                    }
+                    cur.execute("""
+                        INSERT INTO kv_store (key, data)
+                        VALUES (%s, %s)
+                        ON CONFLICT (key) DO UPDATE
+                            SET data = EXCLUDED.data, updated_at = NOW()
+                    """, (f"scan_{d}", json.dumps(date_out)))
+            conn.commit()
+            print(f"  Scan results saved to Postgres for dates: {dates}")
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"[WARN] Postgres scan save failed: {e}")
 
 
 def _print_bracket_proximity(forecasts: dict, markets: dict, target_date: str, cities: list):

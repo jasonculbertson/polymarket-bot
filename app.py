@@ -117,6 +117,30 @@ def _pg_kv_save(key: str, data):
         print(f"[WARN] PG save({key}) failed: {e}")
 
 
+def _pg_list_scan_dates() -> list:
+    """Return sorted list of scan date keys stored in Postgres (newest first)."""
+    try:
+        import psycopg2
+        conn = psycopg2.connect(DATABASE_URL)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT key, updated_at FROM kv_store WHERE key LIKE 'scan_%' ORDER BY updated_at DESC"
+                )
+                rows = cur.fetchall()
+            # key format: scan_YYYY-MM-DD  → extract date part
+            dates = []
+            for key, updated_at in rows:
+                date_part = key[len("scan_"):]
+                dates.append({"date": date_part, "saved_at": updated_at.isoformat()})
+            return dates
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"[WARN] pg_list_scan_dates failed: {e}")
+        return []
+
+
 def load_taken() -> set:
     if DATABASE_URL:
         data = _pg_kv_load("taken")
@@ -145,46 +169,77 @@ def index():
     return render_template("index.html")
 
 
+def _normalize_scan(scan: dict) -> dict:
+    """Normalize old scan formats to current structure."""
+    if "opportunities" in scan and "yes_clusters" not in scan:
+        no_list = [o for o in scan["opportunities"] if o.get("signal") == "NO"]
+        scan["yes_clusters"] = []
+        scan["no_opportunities"] = [{
+            "city": o.get("city"), "date": o.get("date"),
+            "station": o.get("station"), "event_slug": o.get("event_slug"),
+            "bracket": o.get("bracket"), "no_price": o.get("price"),
+            "yes_price": 1 - (o.get("price") or 0), "return_pct": o.get("return_pct"),
+            "distance": o.get("distance_f"), "temp_unit": "F",
+            "forecast_temp": o.get("forecast_temp"),
+            "forecast_confidence": o.get("forecast_confidence"),
+            "liquidity": o.get("liquidity"), "recommended_size": o.get("recommended_size"),
+            "yes_token_id": "", "no_token_id": "", "polymarket_url": o.get("polymarket_url"),
+        } for o in no_list]
+    scan.setdefault("forecasts", [])
+    return scan
+
+
 @app.route("/data")
 def data():
-    file = request.args.get("file")
+    scan_date = request.args.get("date")   # YYYY-MM-DD
+    file      = request.args.get("file")   # legacy file-based lookup
+
+    # 1. Try Postgres by date key first
+    if scan_date and DATABASE_URL:
+        scan = _pg_kv_load(f"scan_{scan_date}")
+        if scan:
+            return jsonify(_normalize_scan(scan))
+
+    # 2. Fall back to local file
     if file:
         path = os.path.join(DATA_DIR, os.path.basename(file))
     else:
         path = LATEST
 
     if not os.path.exists(path):
+        # Try latest from Postgres
+        if DATABASE_URL:
+            dates = _pg_list_scan_dates()
+            if dates:
+                scan = _pg_kv_load(f"scan_{dates[0]['date']}")
+                if scan:
+                    return jsonify(_normalize_scan(scan))
         return jsonify({"error": "no scan data"})
 
     with open(path) as f:
         scan = json.load(f)
 
-    # Normalize old format
-    if "opportunities" in scan and "yes_clusters" not in scan:
-        no_list = [o for o in scan["opportunities"] if o.get("signal") == "NO"]
-        scan["yes_clusters"] = []
-        scan["no_opportunities"] = [{
-            "city": o.get("city"),
-            "date": o.get("date"),
-            "station": o.get("station"),
-            "event_slug": o.get("event_slug"),
-            "bracket": o.get("bracket"),
-            "no_price": o.get("price"),
-            "yes_price": 1 - (o.get("price") or 0),
-            "return_pct": o.get("return_pct"),
-            "distance": o.get("distance_f"),
-            "temp_unit": "F",
-            "forecast_temp": o.get("forecast_temp"),
-            "forecast_confidence": o.get("forecast_confidence"),
-            "liquidity": o.get("liquidity"),
-            "recommended_size": o.get("recommended_size"),
-            "yes_token_id": "",
-            "no_token_id": "",
-            "polymarket_url": o.get("polymarket_url"),
-        } for o in no_list]
+    return jsonify(_normalize_scan(scan))
 
-    scan.setdefault("forecasts", [])
-    return jsonify(scan)
+
+@app.route("/data/dates")
+def data_dates():
+    """Return list of available scan dates from Postgres + local files."""
+    dates = []
+    if DATABASE_URL:
+        dates = _pg_list_scan_dates()
+    # Also include any local scan files as fallback
+    if not dates:
+        files = list_scans()
+        for f in files:
+            # filename: scan_YYYYMMDD_HHMM.json → extract date
+            try:
+                d = f[5:13]  # YYYYMMDD
+                date_str = f"{d[:4]}-{d[4:6]}-{d[6:8]}"
+                dates.append({"date": date_str, "saved_at": "", "file": f})
+            except Exception:
+                pass
+    return jsonify(dates)
 
 
 @app.route("/history")
