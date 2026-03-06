@@ -991,6 +991,7 @@ tr.taken-row:hover td { opacity: 0.55; }
 let _data = null;
 let _yesSorted = [], _noSorted = [], _fcSorted = [];
 let _takenSet = new Set();
+let _liveSet = new Set();   // opp IDs with live trades placed this session
 let _sortState = { yes:{col:'return_pct',dir:-1}, no:{col:'return_pct',dir:-1}, fc:{col:'city',dir:1} };
 let _logVisible = false;
 let _pollTimer = null;
@@ -1300,11 +1301,7 @@ function renderYes(clusters) {
       </td>
       <td style="white-space:nowrap">
         <button class="take-btn ${taken?'is-taken':''}" onclick="markTaken('${id}',this)">${taken?'✓ Taken':'Take'}</button>
-        <button class="trade-btn ${_liveSet.has(id)?'is-live':''}" data-trade-id="${id}"
-          onclick="openTradeModal('${id}','${c.brackets[0]?.yes_token_id||''}','${c.total_price}','${labels.replace(/'/g,'`')}','buy',${c.brackets[0]?.neg_risk||false})"
-          ${_liveSet.has(id)?'disabled':''}>
-          ${_liveSet.has(id)?'✓ Live':'Trade'}
-        </button>
+        <button class="trade-btn" id="trade-btn-${id}" onclick="openTradeModal('${id}','${(c.brackets[0]&&c.brackets[0].yes_token_id)||''}','${c.total_price}','${labels.replace(/'/g,"'")}','buy')">Trade</button>
       </td>
     </tr>
     <tr id="detail-yes-${i}" class="bracket-detail">
@@ -1353,11 +1350,7 @@ function renderNo(opps) {
       </td>
       <td style="white-space:nowrap">
         <button class="take-btn ${taken?'is-taken':''}" onclick="markTaken('${id}',this)">${taken?'✓ Taken':'Take'}</button>
-        <button class="trade-btn ${_liveSet.has(id)?'is-live':''}" data-trade-id="${id}"
-          onclick="openTradeModal('${id}','${o.no_token_id||''}','${o.no_price}','${o.bracket.replace(/'/g,'`')}','buy',false)"
-          ${_liveSet.has(id)?'disabled':''}>
-          ${_liveSet.has(id)?'✓ Live':'Trade'}
-        </button>
+        <button class="trade-btn" id="trade-btn-${id}" onclick="openTradeModal('${id}','${o.no_token_id||''}','${o.no_price}','${o.bracket.replace(/'/g,"'")}','buy')">Trade</button>
       </td>
     </tr>`;
   }).join('');
@@ -1815,16 +1808,15 @@ function loadSchedule() {
 
 // ─── Live Trading ─────────────────────────────────────────────────────
 let _tradeContext = null;  // {id, token_id, price, side, bracket, neg_risk}
-let _liveSet = new Set();  // opp IDs that have been live-traded
 
-function openTradeModal(id, token_id, price, bracket, side = 'buy', neg_risk = false) {
-  _tradeContext = {id, token_id, price, side, bracket, neg_risk};
-  const modal = document.getElementById('trade-modal-bg');
+function openTradeModal(id, token_id, price, bracket, side) {
+  side = side || 'buy';
+  _tradeContext = {id, token_id, price, side, bracket, neg_risk: false};
   document.getElementById('trade-modal-title').textContent =
-    side === 'buy' ? `Buy: ${bracket}` : `Sell: ${bracket}`;
-  document.getElementById('trade-price-display').textContent = `@ $${(+price).toFixed(3)} per share`;
+    (side === 'buy' ? 'Buy: ' : 'Sell: ') + bracket;
+  document.getElementById('trade-price-display').textContent = '@ $' + (+price).toFixed(3) + ' per share';
   document.getElementById('trade-size-input').value = '10';
-  modal.classList.add('open');
+  document.getElementById('trade-modal-bg').classList.add('open');
   document.getElementById('trade-size-input').focus();
 }
 
@@ -1852,19 +1844,15 @@ function confirmTrade() {
   .then(res => {
     btn.disabled = false;
     btn.textContent = 'Confirm Trade';
-    if (res.error) { toast('Error: ' + res.error, 'error'); return; }
+    if (res.error) { toast('Error: ' + res.error); return; }
     closeTradeModal();
-    const label = res.live ? '🟢 Live trade placed' : '📋 Paper trade recorded';
-    const detail = res.shares ? ` · ${res.shares.toFixed(2)} shares @ $${(+price).toFixed(3)}` : '';
+    const label = res.live ? 'Live trade placed' : 'Paper trade recorded';
+    const detail = res.shares ? ' · ' + res.shares.toFixed(2) + ' shares @ $' + (+_tradeContext.price).toFixed(3) : '';
     toast(label + detail);
     _liveSet.add(id);
     // Update button appearance
-    const tradeBtns = document.querySelectorAll(`[data-trade-id="${id}"]`);
-    tradeBtns.forEach(b => {
-      b.textContent = '✓ Live';
-      b.classList.add('is-live');
-      b.disabled = true;
-    });
+    const btn = document.getElementById('trade-btn-' + id);
+    if (btn) { btn.textContent = '✓ Live'; btn.classList.add('is-live'); btn.disabled = true; }
   })
   .catch(e => {
     btn.disabled = false;
