@@ -324,10 +324,22 @@ def find_yes_clusters(event: dict, forecast_temp: float, confidence: str,
     if not active:
         return []
 
-    # Find forecast bracket index
+    # Find forecast bracket index.
+    # When the forecast sits exactly on a bracket boundary (forecast == bracket hi),
+    # the forecast is at the very top of that bracket. Prefer the bracket above
+    # (where forecast == lo) so the cluster expands symmetrically upward.
     center_idx = None
     for i, m in enumerate(active):
         if bracket_distance(forecast_temp, m["bracket_lo"], m["bracket_hi"]) == 0:
+            lo_c = m["bracket_lo"]
+            hi_c = m["bracket_hi"]
+            # If forecast is exactly at the upper edge, check if the next bracket
+            # also contains it (forecast == next bracket's lo). If so, prefer next.
+            if hi_c is not None and forecast_temp == hi_c and i + 1 < len(active):
+                next_m = active[i + 1]
+                if bracket_distance(forecast_temp, next_m["bracket_lo"], next_m["bracket_hi"]) == 0:
+                    center_idx = i + 1
+                    break
             center_idx = i
             break
 
