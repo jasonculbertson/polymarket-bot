@@ -320,10 +320,10 @@ def main():
         delta = (date.fromisoformat(target_date) - today).days
         date_label = f"+{delta}d" if delta >= 0 else f"{delta}d"
 
-    # How many days ahead to fetch (ensure target_date is covered)
+    # How many days ahead to fetch (ensure target_date is covered, no over-fetching)
     target_dt   = date.fromisoformat(target_date)
-    days_needed = max((target_dt - today).days + 1, 1)
-    fetch_days  = max(args.days + 1, days_needed + 1, 2)
+    days_needed = max((target_dt - today).days, 1)
+    fetch_days  = max(args.days, days_needed) + 1
 
     print(f"\nPolymarket Weather Arbitrage Scanner")
     print(f"Scan time:   {scan_time}")
@@ -354,14 +354,10 @@ def main():
 
     STRATEGY["min_return_pct"] = original_min
 
-    # Filter to target date (keep all if no match, to avoid empty output)
-    td_clusters = [c for c in clusters if c.date == target_date]
-    td_no_opps  = [o for o in no_opps  if o.date == target_date]
-    if td_clusters or td_no_opps:
-        clusters, no_opps = td_clusters, td_no_opps
-        print(f"Found {len(clusters)} YES clusters, {len(no_opps)} NO bets for {target_date}\n")
-    else:
-        print(f"No opportunities for {target_date} — showing all dates\n")
+    # Filter strictly to target date
+    clusters = [c for c in clusters if c.date == target_date]
+    no_opps  = [o for o in no_opps  if o.date == target_date]
+    print(f"Found {len(clusters)} YES clusters, {len(no_opps)} NO bets for {target_date}\n")
 
     # 5. Print bracket proximity for target date (how close each city's forecast is)
     _print_bracket_proximity(forecasts, markets, target_date, cities)
