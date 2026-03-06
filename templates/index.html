@@ -184,6 +184,15 @@ input[type=number] { width: 80px; }
 .date-tab-btn:hover:not(.active) {
   background: var(--surface3); color: var(--text);
 }
+.day-pill {
+  height: 22px; padding: 0 9px; font-size: .68rem; border-radius: 20px; cursor: pointer;
+  background: var(--surface2); color: var(--text-muted); border: 1px solid var(--border);
+  transition: background .15s, color .15s; white-space: nowrap;
+}
+.day-pill.active {
+  background: var(--purple); color: #fff; border-color: var(--purple); font-weight: 600;
+}
+.day-pill:hover:not(.active) { background: var(--surface3); color: var(--text); }
 .scanner-status {
   font-size: .72rem;
   color: var(--text-muted);
@@ -778,7 +787,7 @@ tr.taken-row:hover td { opacity: 0.55; }
       <div class="section-header">
         <span class="section-title yes-title">YES Clusters</span>
         <span class="section-count badge-green badge" id="yes-count">0</span>
-        <span style="font-size:.68rem; color:var(--text-muted);">Buy 2-3 adjacent brackets · guaranteed 1 winner</span>
+        <div id="yes-day-pills" style="display:flex; gap:4px; margin-left:8px;"></div>
         <div class="section-right">
           <button class="btn btn-secondary" onclick="sortTable('yes', 'return_pct', -1)" style="font-size:.7rem; padding:4px 10px;">↑ Return</button>
           <button class="btn btn-secondary" onclick="sortTable('yes', 'date', 1)" style="font-size:.7rem; padding:4px 10px;">📅 Date</button>
@@ -816,7 +825,7 @@ tr.taken-row:hover td { opacity: 0.55; }
       <div class="section-header">
         <span class="section-title no-title">NO Bets</span>
         <span class="section-count badge-red badge" id="no-count">0</span>
-        <span style="font-size:.68rem; color:var(--text-muted);">Bracket clearly far from forecast · low risk · Kelly-sized</span>
+        <div id="no-day-pills" style="display:flex; gap:4px; margin-left:8px;"></div>
         <div class="section-right">
           <button class="btn btn-secondary" onclick="sortTable('no', 'return_pct', -1)" style="font-size:.7rem; padding:4px 10px;">↑ Return</button>
           <button class="btn btn-secondary" onclick="sortTable('no', 'date', 1)" style="font-size:.7rem; padding:4px 10px;">📅 Date</button>
@@ -967,10 +976,11 @@ tr.taken-row:hover td { opacity: 0.55; }
       </div>
     </div>
     <div class="section">
-      <div class="section-header">
+      <div class="section-header" style="flex-wrap:wrap; gap:8px;">
         <span class="section-title" style="color:var(--purple-light)">Tracked Opportunities</span>
         <span class="section-count badge-purple badge" id="oc-total-badge">0</span>
         <span style="font-size:.68rem; color:var(--text-muted);">Recorded each scan · auto-resolved after market date</span>
+        <div id="oc-date-tabs" style="display:flex; gap:4px; flex-wrap:wrap; margin-left:auto;"></div>
       </div>
       <div class="tbl-wrap">
         <table>
@@ -1158,8 +1168,8 @@ function passesFilter(row, isYes, id) {
 }
 function applyFilters() {
   if (!_data) return;
-  renderYes(_yesSorted);
-  renderNo(_noSorted);
+  renderYes(_yesDayFilter ? _yesSorted.filter(r => r.date === _yesDayFilter) : _yesSorted);
+  renderNo( _noDayFilter  ? _noSorted.filter(r  => r.date === _noDayFilter)  : _noSorted);
 }
 
 // ─── Mark Taken ───────────────────────────────────────────────────────
@@ -1235,8 +1245,13 @@ function sortTable(tbl, col, defaultDir) {
     }
   });
 
-  if (tbl === 'yes') { _yesSorted = arr; renderYes(arr); }
-  else if (tbl === 'no') { _noSorted = arr; renderNo(arr); }
+  if (tbl === 'yes') {
+    _yesSorted = arr;
+    renderYes(_yesDayFilter ? arr.filter(r => r.date === _yesDayFilter) : arr);
+  } else if (tbl === 'no') {
+    _noSorted = arr;
+    renderNo(_noDayFilter ? arr.filter(r => r.date === _noDayFilter) : arr);
+  }
   else { _fcSorted = arr; renderFc(arr); }
 }
 
@@ -1459,9 +1474,15 @@ function render(d) {
     (b.forecast_confidence==='high'?1:0) - (a.forecast_confidence==='high'?1:0) || b.return_pct - a.return_pct);
   _fcSorted  = [...(d.forecasts||[])].sort((a,b) => a.city.localeCompare(b.city));
 
+  // Reset day filters when new data loads
+  _yesDayFilter = null;
+  _noDayFilter  = null;
   renderYes(_yesSorted);
   renderNo(_noSorted);
   renderFc(_fcSorted);
+  // Build date pills (only shown when both dates are present)
+  _buildDayPills('yes-day-pills', _yesSorted, '_yesDayFilter', 'filterYes');
+  _buildDayPills('no-day-pills',  _noSorted,  '_noDayFilter',  'filterNo');
 }
 
 // ─── Data load ───────────────────────────────────────────────────────
@@ -1657,81 +1678,150 @@ function loadOutcomes() {
         $('oc-hit-rate').textContent = data.bracket_hit_rate.toFixed(1) + '%';
       }
 
-      const tb = $('outcomes-body');
       const opps = data.recent || [];
+      _allOutcomes   = opps;
+      _outcomesFilter = null;  // reset to All on fresh load
       if (!opps.length) {
-        tb.innerHTML = '<tr><td colspan="14"><div class="empty"><div class="empty-icon">📈</div>No tracked opportunities yet — run a scan</div></td></tr>';
+        $('outcomes-body').innerHTML = '<tr><td colspan="14"><div class="empty"><div class="empty-icon">📈</div>No tracked opportunities yet — run a scan</div></td></tr>';
+        $('oc-date-tabs').innerHTML = '';
         return;
       }
-
-      tb.innerHTML = opps.map(o => {
-        const typeTag = o.type === 'yes'
-          ? '<span class="conf conf-high" style="font-size:.6rem">YES</span>'
-          : '<span class="conf conf-low" style="font-size:.6rem; background:rgba(248,113,113,.1); color:var(--red)">NO</span>';
-
-        let outcomeCell = '<span class="outcome-pend">Pending</span>';
-        let pnlPctCell  = '<span style="color:var(--text-muted)">—</span>';
-        let pnlUsdCell  = '<span style="color:var(--text-muted)">—</span>';
-
-        if (o.outcome === 'win') {
-          outcomeCell  = '<span class="outcome-win">✓ Win</span>';
-          pnlPctCell   = `<span class="pnl-positive">+${(o.pnl_pct||0).toFixed(1)}%</span>`;
-          const usd    = o.paper_pnl_usd != null ? o.paper_pnl_usd
-                         : (o.paper_size_usd||10) * ((o.pnl_pct||0)/100);
-          pnlUsdCell   = `<span class="pnl-positive" style="font-variant-numeric:tabular-nums">+$${usd.toFixed(2)}</span>`;
-        } else if (o.outcome === 'loss') {
-          outcomeCell  = '<span class="outcome-loss">✗ Loss</span>';
-          pnlPctCell   = `<span class="pnl-negative">${(o.pnl_pct||0).toFixed(1)}%</span>`;
-          const usd    = o.paper_pnl_usd != null ? o.paper_pnl_usd : -(o.paper_size_usd||10);
-          pnlUsdCell   = `<span class="pnl-negative" style="font-variant-numeric:tabular-nums">$${usd.toFixed(2)}</span>`;
-        }
-
-        const stake = o.paper_size_usd || 10;
-        const stakeLabel = `<span style="font-size:.62rem;color:var(--text-muted)">$${stake}</span>`;
-
-        const u = o.temp_unit || 'F';
-        const wuPred   = (o.forecast_sources||{}).wunderground;
-        const actual   = o.actual_temp;
-        const wuError  = o.wu_error;
-
-        const wuCell     = wuPred != null ? `${wuPred.toFixed(1)}°${u}` : '<span style="color:var(--text-muted)">—</span>';
-        const actualCell = actual != null ? `<strong>${actual.toFixed(1)}°${u}</strong>` : '<span style="color:var(--text-muted)">pending</span>';
-        let errorCell = '<span style="color:var(--text-muted)">—</span>';
-        if (wuError != null) {
-          const errColor = wuError <= 1 ? 'var(--green)' : wuError <= 3 ? 'var(--yellow)' : 'var(--red)';
-          errorCell = `<span style="color:${errColor};font-weight:600">${wuError.toFixed(1)}°</span>`;
-        }
-
-        // Exit cell: shows exit price + reason for stopped-out/early-exit positions
-        let exitCell = '<span style="color:var(--text-muted)">—</span>';
-        if (o.exit_reason === 'stop_loss') {
-          exitCell = `<span style="color:var(--red);font-size:.68rem">Stop<br>${(o.exit_price||0).toFixed(3)}</span>`;
-        } else if (o.exit_reason === 'take_profit') {
-          exitCell = `<span style="color:var(--green);font-size:.68rem">Early<br>${(o.exit_price||0).toFixed(3)}</span>`;
-        }
-
-        // Live badge on type cell
-        const liveBadge = o.is_live ? '<span class="live-badge">live</span>' : '';
-
-        return `<tr>
-          <td>${typeTag}${liveBadge}</td>
-          <td class="city-cell">${o.city}${cityBadge(o.city)}</td>
-          <td class="brackets-cell">${o.bracket}</td>
-          <td class="price-cell">${(o.entry_price||0).toFixed(3)}</td>
-          <td class="ret-cell ${retClass(o.return_pct)}">${(o.return_pct||0).toFixed(1)}%</td>
-          <td>${confBadge(o.confidence)}</td>
-          <td class="date-cell">${fmtResolution(o.resolution_date, o.resolution_time, o.city)}</td>
-          <td class="price-cell">${wuCell}</td>
-          <td class="price-cell">${actualCell}</td>
-          <td class="price-cell">${errorCell}</td>
-          <td>${outcomeCell}</td>
-          <td>${exitCell}</td>
-          <td>${pnlPctCell}</td>
-          <td>${o.outcome ? pnlUsdCell : stakeLabel}</td>
-        </tr>`;
-      }).join('');
+      _buildOutcomeDateTabs(opps);
+      _renderOutcomeRows(opps);
     })
     .catch(() => {});
+}
+
+// ─── Day-filter pills (Dashboard YES/NO sections) ────────────────────
+let _yesDayFilter = null;  // null = All
+let _noDayFilter  = null;
+
+function _buildDayPills(containerId, data, filterVar, onSelect) {
+  const container = $(containerId);
+  if (!container) return;
+  const dates = [...new Set(data.map(r => r.date).filter(Boolean))].sort();
+  if (dates.length <= 1) { container.innerHTML = ''; return; }
+  const today    = new Date().toISOString().slice(0, 10);
+  const tomorrow = (() => { const d = new Date(); d.setDate(d.getDate()+1); return d.toISOString().slice(0,10); })();
+  function label(d) {
+    if (d === today)    return 'Today';
+    if (d === tomorrow) return 'Tomorrow';
+    return d;
+  }
+  const active = window[filterVar];
+  container.innerHTML = `<button class="day-pill${!active ? ' active' : ''}" onclick="${onSelect}(null)">All</button>` +
+    dates.map(d => `<button class="day-pill${active===d?' active':''}" onclick="${onSelect}('${d}')">${label(d)}</button>`).join('');
+}
+
+function filterYes(date) {
+  _yesDayFilter = date;
+  const data = date ? _yesSorted.filter(r => r.date === date) : _yesSorted;
+  renderYes(data);
+  _buildDayPills('yes-day-pills', _yesSorted, '_yesDayFilter', 'filterYes');
+}
+function filterNo(date) {
+  _noDayFilter = date;
+  const data = date ? _noSorted.filter(r => r.date === date) : _noSorted;
+  renderNo(data);
+  _buildDayPills('no-day-pills', _noSorted, '_noDayFilter', 'filterNo');
+}
+
+// ─── Outcomes date-tab filtering ─────────────────────────────────────
+let _allOutcomes   = [];
+let _outcomesFilter = null;  // null = All
+
+function _renderOutcomeRows(opps) {
+  const tb = $('outcomes-body');
+  if (!opps.length) {
+    tb.innerHTML = '<tr><td colspan="14"><div class="empty"><div class="empty-icon">📈</div>No entries for this date</div></td></tr>';
+    $('oc-total-badge').textContent = 0;
+    return;
+  }
+  $('oc-total-badge').textContent = opps.length;
+  tb.innerHTML = opps.map(o => {
+    const typeTag = o.type === 'yes'
+      ? '<span class="conf conf-high" style="font-size:.6rem">YES</span>'
+      : '<span class="conf conf-low" style="font-size:.6rem; background:rgba(248,113,113,.1); color:var(--red)">NO</span>';
+    let outcomeCell = '<span class="outcome-pend">Pending</span>';
+    let pnlPctCell  = '<span style="color:var(--text-muted)">—</span>';
+    let pnlUsdCell  = '<span style="color:var(--text-muted)">—</span>';
+    if (o.outcome === 'win') {
+      outcomeCell = '<span class="outcome-win">✓ Win</span>';
+      pnlPctCell  = `<span class="pnl-positive">+${(o.pnl_pct||0).toFixed(1)}%</span>`;
+      const usd   = o.paper_pnl_usd != null ? o.paper_pnl_usd : (o.paper_size_usd||10) * ((o.pnl_pct||0)/100);
+      pnlUsdCell  = `<span class="pnl-positive" style="font-variant-numeric:tabular-nums">+$${usd.toFixed(2)}</span>`;
+    } else if (o.outcome === 'loss') {
+      outcomeCell = '<span class="outcome-loss">✗ Loss</span>';
+      pnlPctCell  = `<span class="pnl-negative">${(o.pnl_pct||0).toFixed(1)}%</span>`;
+      const usd   = o.paper_pnl_usd != null ? o.paper_pnl_usd : -(o.paper_size_usd||10);
+      pnlUsdCell  = `<span class="pnl-negative" style="font-variant-numeric:tabular-nums">$${usd.toFixed(2)}</span>`;
+    }
+    const stake    = o.paper_size_usd || 10;
+    const stakeLabel = `<span style="font-size:.62rem;color:var(--text-muted)">$${stake}</span>`;
+    const u        = o.temp_unit || 'F';
+    const wuPred   = (o.forecast_sources||{}).wunderground;
+    const actual   = o.actual_temp;
+    const wuError  = o.wu_error;
+    const wuCell     = wuPred != null ? `${wuPred.toFixed(1)}°${u}` : '<span style="color:var(--text-muted)">—</span>';
+    const actualCell = actual != null ? `<strong>${actual.toFixed(1)}°${u}</strong>` : '<span style="color:var(--text-muted)">pending</span>';
+    let errorCell = '<span style="color:var(--text-muted)">—</span>';
+    if (wuError != null) {
+      const errColor = wuError <= 1 ? 'var(--green)' : wuError <= 3 ? 'var(--yellow)' : 'var(--red)';
+      errorCell = `<span style="color:${errColor};font-weight:600">${wuError.toFixed(1)}°</span>`;
+    }
+    let exitCell = '<span style="color:var(--text-muted)">—</span>';
+    if (o.exit_reason === 'stop_loss')
+      exitCell = `<span style="color:var(--red);font-size:.68rem">Stop<br>${(o.exit_price||0).toFixed(3)}</span>`;
+    else if (o.exit_reason === 'take_profit')
+      exitCell = `<span style="color:var(--green);font-size:.68rem">Early<br>${(o.exit_price||0).toFixed(3)}</span>`;
+    const liveBadge = o.is_live ? '<span class="live-badge">live</span>' : '';
+    return `<tr>
+      <td>${typeTag}${liveBadge}</td>
+      <td class="city-cell">${o.city}${cityBadge(o.city)}</td>
+      <td class="brackets-cell">${o.bracket}</td>
+      <td class="price-cell">${(o.entry_price||0).toFixed(3)}</td>
+      <td class="ret-cell ${retClass(o.return_pct)}">${(o.return_pct||0).toFixed(1)}%</td>
+      <td>${confBadge(o.confidence)}</td>
+      <td class="date-cell">${fmtResolution(o.resolution_date, o.resolution_time, o.city)}</td>
+      <td class="price-cell">${wuCell}</td>
+      <td class="price-cell">${actualCell}</td>
+      <td class="price-cell">${errorCell}</td>
+      <td>${outcomeCell}</td>
+      <td>${exitCell}</td>
+      <td>${pnlPctCell}</td>
+      <td>${o.outcome ? pnlUsdCell : stakeLabel}</td>
+    </tr>`;
+  }).join('');
+}
+
+function _buildOutcomeDateTabs(opps) {
+  const container = $('oc-date-tabs');
+  if (!container) return;
+  const dates = [...new Set(opps.map(o => o.resolution_date || o.date).filter(Boolean))].sort().reverse();
+  if (dates.length < 2) { container.innerHTML = ''; return; }
+  const active = _outcomesFilter;
+  function label(d) {
+    const today    = new Date().toISOString().slice(0, 10);
+    const tomorrow = (() => { const x = new Date(); x.setDate(x.getDate()+1); return x.toISOString().slice(0,10); })();
+    if (d === today)    return `Today (${d})`;
+    if (d === tomorrow) return `Tomorrow (${d})`;
+    return d;
+  }
+  container.innerHTML =
+    `<button class="date-tab-btn${!active?' active':''}" onclick="filterOutcomesByDate(null)">All (${opps.length})</button>` +
+    dates.map(d => {
+      const count = opps.filter(o => (o.resolution_date||o.date) === d).length;
+      return `<button class="date-tab-btn${active===d?' active':''}" onclick="filterOutcomesByDate('${d}')">${label(d)} · ${count}</button>`;
+    }).join('');
+}
+
+function filterOutcomesByDate(date) {
+  _outcomesFilter = date;
+  const filtered = date
+    ? _allOutcomes.filter(o => (o.resolution_date || o.date) === date)
+    : _allOutcomes;
+  _renderOutcomeRows(filtered);
+  _buildOutcomeDateTabs(_allOutcomes);  // rebuild to update active state
 }
 
 // ─── Scan ────────────────────────────────────────────────────────────
