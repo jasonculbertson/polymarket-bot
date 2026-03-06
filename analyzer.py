@@ -410,36 +410,10 @@ def find_yes_clusters(event: dict, forecast_temp: float, confidence: str,
             temp_unit=unit,
         )
 
-    # Always generate 3-bracket cluster (center ± 1)
+    # Only generate the 3-bracket cluster (center ± 1) — safer, wider window
     cluster3 = make_cluster([center_idx - 1, center_idx, center_idx + 1])
     if cluster3:
         clusters.append(cluster3)
-
-    # Also generate 2-bracket cluster:
-    # Pick the neighbor where the forecast is closer to the edge (more likely to win)
-    center = active[center_idx]
-    lo_c, hi_c = center["bracket_lo"], center["bracket_hi"]
-    if lo_c is not None and hi_c is not None:
-        dist_to_lo = forecast_temp - lo_c
-        dist_to_hi = hi_c - forecast_temp
-        # If forecast is closer to the low edge → include bracket below
-        # If closer to the high edge → include bracket above
-        if dist_to_lo <= dist_to_hi and center_idx > 0:
-            cluster2 = make_cluster([center_idx - 1, center_idx])
-        else:
-            cluster2 = make_cluster([center_idx, center_idx + 1])
-        if cluster2 and (not cluster3 or cluster2.return_pct > cluster3.return_pct + 5):
-            clusters.append(cluster2)
-    elif lo_c is None:
-        # Open-low bracket: pair with the one above
-        cluster2 = make_cluster([center_idx, center_idx + 1])
-        if cluster2:
-            clusters.append(cluster2)
-    elif hi_c is None:
-        # Open-high bracket: pair with the one below
-        cluster2 = make_cluster([center_idx - 1, center_idx])
-        if cluster2:
-            clusters.append(cluster2)
 
     return clusters
 
@@ -490,13 +464,7 @@ def analyze_all(all_markets: dict, all_forecasts: dict,
         for event in events:
             clusters, no_opps = analyze_event(event, city_forecast, max_capital)
 
-            # Keep only the best cluster per event; attach the other as .alt
-            if len(clusters) >= 2:
-                clusters.sort(key=lambda c: c.return_pct, reverse=True)
-                best = clusters[0]
-                best.alt = clusters[1]   # safer alternative
-                all_clusters.append(best)
-            elif clusters:
+            if clusters:
                 clusters[0].alt = None
                 all_clusters.append(clusters[0])
 
