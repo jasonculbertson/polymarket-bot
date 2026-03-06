@@ -135,10 +135,13 @@ def save_results(clusters, no_opps, markets, forecasts, scan_time: str, target_d
         sum(o["recommended_size"] for o in no_opps_data)
     )
 
-    # Forecast rows for dashboard — use the scanned target_date, fall back to tomorrow
+    # Forecast rows for dashboard — include all dates present in results
     if not target_date:
         target_date = (date.today() + timedelta(days=1)).isoformat()
-    forecast_rows = build_forecast_rows(forecasts, target_date)
+    dates_in_results = sorted({r["date"] for r in clusters_data + no_opps_data} or [target_date])
+    forecast_rows = []
+    for d in dates_in_results:
+        forecast_rows.extend(build_forecast_rows(forecasts, d))
 
     out = {
         "scan_time": scan_time,
@@ -305,31 +308,33 @@ def main():
     cities = args.cities or list(CITIES.keys())
     scan_time = datetime.now().isoformat()
 
-    # Resolve target date
-    today = date.today()
+    today    = date.today()
     tomorrow = today + timedelta(days=1)
 
-    if args.date in (None, "tomorrow"):
-        target_date = tomorrow.isoformat()
-        date_label = "tomorrow"
+    # Always scan today + tomorrow together unless a specific date is forced
+    if args.date in (None, "both"):
+        scan_dates = [today.isoformat(), tomorrow.isoformat()]
+        date_label = "today + tomorrow"
+        fetch_days = 3   # enough to cover both
     elif args.date == "today":
-        target_date = today.isoformat()
+        scan_dates = [today.isoformat()]
         date_label = "today"
+        fetch_days = 2
+    elif args.date == "tomorrow":
+        scan_dates = [tomorrow.isoformat()]
+        date_label = "tomorrow"
+        fetch_days = 3
     else:
-        target_date = args.date
-        delta = (date.fromisoformat(target_date) - today).days
-        date_label = f"+{delta}d" if delta >= 0 else f"{delta}d"
-
-    # How many days ahead to fetch (ensure target_date is covered, no over-fetching)
-    target_dt   = date.fromisoformat(target_date)
-    days_needed = max((target_dt - today).days, 1)
-    fetch_days  = max(args.days, days_needed) + 1
+        target_dt  = date.fromisoformat(args.date)
+        scan_dates = [args.date]
+        date_label = args.date
+        fetch_days = max((target_dt - today).days, 1) + 2
 
     print(f"\nPolymarket Weather Arbitrage Scanner")
     print(f"Scan time:   {scan_time}")
-    print(f"Target date: {target_date} ({date_label})")
+    print(f"Scanning:    {date_label}  ({', '.join(scan_dates)})")
     print(f"Cities:      {', '.join(cities)}")
-    print(f"Days ahead:  {fetch_days} | Capital: ${args.capital} | Min return: {args.min_return}%\n")
+    print(f"Capital: ${args.capital} | Min return: {args.min_return}%\n")
 
     # 1. Fetch markets
     print("── Fetching markets ──")
@@ -342,10 +347,7 @@ def main():
     print("\n── Fetching forecasts ──")
     forecasts = fetch_all_forecasts(cities, days=fetch_days)
 
-    # 3. Print forecast summary for target date
-    print_forecast_summary(forecasts, cities, target_date)
-
-    # 4. Analyze — override min_return if specified
+    # 3. Analyze — override min_return if specified
     original_min = STRATEGY["min_return_pct"]
     STRATEGY["min_return_pct"] = args.min_return
 
@@ -354,22 +356,25 @@ def main():
 
     STRATEGY["min_return_pct"] = original_min
 
-    # Filter strictly to target date
-    clusters = [c for c in clusters if c.date == target_date]
-    no_opps  = [o for o in no_opps  if o.date == target_date]
-    print(f"Found {len(clusters)} YES clusters, {len(no_opps)} NO bets for {target_date}\n")
+    # Keep only the requested dates
+    clusters = [c for c in clusters if c.date in scan_dates]
+    no_opps  = [o for o in no_opps  if o.date in scan_dates]
 
-    # 5. Print bracket proximity for target date (how close each city's forecast is)
-    _print_bracket_proximity(forecasts, markets, target_date, cities)
+    # 4. Print summary per date
+    for d in scan_dates:
+        d_clusters = [c for c in clusters if c.date == d]
+        d_no       = [o for o in no_opps  if o.date == d]
+        print_forecast_summary(forecasts, cities, d)
+        print(f"  → {len(d_clusters)} YES clusters, {len(d_no)} NO bets for {d}\n")
+        _print_bracket_proximity(forecasts, markets, d, cities)
 
-    # 6. Print results
+    # 5. Print all results together
     print_yes_clusters(clusters, limit=args.limit)
     print_no_opps(no_opps, limit=args.limit)
-
-    # 6. Links
     print_links(clusters, no_opps, limit=10)
 
-    # 7. Save
+    # 6. Save merged results
+    target_date = scan_dates[0]   # used for forecast rows fallback
     save_results(clusters, no_opps, markets, forecasts, scan_time, target_date)
 
     # 8. Notifications

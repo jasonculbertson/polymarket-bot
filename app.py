@@ -54,9 +54,11 @@ def run_scan_bg(cities=None, capital=None, days=1, target_date=None):
     _scan_log     = []
     capital = capital or SCAN_CAPITAL
     # Use sys.executable so Railway uses the correct venv Python
-    cmd = [sys.executable, "scan.py", "--days", str(days), "--capital", str(capital)]
+    # Default: scan both today + tomorrow (target_date=None means "both")
+    cmd = [sys.executable, "scan.py", "--capital", str(capital)]
     if target_date:
         cmd += ["--date", target_date]
+    # no --days needed — scan.py now defaults to today+tomorrow automatically
     if cities:
         cmd += ["--cities"] + cities
     try:
@@ -244,10 +246,9 @@ def trigger_scan():
         return jsonify({"status": "already running"})
     body = request.get_json(silent=True) or {}
     capital     = body.get("capital", 400)
-    days        = body.get("days", 1)
-    target_date = body.get("date") or None
+    target_date = body.get("date") or None  # None = scan both today+tomorrow
     t = threading.Thread(target=run_scan_bg,
-                         kwargs=dict(capital=capital, days=days, target_date=target_date),
+                         kwargs=dict(capital=capital, target_date=target_date),
                          daemon=True)
     t.start()
     return jsonify({"status": "started"})

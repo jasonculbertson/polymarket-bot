@@ -723,6 +723,7 @@ tr.taken-row:hover td { opacity: 0.55; }
     <div class="form-group">
       <span class="form-label">Date</span>
       <div style="display:flex; gap:4px; align-items:center">
+        <button class="date-quick-btn active" id="btn-both"     onclick="setDate('both')">Both</button>
         <button class="date-quick-btn" id="btn-today"     onclick="setDate('today')">Today</button>
         <button class="date-quick-btn" id="btn-tomorrow"  onclick="setDate('tomorrow')">Tomorrow</button>
         <input type="date" id="scan-date" style="height:28px; padding:2px 6px; font-size:.78rem; background:var(--card); border:1px solid var(--border); color:var(--text); border-radius:4px; cursor:pointer" oninput="onDateInput()">
@@ -1044,38 +1045,39 @@ function toggleRow(id) {
 }
 
 // ─── Date picker helpers ──────────────────────────────────────────────────
+let _scanDateMode = 'both';  // 'both' | 'today' | 'tomorrow' | 'custom'
+
 function _isoToday() {
-  const d = new Date();
-  return d.toISOString().slice(0, 10);
+  return new Date().toISOString().slice(0, 10);
 }
 function _isoTomorrow() {
-  const d = new Date();
-  d.setDate(d.getDate() + 1);
+  const d = new Date(); d.setDate(d.getDate() + 1);
   return d.toISOString().slice(0, 10);
 }
 function setDate(which) {
+  _scanDateMode = which;
   const input = $('scan-date');
-  if (which === 'today') {
-    input.value = _isoToday();
-  } else if (which === 'tomorrow') {
-    input.value = _isoTomorrow();
-  }
+  if (which === 'today')    input.value = _isoToday();
+  else if (which === 'tomorrow') input.value = _isoTomorrow();
+  else if (which === 'both') input.value = '';
   _updateDateButtons();
 }
 function onDateInput() {
+  _scanDateMode = 'custom';
   _updateDateButtons();
 }
 function _updateDateButtons() {
-  const v = ($('scan-date') || {}).value || '';
-  const btnT  = $('btn-today');
-  const btnTm = $('btn-tomorrow');
-  if (btnT)  btnT.classList.toggle('active',  v === _isoToday());
-  if (btnTm) btnTm.classList.toggle('active', v === _isoTomorrow());
+  ['both','today','tomorrow'].forEach(id => {
+    const b = $('btn-' + id);
+    if (b) b.classList.toggle('active', _scanDateMode === id);
+  });
 }
-// Initialise date to tomorrow on page load
+// Default to "Both" on page load
 (function() {
+  _scanDateMode = 'both';
   const input = $('scan-date');
-  if (input) { input.value = _isoTomorrow(); _updateDateButtons(); }
+  if (input) input.value = '';
+  _updateDateButtons();
 })();
 
 function retClass(pct) {
@@ -1666,13 +1668,15 @@ function loadOutcomes() {
 // ─── Scan ────────────────────────────────────────────────────────────
 function runScan() {
   if ($('scanbar').classList.contains('scanning')) return;
-  const capital   = $('capital').value   || 400;
-  const scanDate  = ($('scan-date') || {}).value || _isoTomorrow();
+  const capital  = $('capital').value || 400;
+  // null date = scan both today + tomorrow
+  const scanDate = (_scanDateMode === 'both') ? null : (($('scan-date') || {}).value || null);
+  const label    = scanDate || 'Today + Tomorrow';
   $('scanbar').classList.add('scanning');
   $('log-wrap').style.display = 'block';
   _logVisible = true;
-  $('scan-status').textContent = `Scanning ${scanDate}…`;
-  $('log-wrap').textContent = `Starting scan for ${scanDate}...`;
+  $('scan-status').textContent = `Scanning ${label}…`;
+  $('log-wrap').textContent = `Starting scan for ${label}...`;
 
   fetch('/scan', {
     method: 'POST',
