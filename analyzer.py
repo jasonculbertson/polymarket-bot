@@ -107,7 +107,6 @@ class YesCluster:
     date: str
     event_slug: str
     station: str
-    resolution_time: str = ""  # ISO UTC timestamp from Gamma endDate
     brackets: list           # list of BracketSlot
     cluster_size: int
     total_price: float       # sum of yes_prices → your total cost per $1 payout
@@ -121,6 +120,7 @@ class YesCluster:
     liquidity_min: float     # min liquidity across brackets
     predicted_win_prob: float = 0.75
     temp_unit: str = "F"     # "F" or "C"
+    resolution_time: str = ""  # ISO UTC timestamp from Gamma endDate
 
     def bracket_labels(self) -> str:
         return " + ".join(b.group_title for b in self.brackets)
