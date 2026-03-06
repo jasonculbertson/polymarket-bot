@@ -386,9 +386,9 @@ def get_summary() -> dict:
     # Attach computed paper_pnl_usd to each row for the dashboard (don't mutate stored data)
     recent_rows = sorted(opps, key=lambda o: o["first_seen"], reverse=True)[:100]
     for row in recent_rows:
-        if row.get("paper_pnl_usd") is None and row.get("pnl_pct") is not None:
-            row = dict(row)  # shallow copy so we don't dirty the original
-        row["paper_size_usd"] = row.get("paper_size_usd", PAPER_SIZE_USD)
+        # Mutate in-place — recent_rows is already an in-memory copy from _load()
+        if not row.get("paper_size_usd"):
+            row["paper_size_usd"] = PAPER_SIZE_USD
         if row.get("paper_pnl_usd") is None and row.get("pnl_pct") is not None:
             row["paper_pnl_usd"] = round(row["paper_size_usd"] * (row["pnl_pct"] / 100.0), 2)
 
