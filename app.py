@@ -189,31 +189,75 @@ def _normalize_scan(scan: dict) -> dict:
     return scan
 
 
+def _pg_merge_latest() -> dict | None:
+    """Load and merge today + tomorrow (and any other recent dates) from Postgres."""
+    if not DATABASE_URL:
+        return None
+    dates = _pg_list_scan_dates()
+    if not dates:
+        return None
+    from datetime import date as _date, timedelta
+    today    = _date.today().isoformat()
+    tomorrow = (_date.today() + timedelta(days=1)).isoformat()
+    target_dates = {today, tomorrow}
+    # Load today + tomorrow; fall back to the two most-recent dates if neither exists
+    loaded = []
+    for entry in dates:
+        d = entry["date"]
+        if d in target_dates or (not loaded and len(dates) <= 2):
+            scan = _pg_kv_load(f"scan_{d}")
+            if scan:
+                loaded.append(_normalize_scan(scan))
+        if len(loaded) >= 2:
+            break
+    if not loaded:
+        return None
+    if len(loaded) == 1:
+        return loaded[0]
+    # Merge multiple date scans into one combined payload
+    merged = {
+        "scan_time": loaded[0].get("scan_time", ""),
+        "yes_clusters":    [],
+        "no_opportunities":[],
+        "forecasts":       [],
+        "summary":         {},
+    }
+    for s in loaded:
+        merged["yes_clusters"]     += s.get("yes_clusters", [])
+        merged["no_opportunities"] += s.get("no_opportunities", [])
+        merged["forecasts"]        += s.get("forecasts", [])
+    total = len(merged["yes_clusters"]) + len(merged["no_opportunities"])
+    deploy = sum(c.get("total_cost", 0) for c in merged["yes_clusters"]) + \
+             sum(o.get("recommended_size", 0) for o in merged["no_opportunities"])
+    merged["summary"] = {
+        "yes_clusters": len(merged["yes_clusters"]),
+        "no_bets": len(merged["no_opportunities"]),
+        "total_opportunities": total,
+        "estimated_deploy_usd": round(deploy, 2),
+    }
+    return merged
+
+
 @app.route("/data")
 def data():
     scan_date = request.args.get("date")   # YYYY-MM-DD
     file      = request.args.get("file")   # legacy file-based lookup
 
-    # 1. Try Postgres by date key first
+    # 1. Specific date requested → load that date from Postgres
     if scan_date and DATABASE_URL:
         scan = _pg_kv_load(f"scan_{scan_date}")
         if scan:
             return jsonify(_normalize_scan(scan))
 
-    # 2. Fall back to local file
-    if file:
-        path = os.path.join(DATA_DIR, os.path.basename(file))
-    else:
-        path = LATEST
+    # 2. No specific date → try Postgres merged view first (survives redeployments)
+    if not file and DATABASE_URL:
+        merged = _pg_merge_latest()
+        if merged:
+            return jsonify(merged)
 
+    # 3. Fall back to local file (only available on current deployment)
+    path = os.path.join(DATA_DIR, os.path.basename(file)) if file else LATEST
     if not os.path.exists(path):
-        # Try latest from Postgres
-        if DATABASE_URL:
-            dates = _pg_list_scan_dates()
-            if dates:
-                scan = _pg_kv_load(f"scan_{dates[0]['date']}")
-                if scan:
-                    return jsonify(_normalize_scan(scan))
         return jsonify({"error": "no scan data"})
 
     with open(path) as f:
