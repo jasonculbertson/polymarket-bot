@@ -77,9 +77,49 @@ def run_scan_bg(cities=None, capital=None, days=1, target_date=None):
 
 
 TAKEN_FILE = os.path.join(DATA_DIR, "taken.json")
+DATABASE_URL = os.environ.get("DATABASE_URL", "")
+
+
+def _pg_kv_load(key: str):
+    """Load a JSON value from kv_store table (created by tracker.py)."""
+    try:
+        import psycopg2, json as _json
+        conn = psycopg2.connect(DATABASE_URL)
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT data FROM kv_store WHERE key = %s", (key,))
+                row = cur.fetchone()
+            return _json.loads(row[0]) if row else None
+        finally:
+            conn.close()
+    except Exception:
+        return None
+
+
+def _pg_kv_save(key: str, data):
+    try:
+        import psycopg2, json as _json
+        conn = psycopg2.connect(DATABASE_URL)
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO kv_store (key, data)
+                    VALUES (%s, %s)
+                    ON CONFLICT (key) DO UPDATE
+                        SET data = EXCLUDED.data, updated_at = NOW()
+                """, (key, _json.dumps(data)))
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"[WARN] PG save({key}) failed: {e}")
 
 
 def load_taken() -> set:
+    if DATABASE_URL:
+        data = _pg_kv_load("taken")
+        if data is not None:
+            return set(data.get("taken", []))
     if not os.path.exists(TAKEN_FILE):
         return set()
     with open(TAKEN_FILE) as f:
@@ -87,9 +127,13 @@ def load_taken() -> set:
 
 
 def save_taken(taken_set: set):
+    payload = {"taken": list(taken_set), "updated": datetime.now().isoformat()}
+    if DATABASE_URL:
+        _pg_kv_save("taken", payload)
+        return
     os.makedirs(DATA_DIR, exist_ok=True)
     with open(TAKEN_FILE, "w") as f:
-        json.dump({"taken": list(taken_set), "updated": datetime.now().isoformat()}, f)
+        json.dump(payload, f)
 
 
 

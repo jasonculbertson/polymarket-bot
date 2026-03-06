@@ -23,10 +23,82 @@ GAMMA_API = "https://gamma-api.polymarket.com"
 # Paper trading stake per position (USDC). Override via env var.
 PAPER_SIZE_USD = float(os.environ.get("PAPER_SIZE_USD", "10.0"))
 
+# ─── PostgreSQL persistence (Railway) ────────────────────────────────────────
+# When DATABASE_URL is set (Railway provides this automatically after adding
+# a Postgres plugin), outcomes are stored in Postgres instead of a local file.
+# Falls back to file storage for local development.
+
+DATABASE_URL = os.environ.get("DATABASE_URL", "")
+
+
+def _pg_conn():
+    import psycopg2
+    return psycopg2.connect(DATABASE_URL)
+
+
+def _pg_ensure_table():
+    """Create the kv_store table if it doesn't exist."""
+    conn = _pg_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS kv_store (
+                    key  TEXT PRIMARY KEY,
+                    data TEXT NOT NULL,
+                    updated_at TIMESTAMP DEFAULT NOW()
+                )
+            """)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _pg_load(key: str) -> Optional[dict]:
+    try:
+        _pg_ensure_table()
+        conn = _pg_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT data FROM kv_store WHERE key = %s", (key,))
+                row = cur.fetchone()
+            return json.loads(row[0]) if row else None
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"[WARN] PG load({key}) failed: {e}")
+        return None
+
+
+def _pg_save(key: str, data: dict):
+    try:
+        _pg_ensure_table()
+        conn = _pg_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO kv_store (key, data)
+                    VALUES (%s, %s)
+                    ON CONFLICT (key) DO UPDATE
+                        SET data = EXCLUDED.data,
+                            updated_at = NOW()
+                """, (key, json.dumps(data)))
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"[WARN] PG save({key}) failed: {e}")
+
 
 # ─── Storage ──────────────────────────────────────────────────────────────────
 
+_OUTCOMES_KEY = "outcomes"
+
+
 def _load() -> dict:
+    if DATABASE_URL:
+        pg = _pg_load(_OUTCOMES_KEY)
+        if pg is not None:
+            return pg
     if not os.path.exists(OUTCOMES_FILE):
         return {"opportunities": [], "last_resolved": None}
     with open(OUTCOMES_FILE) as f:
@@ -34,6 +106,9 @@ def _load() -> dict:
 
 
 def _save(data: dict):
+    if DATABASE_URL:
+        _pg_save(_OUTCOMES_KEY, data)
+        return
     os.makedirs(DATA_DIR, exist_ok=True)
     with open(OUTCOMES_FILE, "w") as f:
         json.dump(data, f, indent=2)
