@@ -188,6 +188,16 @@ STRATEGY = {
     "max_single_bet": 50,
 }
 
+# Live trading settings (all overridable via Railway env vars)
+# LIVE_MODE=false by default — bot paper-trades until you explicitly enable it.
+TRADING = {
+    "live_mode":             os.environ.get("LIVE_MODE", "false").lower() == "true",
+    "stop_loss_pct":         float(os.environ.get("STOP_LOSS_PCT", "50")),   # exit if down X%
+    "take_profit_pct":       float(os.environ.get("TAKE_PROFIT_PCT", "0")),  # 0 = disabled
+    "monitor_interval_secs": int(os.environ.get("MONITOR_INTERVAL_SECS", "300")),
+    "slippage_pct":          float(os.environ.get("SLIPPAGE_PCT", "1")),     # price tolerance %
+}
+
 # Notification settings (override via env vars)
 NOTIFY = {
     "slack_webhook": os.environ.get("SLACK_WEBHOOK_URL", ""),

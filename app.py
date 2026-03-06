@@ -364,11 +364,103 @@ def schedule_status():
     })
 
 
+@app.route("/trade", methods=["POST"])
+def trade():
+    """
+    Execute a real (or paper) trade for a scanned opportunity.
+
+    Body: {
+      "id":        opportunity ID from tracker,
+      "token_id":  YES or NO token ID to buy,
+      "side":      "buy" (default) or "sell",
+      "size_usd":  USDC to deploy (default: PAPER_SIZE_USD),
+      "price":     price per share (required for limit orders),
+      "neg_risk":  bool (optional, default false)
+    }
+    """
+    try:
+        import trader as _trader
+        from tracker import record_live_trade, PAPER_SIZE_USD
+        from config import TRADING
+
+        body     = request.get_json(silent=True) or {}
+        opp_id   = body.get("id", "").strip()
+        token_id = body.get("token_id", "").strip()
+        side     = body.get("side", "buy").lower()
+        size_usd = float(body.get("size_usd", PAPER_SIZE_USD))
+        price    = body.get("price")
+        neg_risk = bool(body.get("neg_risk", False))
+
+        if not opp_id or not token_id:
+            return jsonify({"error": "id and token_id are required"}), 400
+
+        if price is None:
+            return jsonify({"error": "price is required"}), 400
+        price = float(price)
+
+        if side == "buy":
+            result = _trader.buy(token_id, size_usd, price, neg_risk=neg_risk)
+            record_live_trade(
+                opp_id=opp_id,
+                order_id=result["order_id"],
+                size_usd=size_usd,
+                shares=result["shares"],
+                token_id=token_id,
+            )
+        elif side == "sell":
+            result = _trader.sell(token_id, float(body.get("shares", 0)), price)
+        else:
+            return jsonify({"error": f"unknown side: {side}"}), 400
+
+        return jsonify({
+            "ok":        True,
+            "live":      result.get("live", False),
+            "order_id":  result.get("order_id"),
+            "shares":    result.get("shares"),
+            "exit_price": result.get("exit_price"),
+        })
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/trade/balance")
+def trade_balance():
+    """Return available USDC balance in the trading wallet."""
+    try:
+        import trader as _trader
+        balance = _trader.get_balance()
+        return jsonify({
+            "balance_usdc": balance,
+            "live_mode": os.environ.get("LIVE_MODE", "false").lower() == "true",
+        })
+    except Exception as e:
+        return jsonify({"error": str(e), "balance_usdc": None})
+
+
+@app.route("/monitor/status")
+def monitor_status():
+    """Return monitor thread status and recent stop-loss events."""
+    try:
+        from monitor import get_status
+        return jsonify(get_status())
+    except Exception as e:
+        return jsonify({"error": str(e), "running": False})
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8888))
     # Bind to 0.0.0.0 on Railway so it's reachable externally
     host = "0.0.0.0" if os.environ.get("RAILWAY_ENVIRONMENT") else "127.0.0.1"
     _start_scheduler()
+
+    # Start position monitor (no-op if POLY_PRIVATE_KEY not set or LIVE_MODE=false)
+    try:
+        from monitor import start_monitor
+        start_monitor()
+    except Exception as e:
+        print(f"[WARN] Monitor not started: {e}")
+
     print(f"\nPolymarket Weather Scanner Dashboard")
     print(f"Open: http://localhost:{port}")
     print(f"Auto-scan: every {SCAN_INTERVAL_HOURS}h | Capital: ${SCAN_CAPITAL}")

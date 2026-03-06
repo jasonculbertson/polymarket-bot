@@ -497,3 +497,77 @@ def get_summary() -> dict:
 def get_all() -> list:
     """Return all tracked opportunities (raw)."""
     return _load()["opportunities"]
+
+
+# ─── Live trade helpers ────────────────────────────────────────────────────────
+
+def record_live_trade(
+    opp_id: str,
+    order_id: str,
+    size_usd: float,
+    shares: float,
+    token_id: str,
+) -> bool:
+    """
+    Mark an opportunity as live-traded. Call this right after buy() succeeds.
+    Returns True if the opportunity was found and updated.
+    """
+    data = _load()
+    for opp in data["opportunities"]:
+        if opp["id"] == opp_id:
+            opp["is_live"]       = True
+            opp["live_order_id"] = order_id
+            opp["live_size_usd"] = size_usd
+            opp["shares"]        = shares
+            opp["token_id"]      = token_id
+            opp["exit_price"]    = None
+            opp["exit_reason"]   = None
+            opp["live_at"]       = datetime.utcnow().isoformat()
+            _save(data)
+            return True
+    return False
+
+
+def get_live_positions() -> list:
+    """Return all positions that have real money in them and are not yet exited."""
+    data = _load()
+    return [
+        o for o in data["opportunities"]
+        if o.get("is_live")
+        and o.get("outcome") is None
+        and o.get("exit_reason") is None
+        and o.get("token_id")
+    ]
+
+
+def mark_stopped_out(opp_id: str, exit_price: float) -> bool:
+    """Record that a position was exited via stop-loss."""
+    return _mark_exit(opp_id, exit_price, "stop_loss")
+
+
+def mark_exited_early(opp_id: str, exit_price: float) -> bool:
+    """Record that a position was sold early to take profit."""
+    return _mark_exit(opp_id, exit_price, "take_profit")
+
+
+def _mark_exit(opp_id: str, exit_price: float, reason: str) -> bool:
+    data = _load()
+    for opp in data["opportunities"]:
+        if opp["id"] == opp_id:
+            entry  = opp.get("entry_price", 0) or opp.get("live_size_usd", PAPER_SIZE_USD)
+            shares = opp.get("shares", 0)
+            stake  = opp.get("live_size_usd") or opp.get("paper_size_usd", PAPER_SIZE_USD)
+
+            proceeds    = shares * exit_price
+            pnl_usd     = round(proceeds - stake, 2)
+            pnl_pct     = round((proceeds - stake) / stake * 100, 2) if stake else 0.0
+
+            opp["exit_price"]    = exit_price
+            opp["exit_reason"]   = reason
+            opp["exit_at"]       = datetime.utcnow().isoformat()
+            opp["pnl_pct"]       = pnl_pct
+            opp["paper_pnl_usd"] = pnl_usd
+            opp["outcome"]       = "win" if pnl_usd > 0 else "loss"
+            _save(data)
+            return True
+    return False

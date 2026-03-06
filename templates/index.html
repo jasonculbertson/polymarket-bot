@@ -349,6 +349,64 @@ tr.taken-row:hover td { opacity: 0.55; }
 .take-btn:hover { border-color: var(--purple); color: var(--purple-light); }
 .take-btn.is-taken { background: rgba(124,58,237,.15); border-color: var(--purple); color: var(--purple-light); }
 
+/* ─── Trade button ──────────────────────────────────────────────────── */
+.trade-btn {
+  border: 1px solid var(--green);
+  background: none;
+  color: var(--green);
+  cursor: pointer;
+  font-size: .62rem;
+  padding: 2px 7px;
+  border-radius: 4px;
+  white-space: nowrap;
+  transition: all .15s;
+  margin-left: 3px;
+}
+.trade-btn:hover { background: rgba(52,211,153,.15); }
+.trade-btn.is-live { background: rgba(52,211,153,.18); border-color: var(--green); }
+.trade-btn:disabled { opacity:.4; cursor:not-allowed; }
+.live-badge {
+  display: inline-block;
+  font-size: .55rem; font-weight: 700;
+  text-transform: uppercase; letter-spacing: .4px;
+  padding: 1px 5px; border-radius: 3px;
+  background: rgba(52,211,153,.18); color: var(--green);
+  border: 1px solid rgba(52,211,153,.4);
+  margin-left: 4px; vertical-align: middle;
+}
+
+/* ─── Trade modal ───────────────────────────────────────────────────── */
+#trade-modal-bg {
+  display: none; position: fixed; inset: 0;
+  background: rgba(0,0,0,.6); z-index: 9999;
+  align-items: center; justify-content: center;
+}
+#trade-modal-bg.open { display: flex; }
+#trade-modal {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 10px; padding: 20px 24px; min-width: 320px; max-width: 420px;
+}
+#trade-modal h3 { margin: 0 0 12px; font-size: .95rem; color: var(--text); }
+#trade-modal label { font-size: .72rem; color: var(--text-muted); display: block; margin-bottom: 3px; }
+#trade-modal input {
+  width: 100%; box-sizing: border-box;
+  background: var(--bg); border: 1px solid var(--border);
+  color: var(--text); border-radius: 5px; padding: 5px 8px; font-size: .85rem;
+  margin-bottom: 10px;
+}
+#trade-modal .modal-note { font-size: .68rem; color: var(--text-muted); margin-bottom: 12px; }
+#trade-modal .modal-row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 4px; }
+#trade-modal .modal-row button {
+  padding: 5px 14px; border-radius: 5px; font-size: .8rem; cursor: pointer;
+  border: 1px solid var(--border); background: none; color: var(--text-muted);
+}
+#trade-modal .confirm-btn {
+  background: rgba(52,211,153,.2) !important;
+  border-color: var(--green) !important;
+  color: var(--green) !important;
+  font-weight: 600;
+}
+
 /* ─── Cell styles ───────────────────────────────────────────────────── */
 .city-cell { font-weight: 600; color: var(--text); }
 .date-cell { color: var(--text-muted); font-size: .72rem; font-variant-numeric: tabular-nums; }
@@ -910,12 +968,13 @@ tr.taken-row:hover td { opacity: 0.55; }
               <th>Actual</th>
               <th>Error</th>
               <th>Outcome</th>
+              <th>Exit</th>
               <th>P&amp;L %</th>
               <th>P&amp;L $</th>
             </tr>
           </thead>
           <tbody id="outcomes-body">
-            <tr><td colspan="13"><div class="empty"><div class="empty-icon">📈</div>Run a scan to start tracking outcomes</div></td></tr>
+            <tr><td colspan="14"><div class="empty"><div class="empty-icon">📈</div>Run a scan to start tracking outcomes</div></td></tr>
           </tbody>
         </table>
       </div>
@@ -1239,7 +1298,14 @@ function renderYes(clusters) {
         <a href="${link}" target="_blank">Open ↗</a>
         <div style="font-size:.6rem;color:var(--text-muted);margin-top:2px;cursor:pointer" onclick="toggleRow('detail-yes-${i}')">▾ brackets</div>
       </td>
-      <td><button class="take-btn ${taken?'is-taken':''}" onclick="markTaken('${id}',this)">${taken?'✓ Taken':'Take'}</button></td>
+      <td style="white-space:nowrap">
+        <button class="take-btn ${taken?'is-taken':''}" onclick="markTaken('${id}',this)">${taken?'✓ Taken':'Take'}</button>
+        <button class="trade-btn ${_liveSet.has(id)?'is-live':''}" data-trade-id="${id}"
+          onclick="openTradeModal('${id}','${c.brackets[0]?.yes_token_id||''}','${c.total_price}','${labels.replace(/'/g,'`')}','buy',${c.brackets[0]?.neg_risk||false})"
+          ${_liveSet.has(id)?'disabled':''}>
+          ${_liveSet.has(id)?'✓ Live':'Trade'}
+        </button>
+      </td>
     </tr>
     <tr id="detail-yes-${i}" class="bracket-detail">
       <td colspan="14" style="padding:0">
@@ -1285,7 +1351,14 @@ function renderNo(opps) {
         <a href="${link}" target="_blank">Open ↗</a>
         <button class="copy-btn" onclick="copyText('${o.no_token_id||''}')" title="Copy NO token ID">📋</button>
       </td>
-      <td><button class="take-btn ${taken?'is-taken':''}" onclick="markTaken('${id}',this)">${taken?'✓ Taken':'Take'}</button></td>
+      <td style="white-space:nowrap">
+        <button class="take-btn ${taken?'is-taken':''}" onclick="markTaken('${id}',this)">${taken?'✓ Taken':'Take'}</button>
+        <button class="trade-btn ${_liveSet.has(id)?'is-live':''}" data-trade-id="${id}"
+          onclick="openTradeModal('${id}','${o.no_token_id||''}','${o.no_price}','${o.bracket.replace(/'/g,'`')}','buy',false)"
+          ${_liveSet.has(id)?'disabled':''}>
+          ${_liveSet.has(id)?'✓ Live':'Trade'}
+        </button>
+      </td>
     </tr>`;
   }).join('');
 }
@@ -1538,7 +1611,7 @@ function loadOutcomes() {
       const tb = $('outcomes-body');
       const opps = data.recent || [];
       if (!opps.length) {
-        tb.innerHTML = '<tr><td colspan="13"><div class="empty"><div class="empty-icon">📈</div>No tracked opportunities yet — run a scan</div></td></tr>';
+        tb.innerHTML = '<tr><td colspan="14"><div class="empty"><div class="empty-icon">📈</div>No tracked opportunities yet — run a scan</div></td></tr>';
         return;
       }
 
@@ -1580,8 +1653,19 @@ function loadOutcomes() {
           errorCell = `<span style="color:${errColor};font-weight:600">${wuError.toFixed(1)}°</span>`;
         }
 
+        // Exit cell: shows exit price + reason for stopped-out/early-exit positions
+        let exitCell = '<span style="color:var(--text-muted)">—</span>';
+        if (o.exit_reason === 'stop_loss') {
+          exitCell = `<span style="color:var(--red);font-size:.68rem">Stop<br>${(o.exit_price||0).toFixed(3)}</span>`;
+        } else if (o.exit_reason === 'take_profit') {
+          exitCell = `<span style="color:var(--green);font-size:.68rem">Early<br>${(o.exit_price||0).toFixed(3)}</span>`;
+        }
+
+        // Live badge on type cell
+        const liveBadge = o.is_live ? '<span class="live-badge">live</span>' : '';
+
         return `<tr>
-          <td>${typeTag}</td>
+          <td>${typeTag}${liveBadge}</td>
           <td class="city-cell">${o.city}${cityBadge(o.city)}</td>
           <td class="brackets-cell">${o.bracket}</td>
           <td class="price-cell">${(o.entry_price||0).toFixed(3)}</td>
@@ -1592,6 +1676,7 @@ function loadOutcomes() {
           <td class="price-cell">${actualCell}</td>
           <td class="price-cell">${errorCell}</td>
           <td>${outcomeCell}</td>
+          <td>${exitCell}</td>
           <td>${pnlPctCell}</td>
           <td>${o.outcome ? pnlUsdCell : stakeLabel}</td>
         </tr>`;
@@ -1728,6 +1813,71 @@ function loadSchedule() {
     });
 }
 
+// ─── Live Trading ─────────────────────────────────────────────────────
+let _tradeContext = null;  // {id, token_id, price, side, bracket, neg_risk}
+let _liveSet = new Set();  // opp IDs that have been live-traded
+
+function openTradeModal(id, token_id, price, bracket, side = 'buy', neg_risk = false) {
+  _tradeContext = {id, token_id, price, side, bracket, neg_risk};
+  const modal = document.getElementById('trade-modal-bg');
+  document.getElementById('trade-modal-title').textContent =
+    side === 'buy' ? `Buy: ${bracket}` : `Sell: ${bracket}`;
+  document.getElementById('trade-price-display').textContent = `@ $${(+price).toFixed(3)} per share`;
+  document.getElementById('trade-size-input').value = '10';
+  modal.classList.add('open');
+  document.getElementById('trade-size-input').focus();
+}
+
+function closeTradeModal() {
+  document.getElementById('trade-modal-bg').classList.remove('open');
+  _tradeContext = null;
+}
+
+function confirmTrade() {
+  if (!_tradeContext) return;
+  const size_usd = parseFloat(document.getElementById('trade-size-input').value || '10');
+  if (!size_usd || size_usd < 1) { toast('Enter a valid size (min $1)'); return; }
+
+  const btn = document.getElementById('trade-confirm-btn');
+  btn.disabled = true;
+  btn.textContent = 'Placing…';
+
+  const {id, token_id, price, side, neg_risk} = _tradeContext;
+  fetch('/trade', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({id, token_id, price: parseFloat(price), side, size_usd, neg_risk})
+  })
+  .then(r => r.json())
+  .then(res => {
+    btn.disabled = false;
+    btn.textContent = 'Confirm Trade';
+    if (res.error) { toast('Error: ' + res.error, 'error'); return; }
+    closeTradeModal();
+    const label = res.live ? '🟢 Live trade placed' : '📋 Paper trade recorded';
+    const detail = res.shares ? ` · ${res.shares.toFixed(2)} shares @ $${(+price).toFixed(3)}` : '';
+    toast(label + detail);
+    _liveSet.add(id);
+    // Update button appearance
+    const tradeBtns = document.querySelectorAll(`[data-trade-id="${id}"]`);
+    tradeBtns.forEach(b => {
+      b.textContent = '✓ Live';
+      b.classList.add('is-live');
+      b.disabled = true;
+    });
+  })
+  .catch(e => {
+    btn.disabled = false;
+    btn.textContent = 'Confirm Trade';
+    toast('Network error: ' + e.message, 'error');
+  });
+}
+
+// Close modal on background click
+document.getElementById('trade-modal-bg').addEventListener('click', function(e) {
+  if (e.target === this) closeTradeModal();
+});
+
 // ─── Init ────────────────────────────────────────────────────────────
 loadTaken();
 loadData();
@@ -1735,5 +1885,22 @@ loadSchedule();
 setInterval(loadData, 90000);
 setInterval(loadSchedule, 15000);  // refresh countdown every 15s
 </script>
+
+<!-- Trade Modal -->
+<div id="trade-modal-bg">
+  <div id="trade-modal">
+    <h3 id="trade-modal-title">Place Trade</h3>
+    <div style="font-size:.75rem;color:var(--text-dim);margin-bottom:10px" id="trade-price-display"></div>
+    <label for="trade-size-input">Size (USDC)</label>
+    <input type="number" id="trade-size-input" min="1" step="1" placeholder="10">
+    <div class="modal-note">
+      Shares = size ÷ price. In paper mode (LIVE_MODE=false) no real order is submitted.
+    </div>
+    <div class="modal-row">
+      <button onclick="closeTradeModal()">Cancel</button>
+      <button id="trade-confirm-btn" class="confirm-btn" onclick="confirmTrade()">Confirm Trade</button>
+    </div>
+  </div>
+</div>
 </body>
 </html>
