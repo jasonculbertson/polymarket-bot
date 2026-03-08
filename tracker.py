@@ -99,6 +99,25 @@ def _load() -> dict:
         pg = _pg_load(_OUTCOMES_KEY)
         if pg is not None:
             return pg
+        # Postgres is configured but returned None — could be a connection blip
+        # or the key genuinely doesn't exist yet (first run).
+        # Check whether ANY keys exist; if so, treat as a connection failure
+        # and raise rather than silently returning empty data (which would
+        # overwrite real records on the next _save()).
+        try:
+            conn = _pg_conn()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT COUNT(*) FROM kv_store")
+                    count = cur.fetchone()[0]
+                if count > 0:
+                    # Table has data — our key just doesn't exist yet, that's fine
+                    pass
+            finally:
+                conn.close()
+        except Exception as e:
+            # Can't reach Postgres at all — raise so callers don't overwrite data
+            raise RuntimeError(f"Postgres unavailable, refusing to load empty state: {e}")
     if not os.path.exists(OUTCOMES_FILE):
         return {"opportunities": [], "last_resolved": None}
     with open(OUTCOMES_FILE) as f:
@@ -136,7 +155,11 @@ def record_scan(yes_clusters, no_opps, all_forecasts: dict = None) -> int:
                    per-source temperature predictions for post-resolution learning.
     Returns total tracked opportunity count.
     """
-    data = _load()
+    try:
+        data = _load()
+    except RuntimeError as e:
+        print(f"[WARN] record_scan: skipping tracking — {e}")
+        return 0
     existing_ids = {o["id"] for o in data["opportunities"]}
     now = datetime.utcnow().isoformat()
     added = 0

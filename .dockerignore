@@ -1,0 +1,9 @@
+# Don't copy local scan/outcome data into the container — Railway uses Postgres
+data/
+*.json
+__pycache__/
+*.pyc
+*.pyo
+.env
+.git
+.gitignore
