@@ -241,25 +241,30 @@ def _fetch_market_yes_price(market_id: str) -> Optional[float]:
 
 
 def _parse_bracket_midpoint(text: str, unit: str = "F") -> Optional[float]:
-    """Parse bracket text and return its midpoint temperature."""
-    m = re.search(r"between (-?\d+)-(-?\d+)°[FC]", text)
+    """Parse bracket label text and return its midpoint temperature."""
+    # Range: "between 82-83°F" or "82-83°F"
+    m = re.search(r"between (-?\d+(?:\.\d+)?)-(-?\d+(?:\.\d+)?)°[FC]", text)
     if m:
         return (float(m.group(1)) + float(m.group(2))) / 2.0
-    m = re.search(r"(-?\d+)-(-?\d+)°[FC]", text)
+    m = re.search(r"(-?\d+(?:\.\d+)?)-(-?\d+(?:\.\d+)?)°[FC]", text)
     if m:
         return (float(m.group(1)) + float(m.group(2))) / 2.0
-    m = re.search(r"be (-?\d+)°[FC] or (?:below|lower)", text)
+    # Or below/lower: "25°C or below"
+    m = re.search(r"(-?\d+(?:\.\d+)?)°[FC] or (?:below|lower)", text, re.I)
     if m:
         return float(m.group(1)) - 0.5
-    m = re.search(r"(-?\d+)°[FC] or (?:below|lower)", text)
-    if m:
-        return float(m.group(1)) - 0.5
-    m = re.search(r"be (-?\d+)°[FC] or (?:above|higher)", text)
+    # Or above/higher: "37°C or higher"
+    m = re.search(r"(-?\d+(?:\.\d+)?)°[FC] or (?:above|higher)", text, re.I)
     if m:
         return float(m.group(1)) + 0.5
-    m = re.search(r"(-?\d+)°[FC] or (?:above|higher)", text)
+    # Exact single value: "29°C" or "be 29°C"
+    m = re.search(r"(?:^|be |reach )?(-?\d+(?:\.\d+)?)°[FC](?:\s*$|\s*\?)", text, re.I)
     if m:
-        return float(m.group(1)) + 0.5
+        return float(m.group(1))
+    # Last-resort bare number followed by degree sign anywhere
+    m = re.search(r"\b(-?\d+(?:\.\d+)?)°", text)
+    if m:
+        return float(m.group(1))
     return None
 
 
@@ -267,31 +272,43 @@ def _fetch_actual_temp_from_gamma(event_slug: str) -> Optional[float]:
     """
     Infer actual temperature from the resolved Polymarket event.
     Finds the bracket with YES price ≥ 0.95 and returns its midpoint.
+    Tries closed=true first, then omits the filter so partially-settled
+    events (where only the winner has resolved) are also caught.
     """
-    try:
-        r = requests.get(
-            f"{GAMMA_API}/events",
-            params={"slug": event_slug, "closed": "true"},
-            timeout=10,
-        )
-        if r.status_code != 200:
-            return None
-        events = r.json()
-        if not events:
-            return None
-        event = events[0] if isinstance(events, list) else events
+    def _scan_event(event: dict) -> Optional[float]:
+        best_price = 0.0
+        best_temp  = None
         for mkt in event.get("markets", []):
             prices_raw = mkt.get("outcomePrices", "[]")
             if isinstance(prices_raw, str):
-                prices_raw = json.loads(prices_raw)
+                try:
+                    prices_raw = json.loads(prices_raw)
+                except Exception:
+                    continue
             yes_price = float(prices_raw[0]) if prices_raw else 0.0
-            if yes_price >= 0.95:
+            if yes_price >= 0.90 and yes_price > best_price:
                 label = mkt.get("groupItemTitle") or mkt.get("question", "")
                 t = _parse_bracket_midpoint(label)
                 if t is not None:
-                    return t
-    except Exception:
-        pass
+                    best_price = yes_price
+                    best_temp  = t
+        return best_temp
+
+    for params in [{"slug": event_slug, "closed": "true"},
+                   {"slug": event_slug}]:
+        try:
+            r = requests.get(f"{GAMMA_API}/events", params=params, timeout=10)
+            if r.status_code != 200:
+                continue
+            events = r.json()
+            if not events:
+                continue
+            event = events[0] if isinstance(events, list) else events
+            t = _scan_event(event)
+            if t is not None:
+                return t
+        except Exception:
+            pass
     return None
 
 
@@ -334,6 +351,7 @@ def resolve_outcomes() -> int:
     """
     Check past-resolution-date opportunities and record wins/losses.
     Safe to call after every scan — only touches markets past their date.
+    Also re-attempts actual_temp fetch for resolved rows still missing it.
     Returns count of newly resolved outcomes.
     """
     data = _load()
@@ -343,6 +361,18 @@ def resolve_outcomes() -> int:
     # Auto-backfill any entries missing resolution_time
     if _backfill_resolution_times(data):
         _save(data)
+
+    backfill_actual = 0
+    for opp in data["opportunities"]:
+        # Re-attempt actual_temp for already-resolved rows that are missing it
+        if opp["outcome"] is not None and opp.get("actual_temp") is None:
+            actual = _fetch_actual_temp_from_gamma(opp.get("event_slug", ""))
+            if actual is not None:
+                opp["actual_temp"] = actual
+                wu_pred = (opp.get("forecast_sources") or {}).get("wunderground")
+                if wu_pred is not None:
+                    opp["wu_error"] = round(abs(wu_pred - actual), 1)
+                backfill_actual += 1
 
     for opp in data["opportunities"]:
         if opp["outcome"] is not None:
@@ -408,7 +438,7 @@ def resolve_outcomes() -> int:
                         opp["wu_error"] = round(abs(wu_pred - actual), 1)
             resolved_count += 1
 
-    if resolved_count:
+    if resolved_count or backfill_actual:
         data["last_resolved"] = datetime.utcnow().isoformat()
         _save(data)
 
