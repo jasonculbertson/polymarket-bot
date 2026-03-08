@@ -208,7 +208,7 @@ def record_scan(yes_clusters, no_opps, all_forecasts: dict = None) -> int:
             "resolution_date": c.date,
             "resolution_time": getattr(c, "resolution_time", ""),
             "first_seen": now,
-            "paper_size_usd": PAPER_SIZE_USD,
+            "paper_size_usd": round(PAPER_SIZE_USD * c.cluster_size, 2),
             "outcome": None,
             "final_yes_price": None,
             "pnl_pct": None,
@@ -364,6 +364,16 @@ def resolve_outcomes() -> int:
 
     backfill_actual = 0
     for opp in data["opportunities"]:
+        # Fix YES clusters that were recorded with single-bracket paper stake
+        if (opp.get("type") == "yes"
+                and opp.get("cluster_size", 1) > 1
+                and opp.get("paper_size_usd", PAPER_SIZE_USD) == PAPER_SIZE_USD):
+            correct = round(PAPER_SIZE_USD * opp["cluster_size"], 2)
+            opp["paper_size_usd"] = correct
+            if opp.get("pnl_pct") is not None:
+                opp["paper_pnl_usd"] = round(correct * (opp["pnl_pct"] / 100.0), 2)
+            backfill_actual += 1  # reuse flag to trigger save
+
         # Re-attempt actual_temp for already-resolved rows that are missing it
         if opp["outcome"] is not None and opp.get("actual_temp") is None:
             actual = _fetch_actual_temp_from_gamma(opp.get("event_slug", ""))
