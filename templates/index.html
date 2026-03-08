@@ -193,6 +193,23 @@ input[type=number] { width: 80px; }
   background: var(--purple); color: #fff; border-color: var(--purple); font-weight: 600;
 }
 .day-pill:hover:not(.active) { background: var(--surface3); color: var(--text); }
+.day-summary-card {
+  display: flex; align-items: center; gap: 12px;
+  background: var(--surface2); border: 1px solid var(--border); border-radius: 8px;
+  padding: 8px 14px; cursor: pointer; transition: border-color .15s;
+  min-width: 180px;
+}
+.day-summary-card:hover { border-color: var(--purple); }
+.day-summary-card.active { border-color: var(--purple); background: rgba(124,58,237,.08); }
+.day-summary-card .dsc-date {
+  font-size: .72rem; font-weight: 700; color: var(--text-dim); white-space: nowrap;
+}
+.day-summary-card .dsc-pnl {
+  font-size: 1rem; font-weight: 800; font-variant-numeric: tabular-nums;
+}
+.day-summary-card .dsc-meta {
+  font-size: .62rem; color: var(--text-muted); white-space: nowrap;
+}
 .scanner-status {
   font-size: .72rem;
   color: var(--text-muted);
@@ -982,6 +999,10 @@ tr.taken-row:hover td { opacity: 0.55; }
         <span style="font-size:.68rem; color:var(--text-muted);">Recorded each scan · auto-resolved after market date</span>
         <div id="oc-date-tabs" style="display:flex; gap:4px; flex-wrap:wrap; margin-left:auto;"></div>
       </div>
+
+      <!-- Daily summary strip -->
+      <div id="oc-day-summaries" style="display:flex; gap:8px; flex-wrap:wrap; padding:10px 0 4px;"></div>
+
       <div class="tbl-wrap">
         <table>
           <thead>
@@ -1684,9 +1705,11 @@ function loadOutcomes() {
       if (!opps.length) {
         $('outcomes-body').innerHTML = '<tr><td colspan="14"><div class="empty"><div class="empty-icon">📈</div>No tracked opportunities yet — run a scan</div></td></tr>';
         $('oc-date-tabs').innerHTML = '';
+        $('oc-day-summaries').innerHTML = '';
         return;
       }
       _buildOutcomeDateTabs(opps);
+      _buildDaySummaries(opps);
       _renderOutcomeRows(opps);
     })
     .catch(() => {});
@@ -1815,13 +1838,59 @@ function _buildOutcomeDateTabs(opps) {
     }).join('');
 }
 
+function _dayStats(rows) {
+  const resolved = rows.filter(o => o.outcome != null);
+  const wins     = resolved.filter(o => o.outcome === 'win');
+  const losses   = resolved.filter(o => o.outcome === 'loss');
+  const pending  = rows.filter(o => o.outcome == null);
+  const pnl = resolved.reduce((s, o) => {
+    if (o.paper_pnl_usd != null) return s + o.paper_pnl_usd;
+    const stake = o.paper_size_usd || 10;
+    return s + (o.outcome === 'win' ? stake * (o.pnl_pct||0)/100 : -stake);
+  }, 0);
+  const staked = resolved.reduce((s, o) => s + (o.paper_size_usd || 10), 0);
+  return { wins: wins.length, losses: losses.length, pending: pending.length, pnl, staked };
+}
+
+function _buildDaySummaries(opps) {
+  const container = $('oc-day-summaries');
+  if (!container) return;
+  const dates = [...new Set(opps.map(o => o.resolution_date || o.date).filter(Boolean))].sort().reverse();
+  if (!dates.length) { container.innerHTML = ''; return; }
+
+  const today    = new Date().toISOString().slice(0, 10);
+  const tomorrow = (() => { const x = new Date(); x.setDate(x.getDate()+1); return x.toISOString().slice(0,10); })();
+  function shortLabel(d) {
+    if (d === today)    return 'Today';
+    if (d === tomorrow) return 'Tomorrow';
+    const [,m,dy] = d.split('-');
+    return `${parseInt(m)}/${parseInt(dy)}`;
+  }
+
+  container.innerHTML = dates.map(d => {
+    const dayRows = opps.filter(o => (o.resolution_date||o.date) === d);
+    const s = _dayStats(dayRows);
+    const pnlColor = s.pnl > 0 ? 'var(--green)' : s.pnl < 0 ? 'var(--red)' : 'var(--text-muted)';
+    const pnlStr   = (s.pnl >= 0 ? '+' : '') + '$' + s.pnl.toFixed(2);
+    const isActive = _outcomesFilter === d;
+    return `<div class="day-summary-card${isActive ? ' active' : ''}" onclick="filterOutcomesByDate('${d}')">
+      <div>
+        <div class="dsc-date">${shortLabel(d)}<span style="font-weight:400; color:var(--text-muted); margin-left:4px;">${d}</span></div>
+        <div class="dsc-meta">${s.wins}W · ${s.losses}L${s.pending ? ` · ${s.pending} pending` : ''} · $${s.staked.toFixed(0)} staked</div>
+      </div>
+      <div class="dsc-pnl" style="color:${pnlColor}">${pnlStr}</div>
+    </div>`;
+  }).join('');
+}
+
 function filterOutcomesByDate(date) {
   _outcomesFilter = date;
   const filtered = date
     ? _allOutcomes.filter(o => (o.resolution_date || o.date) === date)
     : _allOutcomes;
   _renderOutcomeRows(filtered);
-  _buildOutcomeDateTabs(_allOutcomes);  // rebuild to update active state
+  _buildOutcomeDateTabs(_allOutcomes);
+  _buildDaySummaries(_allOutcomes);
 }
 
 // ─── Scan ────────────────────────────────────────────────────────────
