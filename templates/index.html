@@ -1463,8 +1463,9 @@ function renderFc(fcs) {
 // ─── Render all ──────────────────────────────────────────────────────
 function render(d) {
   if (!d || d.error) {
-    $('scan-status').textContent = 'No scan data in Postgres yet — click ▶ Run Scan';
+    $('scan-status').textContent = 'No scan data — click ▶ Run Scan';
     $('scan-status').style.color = 'var(--yellow)';
+    if ($('header-meta')) $('header-meta').textContent = 'No scan data — click ▶ Run Scan';
     return;
   }
   $('scan-status').style.color = '';
@@ -1546,27 +1547,39 @@ function loadData(file, scanDate) {
 
 // Auto-trigger a scan if the dashboard has no data and no scan is running
 function _autoBootstrapScan() {
-  fetch('/scan/status')
-    .then(r => r.json())
+  function startPolling() {
+    if (!_pollTimer) _pollTimer = setInterval(pollScan, 2000);
+  }
+  function tryStartScan() {
+    $('scan-status').textContent = 'Starting scan… (2–3 min)';
+    $('scan-status').style.color = 'var(--yellow)';
+    if ($('header-meta')) $('header-meta').textContent = 'Starting scan…';
+    toast('Scan started — results in 2–3 min');
+    fetch('/scan', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({capital: 400})
+    }).catch(() => {});
+    startPolling();
+  }
+  const ac = new AbortController();
+  const to = setTimeout(() => ac.abort(), 8000);
+  fetch('/scan/status', { signal: ac.signal })
+    .then(r => { clearTimeout(to); return r.json(); })
     .then(s => {
       if (s.running) {
-        // Scan already in progress — just start polling
         $('scan-status').textContent = 'Scan in progress…';
         $('scan-status').style.color = 'var(--yellow)';
-        if (!_pollTimer) _pollTimer = setInterval(pollScan, 2000);
+        if ($('header-meta')) $('header-meta').textContent = 'Scan in progress…';
+        startPolling();
         return;
       }
-      // No scan running and no data — auto-start one
-      $('scan-status').textContent = 'Starting first scan… (takes 2–3 min)';
-      $('scan-status').style.color = 'var(--yellow)';
-      fetch('/scan', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({capital: 400})
-      });
-      _pollTimer = setInterval(pollScan, 2000);
+      tryStartScan();
     })
-    .catch(() => {});
+    .catch(() => {
+      clearTimeout(to);
+      tryStartScan();
+    });
 }
 
 // ─── Saved-scan date tabs ─────────────────────────────────────────────
