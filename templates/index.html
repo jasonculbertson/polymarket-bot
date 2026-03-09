@@ -773,7 +773,7 @@ tr.taken-row:hover td { opacity: 0.55; }
     </div>
     <div class="divider"></div>
     <div id="auto-scan-info" style="font-size:.7rem; color:var(--text-muted); display:flex; flex-direction:column; gap:2px; min-width:110px">
-      <span id="auto-next" style="color:var(--green)">⏱ loading…</span>
+      <span id="auto-next" style="color:var(--text-muted)">⏱ —</span>
       <span id="auto-last" style="color:var(--text-muted)"></span>
     </div>
     <div class="divider"></div>
@@ -2053,34 +2053,65 @@ function _fmtAgo(isoStr) {
 }
 
 let _scheduleData = null;
+let _scheduleCountdownInterval = null;
+const _scheduleFetchTimeoutMs = 12000;
+
+function _setScheduleUI(nextText, nextColor, lastText) {
+  const nextEl = $('auto-next');
+  const lastEl = $('auto-last');
+  if (nextEl) { nextEl.textContent = nextText; nextEl.style.color = nextColor || 'var(--green)'; }
+  if (lastEl && lastText != null) lastEl.textContent = lastText;
+}
+
+function _startScheduleCountdown() {
+  _stopScheduleCountdown();
+  function tick() {
+    if (!_scheduleData || !_scheduleData.enabled || !_scheduleData.next_run || _scan_running_flag) {
+      _stopScheduleCountdown();
+      return;
+    }
+    const cd = _fmtCountdown(_scheduleData.next_run);
+    const intervalLabel = _scheduleData.interval_hrs === 1 ? ' (hourly)' : ` (every ${_scheduleData.interval_hrs}h)`;
+    _setScheduleUI(cd ? `⏱ next in ${cd}${intervalLabel}` : '⏱ running soon', 'var(--green)', _fmtAgo(_scheduleData.last_run));
+  }
+  tick();
+  _scheduleCountdownInterval = setInterval(tick, 1000);
+}
+
+function _stopScheduleCountdown() {
+  if (_scheduleCountdownInterval) {
+    clearInterval(_scheduleCountdownInterval);
+    _scheduleCountdownInterval = null;
+  }
+}
 
 function loadSchedule() {
-  fetch('/schedule')
-    .then(r => r.json())
+  const ac = new AbortController();
+  const timeoutId = setTimeout(() => ac.abort(), _scheduleFetchTimeoutMs);
+  fetch('/schedule', { signal: ac.signal })
+    .then(r => {
+      clearTimeout(timeoutId);
+      if (!r.ok) throw new Error('Schedule unavailable');
+      return r.json();
+    })
     .then(d => {
       _scheduleData = d;
       const nextEl = $('auto-next');
       const lastEl = $('auto-last');
       if (!nextEl) return;
+      _stopScheduleCountdown();
       if (!d.enabled) {
-        nextEl.textContent = '⏸ auto-scan off';
-        nextEl.style.color = 'var(--text-muted)';
-        lastEl.textContent = d.interval_hrs > 0 ? `every ${d.interval_hrs}h` : 'set SCAN_INTERVAL_HOURS';
+        _setScheduleUI('⏸ auto-scan off', 'var(--text-muted)', d.interval_hrs > 0 ? `every ${d.interval_hrs}h` : 'set SCAN_INTERVAL_HOURS');
+      } else if (_scan_running_flag) {
+        _setScheduleUI('⏳ scanning now…', 'var(--yellow)', _fmtAgo(d.last_run));
       } else {
-        const cd = _fmtCountdown(d.next_run);
-        if (_scan_running_flag) {
-          nextEl.textContent = '⏳ scanning now…';
-          nextEl.style.color = 'var(--yellow)';
-        } else {
-          nextEl.textContent = cd ? `⏱ next in ${cd}` : '⏱ running soon';
-          nextEl.style.color = 'var(--green)';
-        }
-        lastEl.textContent = _fmtAgo(d.last_run);
+        _startScheduleCountdown();
       }
     })
     .catch(() => {
-      const el = $('auto-next');
-      if (el) { el.textContent = '⏱ connecting…'; el.style.color = 'var(--text-muted)'; }
+      clearTimeout(timeoutId);
+      _stopScheduleCountdown();
+      _setScheduleUI('⏱ —', 'var(--text-muted)', '');
     });
 }
 
