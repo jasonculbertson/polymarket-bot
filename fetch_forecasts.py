@@ -58,26 +58,23 @@ def _get_wu_embedded_key() -> str:
     WU embeds a public API key in every page for their own front-end API calls.
     We extract it once, cache for 4 h, and reuse for the hourly forecast API.
     The key is stable for long periods but may rotate; we detect 401s and refresh.
+    Lock held for the entire operation to prevent concurrent threads all fetching.
     """
-    now = time.time()
     with _wu_key_lock:
+        now = time.time()
         if _wu_key_cache["key"] and now - _wu_key_cache["ts"] < _WU_KEY_TTL:
             return _wu_key_cache["key"]
-
-    try:
-        r = requests.get(f"{WU_BASE}/", headers=_WU_HEADERS, timeout=12)
-        if r.status_code == 200:
-            m = re.search(r'apiKey=([a-f0-9]{32})', r.text)
-            if m:
-                with _wu_key_lock:
+        try:
+            r = requests.get(f"{WU_BASE}/", headers=_WU_HEADERS, timeout=12)
+            if r.status_code == 200:
+                m = re.search(r'apiKey=([a-f0-9]{32})', r.text)
+                if m:
                     _wu_key_cache["key"] = m.group(1)
                     _wu_key_cache["ts"]  = now
-                print(f"  [WU] embedded API key refreshed: {m.group(1)[:8]}…")
-                return m.group(1)
-    except Exception as exc:
-        print(f"  [WARN] could not fetch WU embedded key: {exc}")
-
-    with _wu_key_lock:
+                    print(f"  [WU] embedded API key refreshed: {m.group(1)[:8]}…")
+                    return _wu_key_cache["key"]
+        except Exception as exc:
+            print(f"  [WARN] could not fetch WU embedded key: {exc}")
         return _wu_key_cache.get("key", "")
 
 DATA_DIR     = os.environ.get("DATA_DIR", os.path.join(os.path.dirname(__file__), "data"))

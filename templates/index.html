@@ -881,7 +881,7 @@ tr.taken-row:hover td { opacity: 0.55; }
         <span style="font-size:.68rem; color:var(--text-muted);">Wunderground hourly max — same station Polymarket resolves against · click row to see hourly curve</span>
       </div>
       <div class="tbl-wrap">
-        <table>
+        <table id="fc-table">
           <thead>
             <tr>
               <th onclick="sortTable('fc','city',1)">City <span class="sort-arrow"></span></th>
@@ -1096,12 +1096,17 @@ function toggleRow(id) {
 // ─── Date picker helpers ──────────────────────────────────────────────────
 let _scanDateMode = 'both';  // 'both' | 'today' | 'tomorrow' | 'custom'
 
+function _isoLocalDate(d) {
+  return d.getFullYear() + '-' +
+    String(d.getMonth() + 1).padStart(2, '0') + '-' +
+    String(d.getDate()).padStart(2, '0');
+}
 function _isoToday() {
-  return new Date().toISOString().slice(0, 10);
+  return _isoLocalDate(new Date());
 }
 function _isoTomorrow() {
   const d = new Date(); d.setDate(d.getDate() + 1);
-  return d.toISOString().slice(0, 10);
+  return _isoLocalDate(d);
 }
 function setDate(which) {
   _scanDateMode = which;
@@ -1256,7 +1261,7 @@ function sortTable(tbl, col, defaultDir) {
   });
 
   const ths = document.querySelectorAll(
-    tbl==='yes' ? '#yes-table th' : tbl==='no' ? '#no-table th' : 'table:last-of-type th'
+    tbl==='yes' ? '#yes-table th' : tbl==='no' ? '#no-table th' : '#fc-table th'
   );
   ths.forEach(th => {
     th.classList.remove('sorted-asc','sorted-desc');
@@ -1342,7 +1347,7 @@ function renderYes(clusters) {
       </td>
       <td style="white-space:nowrap">
         <button class="take-btn ${taken?'is-taken':''}" onclick="markTaken('${id}',this)">${taken?'✓ Taken':'Take'}</button>
-        <button class="trade-btn" id="trade-btn-${id}" onclick="openTradeModal('${id}','${(c.brackets[0]&&c.brackets[0].yes_token_id)||''}','${c.total_price}','${labels.replace(/'/g,"'")}','buy')">Trade</button>
+        <button class="trade-btn" id="trade-btn-${id}" data-id="${id}" data-token="${(c.brackets[0]&&c.brackets[0].yes_token_id)||''}" data-price="${c.total_price}" data-bracket="${encodeURIComponent(labels)}" data-side="buy" onclick="openTradeModalFromBtn(this)">Trade</button>
       </td>
     </tr>
     <tr id="detail-yes-${i}" class="bracket-detail">
@@ -1391,7 +1396,7 @@ function renderNo(opps) {
       </td>
       <td style="white-space:nowrap">
         <button class="take-btn ${taken?'is-taken':''}" onclick="markTaken('${id}',this)">${taken?'✓ Taken':'Take'}</button>
-        <button class="trade-btn" id="trade-btn-${id}" onclick="openTradeModal('${id}','${o.no_token_id||''}','${o.no_price}','${o.bracket.replace(/'/g,"'")}','buy')">Trade</button>
+        <button class="trade-btn" id="trade-btn-${id}" data-id="${id}" data-token="${o.no_token_id||''}" data-price="${o.no_price}" data-bracket="${encodeURIComponent(o.bracket||'')}" data-side="buy" onclick="openTradeModalFromBtn(this)">Trade</button>
       </td>
     </tr>`;
   }).join('');
@@ -1507,8 +1512,8 @@ function render(d) {
   renderNo(_noSorted);
   renderFc(_fcSorted);
   // Build date pills (only shown when both dates are present)
-  _buildDayPills('yes-day-pills', _yesSorted, '_yesDayFilter', 'filterYes');
-  _buildDayPills('no-day-pills',  _noSorted,  '_noDayFilter',  'filterNo');
+  _buildDayPills('yes-day-pills', _yesSorted, _yesDayFilter, 'filterYes');
+  _buildDayPills('no-day-pills',  _noSorted,  _noDayFilter,  'filterNo');
 }
 
 // ─── Data load ───────────────────────────────────────────────────────
@@ -1548,8 +1553,8 @@ function loadDateTabs() {
         return;
       }
       empty.style.display = 'none';
-      const today = new Date().toISOString().slice(0, 10);
-      const tomorrow = (() => { const d = new Date(); d.setDate(d.getDate()+1); return d.toISOString().slice(0,10); })();
+      const today = _isoToday();
+      const tomorrow = _isoTomorrow();
 
       function labelFor(d) {
         if (d === today)    return `Today (${d})`;
@@ -1724,34 +1729,33 @@ function loadOutcomes() {
 let _yesDayFilter = null;  // null = All
 let _noDayFilter  = null;
 
-function _buildDayPills(containerId, data, filterVar, onSelect) {
+function _buildDayPills(containerId, data, activeDate, onSelect) {
   const container = $(containerId);
   if (!container) return;
   const dates = [...new Set(data.map(r => r.date).filter(Boolean))].sort();
   if (dates.length <= 1) { container.innerHTML = ''; return; }
-  const today    = new Date().toISOString().slice(0, 10);
-  const tomorrow = (() => { const d = new Date(); d.setDate(d.getDate()+1); return d.toISOString().slice(0,10); })();
+  const today    = _isoToday();
+  const tomorrow = _isoTomorrow();
   function label(d) {
     if (d === today)    return 'Today';
     if (d === tomorrow) return 'Tomorrow';
     return d;
   }
-  const active = window[filterVar];
-  container.innerHTML = `<button class="day-pill${!active ? ' active' : ''}" onclick="${onSelect}(null)">All</button>` +
-    dates.map(d => `<button class="day-pill${active===d?' active':''}" onclick="${onSelect}('${d}')">${label(d)}</button>`).join('');
+  container.innerHTML = `<button class="day-pill${!activeDate ? ' active' : ''}" onclick="${onSelect}(null)">All</button>` +
+    dates.map(d => `<button class="day-pill${activeDate===d?' active':''}" onclick="${onSelect}('${d}')">${label(d)}</button>`).join('');
 }
 
 function filterYes(date) {
   _yesDayFilter = date;
   const data = date ? _yesSorted.filter(r => r.date === date) : _yesSorted;
   renderYes(data);
-  _buildDayPills('yes-day-pills', _yesSorted, '_yesDayFilter', 'filterYes');
+  _buildDayPills('yes-day-pills', _yesSorted, _yesDayFilter, 'filterYes');
 }
 function filterNo(date) {
   _noDayFilter = date;
   const data = date ? _noSorted.filter(r => r.date === date) : _noSorted;
   renderNo(data);
-  _buildDayPills('no-day-pills', _noSorted, '_noDayFilter', 'filterNo');
+  _buildDayPills('no-day-pills', _noSorted, _noDayFilter, 'filterNo');
 }
 
 // ─── Outcomes date-tab filtering ─────────────────────────────────────
@@ -1838,8 +1842,8 @@ function _buildOutcomeDateTabs(opps) {
   if (dates.length < 2) { container.innerHTML = ''; return; }
   const active = _outcomesFilter;
   function label(d) {
-    const today    = new Date().toISOString().slice(0, 10);
-    const tomorrow = (() => { const x = new Date(); x.setDate(x.getDate()+1); return x.toISOString().slice(0,10); })();
+    const today    = _isoToday();
+    const tomorrow = _isoTomorrow();
     if (d === today)    return `Today (${d})`;
     if (d === tomorrow) return `Tomorrow (${d})`;
     return d;
@@ -1872,8 +1876,8 @@ function _buildDaySummaries(opps) {
   const dates = [...new Set(opps.map(o => o.resolution_date || o.date).filter(Boolean))].sort().reverse();
   if (!dates.length) { container.innerHTML = ''; return; }
 
-  const today    = new Date().toISOString().slice(0, 10);
-  const tomorrow = (() => { const x = new Date(); x.setDate(x.getDate()+1); return x.toISOString().slice(0,10); })();
+  const today    = _isoToday();
+  const tomorrow = _isoTomorrow();
   function shortLabel(d) {
     if (d === today)    return 'Today';
     if (d === tomorrow) return 'Tomorrow';
@@ -2041,6 +2045,15 @@ function loadSchedule() {
 // ─── Live Trading ─────────────────────────────────────────────────────
 let _tradeContext = null;  // {id, token_id, price, side, bracket, neg_risk}
 
+function openTradeModalFromBtn(btn) {
+  const id      = btn.dataset.id;
+  const token   = btn.dataset.token || '';
+  const price   = btn.dataset.price;
+  const bracket = decodeURIComponent(btn.dataset.bracket || '');
+  const side    = btn.dataset.side || 'buy';
+  openTradeModal(id, token, price, bracket, side);
+}
+
 function openTradeModal(id, token_id, price, bracket, side) {
   side = side || 'buy';
   _tradeContext = {id, token_id, price, side, bracket, neg_risk: false};
@@ -2077,14 +2090,16 @@ function confirmTrade() {
     btn.disabled = false;
     btn.textContent = 'Confirm Trade';
     if (res.error) { toast('Error: ' + res.error); return; }
+    // Capture price before closeTradeModal() nulls _tradeContext (BUG 2 fix)
+    const tradePrice = _tradeContext ? _tradeContext.price : price;
     closeTradeModal();
     const label = res.live ? 'Live trade placed' : 'Paper trade recorded';
-    const detail = res.shares ? ' · ' + res.shares.toFixed(2) + ' shares @ $' + (+_tradeContext.price).toFixed(3) : '';
+    const detail = res.shares ? ' · ' + res.shares.toFixed(2) + ' shares @ $' + (+tradePrice).toFixed(3) : '';
     toast(label + detail);
     _liveSet.add(id);
-    // Update button appearance
-    const btn = document.getElementById('trade-btn-' + id);
-    if (btn) { btn.textContent = '✓ Live'; btn.classList.add('is-live'); btn.disabled = true; }
+    // Update row button appearance — use distinct variable name to avoid TDZ (BUG 1 fix)
+    const tradeRowBtn = document.getElementById('trade-btn-' + id);
+    if (tradeRowBtn) { tradeRowBtn.textContent = '✓ Live'; tradeRowBtn.classList.add('is-live'); tradeRowBtn.disabled = true; }
   })
   .catch(e => {
     btn.disabled = false;

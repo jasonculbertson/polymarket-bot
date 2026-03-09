@@ -433,9 +433,10 @@ def scan_status():
 @app.route("/export/csv/<type>")
 def export_csv(type):
     """Server-side CSV export fallback."""
-    scan = load_scan()
-    if not scan:
+    raw = load_scan()
+    if not raw:
         return "No scan data", 404
+    scan = _normalize_scan(raw)
 
     output = io.StringIO()
     writer = csv.writer(output)
@@ -446,22 +447,22 @@ def export_csv(type):
                           "forecast_confidence","liquidity_min","size_each","total_cost","url"])
         for c in scan.get("yes_clusters", []):
             labels = " + ".join(b["group_title"] for b in c.get("brackets", []))
-            writer.writerow([c["city"], c["date"], labels, c["cluster_size"],
-                             c["total_price"], c["return_pct"],
+            writer.writerow([c.get("city",""), c.get("date",""), labels, c.get("cluster_size",""),
+                             c.get("total_price",""), c.get("return_pct",""),
                              c.get("win_lo",""), c.get("win_hi",""),
-                             c["forecast_temp"], c.get("temp_unit","F"),
-                             c["forecast_confidence"], c["liquidity_min"],
-                             c["size_each"], c["total_cost"], c.get("polymarket_url","")])
+                             c.get("forecast_temp",""), c.get("temp_unit","F"),
+                             c.get("forecast_confidence",""), c.get("liquidity_min",""),
+                             c.get("size_each",""), c.get("total_cost",""), c.get("polymarket_url","")])
     else:
         writer.writerow(["city","date","bracket","no_price","return_pct","distance",
                           "forecast_temp","temp_unit","forecast_confidence",
                           "liquidity","recommended_size","url"])
         for o in scan.get("no_opportunities", []):
-            writer.writerow([o["city"], o["date"], o["bracket"], o["no_price"],
-                             o["return_pct"], o.get("distance",""),
-                             o["forecast_temp"], o.get("temp_unit","F"),
-                             o["forecast_confidence"], o["liquidity"],
-                             o["recommended_size"], o.get("polymarket_url","")])
+            writer.writerow([o.get("city",""), o.get("date",""), o.get("bracket",""), o.get("no_price",""),
+                             o.get("return_pct",""), o.get("distance",""),
+                             o.get("forecast_temp",""), o.get("temp_unit","F"),
+                             o.get("forecast_confidence",""), o.get("liquidity",""),
+                             o.get("recommended_size",""), o.get("polymarket_url","")])
 
     output.seek(0)
     return send_file(

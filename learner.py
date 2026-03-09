@@ -240,7 +240,6 @@ def _errors_to_weights(errors: dict[str, list[float]]) -> dict[str, float]:
         return {}
 
     # Convert errors to accuracy scores (complement of normalized error)
-    max_err = max(avgs.values()) or 1.0
     # Add small epsilon to avoid divide-by-zero when all errors are equal
     scores = {src: 1.0 / (avg + 0.01) for src, avg in avgs.items()}
     total = sum(scores.values())
@@ -261,9 +260,10 @@ def learn_from_outcomes() -> dict:
 
     Returns a summary dict with what changed.
     """
-    from tracker import _load, _save as _save_tracker
+    from tracker import _load, _save as _save_tracker, _tracker_lock
 
-    data = _load()
+    with _tracker_lock:
+        data = _load()
     weights = load_weights()
     calibration = load_calibration()
 
@@ -372,10 +372,10 @@ def learn_from_outcomes() -> dict:
             old_sigma = sigma_cfg.get(unit, {}).get(conf, 1.8)
 
             if ratio < 0.97:
-                # Over-confident: increase sigma
+                # ratio < 1: actual spread < predicted spread → we're over-confident → widen sigma (÷ratio > 1)
                 target_sigma = old_sigma / ratio
             elif ratio > 1.03:
-                # Under-confident: decrease sigma (but keep ≥ floor)
+                # ratio > 1: actual spread > predicted spread → we're under-confident → narrow sigma (÷ratio < 1)
                 target_sigma = old_sigma / ratio
             else:
                 target_sigma = old_sigma  # no meaningful drift
@@ -400,7 +400,8 @@ def learn_from_outcomes() -> dict:
         _save_calibration(calibration)
 
     if tracker_dirty:
-        _save_tracker(data)
+        with _tracker_lock:
+            _save_tracker(data)
 
     return {
         "learned":        learned_count,

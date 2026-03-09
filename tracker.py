@@ -276,7 +276,8 @@ def record_scan(yes_clusters, no_opps, all_forecasts: dict = None) -> int:
         added += 1
 
     if added:
-        _save(data)
+        with _tracker_lock:
+            _save(data)
     return len(data["opportunities"])
 
 
@@ -411,7 +412,9 @@ def resolve_outcomes() -> int:
     Also re-attempts actual_temp fetch for resolved rows still missing it.
     Returns count of newly resolved outcomes.
     """
-    data = _load()
+    # Load snapshot under lock, do HTTP work outside lock, then save under lock
+    with _tracker_lock:
+        data = _load()
     # Use UTC now so Railway (always UTC) never fires before a market has actually closed.
     # Compare full ISO datetime to resolution_time when available, else fall back to date.
     now_utc = datetime.utcnow()
@@ -420,7 +423,8 @@ def resolve_outcomes() -> int:
 
     # Auto-backfill any entries missing resolution_time
     if _backfill_resolution_times(data):
-        _save(data)
+        with _tracker_lock:
+            _save(data)
 
     backfill_actual = 0
     for opp in data["opportunities"]:
@@ -521,7 +525,8 @@ def resolve_outcomes() -> int:
 
     if resolved_count or backfill_actual:
         data["last_resolved"] = datetime.utcnow().isoformat()
-        _save(data)
+        with _tracker_lock:
+            _save(data)
 
     return resolved_count
 
@@ -569,7 +574,7 @@ def get_summary() -> dict:
     bracket_hit_rate = round(len(bracket_hits) / len(yes_resolved) * 100, 1) if yes_resolved else None
 
     # Attach computed paper_pnl_usd to each row for the dashboard (don't mutate stored data)
-    recent_rows = sorted(opps, key=lambda o: o["first_seen"], reverse=True)[:100]
+    recent_rows = sorted(opps, key=lambda o: o.get("first_seen", ""), reverse=True)[:100]
     for row in recent_rows:
         # Mutate in-place — recent_rows is already an in-memory copy from _load()
         if not row.get("paper_size_usd"):
