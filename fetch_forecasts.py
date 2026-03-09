@@ -164,6 +164,12 @@ def fetch_wunderground_hourly(station: str, unit: str = "F",
             _wu_key_cache["ts"] = 0.0
             return fetch_wunderground_hourly(station, unit, lat, lon, _retry=False)
 
+        if r.status_code == 429 and _retry:
+            # Rate limited — wait briefly and retry once
+            import time as _time
+            _time.sleep(2)
+            return fetch_wunderground_hourly(station, unit, lat, lon, _retry=False)
+
         if r.status_code != 200:
             print(f"    [WARN] WU API returned {r.status_code} for {station}")
             return None
@@ -466,7 +472,7 @@ def fetch_all_forecasts(cities=None, days: int = 2) -> dict:
     # Pre-warm the key once before launching parallel city fetches
     _get_wu_embedded_key()
 
-    with ThreadPoolExecutor(max_workers=8) as pool:
+    with ThreadPoolExecutor(max_workers=4) as pool:
         futures = {pool.submit(fetch_city_forecast, city, days): city for city in cities}
         for future in as_completed(futures):
             city = futures[future]

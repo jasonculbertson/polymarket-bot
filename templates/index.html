@@ -1782,10 +1782,19 @@ function _renderOutcomeRows(opps) {
     const stake    = o.paper_size_usd || 10;
     const stakeLabel = `<span style="font-size:.62rem;color:var(--text-muted)">$${stake}</span>`;
     const u        = o.temp_unit || 'F';
-    const wuPred   = (o.forecast_sources||{}).wunderground;
+    const src      = o.forecast_sources || {};
+    const wuPred   = src.wunderground;
+    const consPred = src.consensus;
+    const wttrPred = src.wttr;
+    const predVal  = wuPred ?? consPred ?? wttrPred;
+    const predTag  = wuPred != null ? '' : consPred != null
+      ? ' <span style="font-size:.55rem;color:var(--text-muted)">(cons)</span>'
+      : wttrPred != null ? ' <span style="font-size:.55rem;color:var(--text-muted)">(wttr)</span>' : '';
+    const wuCell   = predVal != null
+      ? `${predVal.toFixed(1)}°${u}${predTag}`
+      : '<span style="color:var(--text-muted)">—</span>';
     const actual   = o.actual_temp;
     const wuError  = o.wu_error;
-    const wuCell     = wuPred != null ? `${wuPred.toFixed(1)}°${u}` : '<span style="color:var(--text-muted)">—</span>';
     const actualCell = actual != null ? `<strong>${actual.toFixed(1)}°${u}</strong>` : '<span style="color:var(--text-muted)">pending</span>';
     let errorCell = '<span style="color:var(--text-muted)">—</span>';
     if (wuError != null) {

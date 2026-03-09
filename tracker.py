@@ -173,6 +173,7 @@ def record_scan(yes_clusters, no_opps, all_forecasts: dict = None) -> int:
             "wunderground": day_fc.get("wunderground"),
             "nws":          day_fc.get("nws"),
             "wttr":         day_fc.get("wttr"),
+            "consensus":    day_fc.get("consensus"),
         }
 
     for o in no_opps:
