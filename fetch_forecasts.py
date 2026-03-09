@@ -47,7 +47,9 @@ _WU_HEADERS = {
 }
 
 # ─── Embedded API key cache ───────────────────────────────────────────────────
+import threading as _threading
 _wu_key_cache: dict = {"key": "", "ts": 0.0}
+_wu_key_lock = _threading.Lock()
 _WU_KEY_TTL = 4 * 3600  # refresh every 4 hours
 
 
@@ -58,22 +60,25 @@ def _get_wu_embedded_key() -> str:
     The key is stable for long periods but may rotate; we detect 401s and refresh.
     """
     now = time.time()
-    if _wu_key_cache["key"] and now - _wu_key_cache["ts"] < _WU_KEY_TTL:
-        return _wu_key_cache["key"]
+    with _wu_key_lock:
+        if _wu_key_cache["key"] and now - _wu_key_cache["ts"] < _WU_KEY_TTL:
+            return _wu_key_cache["key"]
 
     try:
         r = requests.get(f"{WU_BASE}/", headers=_WU_HEADERS, timeout=12)
         if r.status_code == 200:
             m = re.search(r'apiKey=([a-f0-9]{32})', r.text)
             if m:
-                _wu_key_cache["key"] = m.group(1)
-                _wu_key_cache["ts"]  = now
+                with _wu_key_lock:
+                    _wu_key_cache["key"] = m.group(1)
+                    _wu_key_cache["ts"]  = now
                 print(f"  [WU] embedded API key refreshed: {m.group(1)[:8]}…")
-                return _wu_key_cache["key"]
+                return m.group(1)
     except Exception as exc:
         print(f"  [WARN] could not fetch WU embedded key: {exc}")
 
-    return _wu_key_cache.get("key", "")
+    with _wu_key_lock:
+        return _wu_key_cache.get("key", "")
 
 DATA_DIR     = os.environ.get("DATA_DIR", os.path.join(os.path.dirname(__file__), "data"))
 WEIGHTS_FILE = os.path.join(DATA_DIR, "forecast_weights.json")
@@ -302,7 +307,15 @@ def fetch_wttr_forecast(station: str, days: int = 2, unit: str = "F") -> Optiona
         max_key  = "maxtempF" if unit == "F" else "maxtempC"
 
         for i, day_data in enumerate(weather_days[:days]):
-            day_date = (today + timedelta(days=i)).isoformat()
+            # Prefer the API-returned date if present to avoid midnight off-by-one errors
+            api_date = day_data.get("date")
+            if api_date:
+                try:
+                    day_date = date.fromisoformat(api_date).isoformat()
+                except (ValueError, TypeError):
+                    day_date = (today + timedelta(days=i)).isoformat()
+            else:
+                day_date = (today + timedelta(days=i)).isoformat()
             hourly = day_data.get("hourly", [])
             if hourly:
                 temps = []
