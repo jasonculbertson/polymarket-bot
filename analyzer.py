@@ -436,18 +436,19 @@ def analyze_event(event: dict, forecast: dict, capital: float, n_opps: int = 20)
     day_fc = forecast.get("forecasts", {}).get(date_str)
     if not day_fc:
         return [], []
-    if day_fc.get("confidence", "low") == "low":
+    confidence = day_fc.get("confidence", "low")
+
+    # Skip entirely if sources strongly disagree
+    if confidence == "low":
         return [], []
 
-    # Polymarket resolves against Wunderground's hourly max directly.
-    # Use WU as the primary bracket-matching temperature.
-    # The consensus (weighted average with NWS) can fall between bracket edges
-    # even when WU — the actual resolution source — lands cleanly inside one.
+    # YES clusters require both sources to agree closely (confidence = "high").
+    # Medium confidence means WU and NWS diverge 2-4°F — too risky for directional bets.
+    # NO bets are allowed on medium confidence (betting against outlier brackets is safer).
     wu_temp = day_fc.get("wunderground")
     forecast_temp = wu_temp if wu_temp is not None else day_fc["consensus"]
-    confidence = day_fc["confidence"]
 
-    yes_clusters = find_yes_clusters(event, forecast_temp, confidence, capital)
+    yes_clusters = find_yes_clusters(event, forecast_temp, confidence, capital) if confidence == "high" else []
     no_opps = find_no_opps(event, forecast_temp, confidence, capital, n_opps)
     return yes_clusters, no_opps
 

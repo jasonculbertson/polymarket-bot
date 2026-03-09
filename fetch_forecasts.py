@@ -384,8 +384,8 @@ def fetch_city_forecast(city_name: str, days: int = 2) -> dict:
     unit     = cfg.get("unit", "F")
     is_us    = unit == "F"
 
-    high_threshold = 2.0 if unit == "F" else 1.0
-    low_threshold  = 5.0 if unit == "F" else 3.0
+    high_threshold = 2.0 if unit == "F" else 1.0   # sources agree → safe to bet
+    low_threshold  = 4.0 if unit == "F" else 2.0   # sources diverge → skip (was 5°F/3°C)
     # WU API is always available (uses public embedded key — no paid key needed)
     wu_active = True
 
