@@ -174,7 +174,6 @@ def save_results(clusters, no_opps, markets, forecasts, scan_time: str, target_d
     if not clusters_data and not no_opps_data:
         print("  [WARN] No opportunities found — saved empty scan so dashboard can load")
 
-    print(f"\nResults saved to: {out_path}")
     return out_path
 
 
