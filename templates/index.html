@@ -1533,7 +1533,39 @@ function loadData(file, scanDate) {
   }
   fetch(url)
     .then(r => r.json())
-    .then(d => { render(d); _highlightDateTab(scanDate || '__latest__'); })
+    .then(d => {
+      render(d);
+      _highlightDateTab(scanDate || '__latest__');
+      // If no data and no specific date was requested, auto-trigger a scan
+      if ((d.error || !d.yes_clusters) && !scanDate && !file) {
+        _autoBootstrapScan();
+      }
+    })
+    .catch(() => {});
+}
+
+// Auto-trigger a scan if the dashboard has no data and no scan is running
+function _autoBootstrapScan() {
+  fetch('/scan/status')
+    .then(r => r.json())
+    .then(s => {
+      if (s.running) {
+        // Scan already in progress — just start polling
+        $('scan-status').textContent = 'Scan in progress…';
+        $('scan-status').style.color = 'var(--yellow)';
+        if (!_pollTimer) _pollTimer = setInterval(pollScan, 2000);
+        return;
+      }
+      // No scan running and no data — auto-start one
+      $('scan-status').textContent = 'Starting first scan… (takes 2–3 min)';
+      $('scan-status').style.color = 'var(--yellow)';
+      fetch('/scan', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({capital: 400})
+      });
+      _pollTimer = setInterval(pollScan, 2000);
+    })
     .catch(() => {});
 }
 
@@ -1937,16 +1969,21 @@ function pollScan() {
   fetch('/scan/status')
     .then(r => r.json())
     .then(s => {
-      $('log-wrap').textContent = s.log.join('\n');
-      $('log-wrap').scrollTop = $('log-wrap').scrollHeight;
-
+      _scan_running_flag = s.running;
+      if (s.log && s.log.length) {
+        $('log-wrap').textContent = s.log.join('\n');
+        $('log-wrap').scrollTop = $('log-wrap').scrollHeight;
+      }
       if (!s.running) {
         clearInterval(_pollTimer);
+        _pollTimer = null;
         $('scanbar').classList.remove('scanning');
         $('scan-status').textContent = 'Done ✓';
+        $('scan-status').style.color = '';
         setTimeout(() => { $('scan-status').textContent = 'Ready'; }, 3000);
         loadData();
         loadDateTabs();
+        loadSchedule();
         toast('Scan complete!');
       }
     });
@@ -2028,19 +2065,27 @@ function loadSchedule() {
       if (!d.enabled) {
         nextEl.textContent = '⏸ auto-scan off';
         nextEl.style.color = 'var(--text-muted)';
-        lastEl.textContent = 'Set SCAN_INTERVAL_HOURS';
+        lastEl.textContent = d.interval_hrs > 0 ? `every ${d.interval_hrs}h` : 'set SCAN_INTERVAL_HOURS';
       } else {
         const cd = _fmtCountdown(d.next_run);
-        nextEl.textContent = cd ? `⏱ next in ${cd}` : '⏱ running soon';
-        nextEl.style.color = 'var(--green)';
+        if (_scan_running_flag) {
+          nextEl.textContent = '⏳ scanning now…';
+          nextEl.style.color = 'var(--yellow)';
+        } else {
+          nextEl.textContent = cd ? `⏱ next in ${cd}` : '⏱ running soon';
+          nextEl.style.color = 'var(--green)';
+        }
         lastEl.textContent = _fmtAgo(d.last_run);
       }
     })
     .catch(() => {
       const el = $('auto-next');
-      if (el) { el.textContent = ''; }
+      if (el) { el.textContent = '⏱ connecting…'; el.style.color = 'var(--text-muted)'; }
     });
 }
+
+// Track whether a scan is currently running (updated by pollScan)
+let _scan_running_flag = false;
 
 // ─── Live Trading ─────────────────────────────────────────────────────
 let _tradeContext = null;  // {id, token_id, price, side, bracket, neg_risk}

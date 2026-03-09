@@ -176,6 +176,27 @@ def _pg_list_scan_dates() -> list:
         return []
 
 
+@app.route("/debug/data")
+def debug_data():
+    """Show what _pg_merge_latest() returns — useful for diagnosing blank dashboard."""
+    dates = _pg_list_scan_dates() if DATABASE_URL else []
+    merged = _pg_merge_latest() if DATABASE_URL else None
+    from datetime import date as _date, timedelta
+    today    = _date.today().isoformat()
+    tomorrow = (_date.today() + timedelta(days=1)).isoformat()
+    return jsonify({
+        "database_url_set": bool(DATABASE_URL),
+        "pg_scan_dates": dates,
+        "today": today,
+        "tomorrow": tomorrow,
+        "merged_keys": list(merged.keys()) if merged else None,
+        "yes_clusters_count": len(merged.get("yes_clusters", [])) if merged else None,
+        "no_opps_count": len(merged.get("no_opportunities", [])) if merged else None,
+        "scan_time": merged.get("scan_time") if merged else None,
+        "local_latest_exists": os.path.exists(LATEST),
+    })
+
+
 @app.route("/debug/pg")
 def debug_pg():
     """Show all keys in Postgres kv_store — useful for diagnosing blank dashboard."""
