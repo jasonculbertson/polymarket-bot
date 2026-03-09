@@ -1177,8 +1177,8 @@ function passesFilter(row, isYes, id) {
 }
 function applyFilters() {
   if (!_data) return;
-  renderYes(_yesDayFilter ? _yesSorted.filter(r => r.date === _yesDayFilter) : _yesSorted);
-  renderNo( _noDayFilter  ? _noSorted.filter(r  => r.date === _noDayFilter)  : _noSorted);
+  renderYes(_dayFilter ? _yesSorted.filter(r => r.date === _dayFilter) : _yesSorted);
+  renderNo( _dayFilter ? _noSorted.filter(r  => r.date === _dayFilter) : _noSorted);
 }
 
 // ─── Mark Taken ───────────────────────────────────────────────────────
@@ -1256,10 +1256,10 @@ function sortTable(tbl, col, defaultDir) {
 
   if (tbl === 'yes') {
     _yesSorted = arr;
-    renderYes(_yesDayFilter ? arr.filter(r => r.date === _yesDayFilter) : arr);
+    renderYes(_dayFilter ? arr.filter(r => r.date === _dayFilter) : arr);
   } else if (tbl === 'no') {
     _noSorted = arr;
-    renderNo(_noDayFilter ? arr.filter(r => r.date === _noDayFilter) : arr);
+    renderNo(_dayFilter ? arr.filter(r => r.date === _dayFilter) : arr);
   }
   else { _fcSorted = arr; renderFc(arr); }
 }
@@ -1490,14 +1490,13 @@ function render(d) {
   _fcSorted  = [...(d.forecasts||[])].sort((a,b) => a.city.localeCompare(b.city));
 
   // Reset day filters when new data loads
-  _yesDayFilter = null;
-  _noDayFilter  = null;
+  _dayFilter = null;
   renderYes(_yesSorted);
   renderNo(_noSorted);
   renderFc(_fcSorted);
-  // Build date pills (only shown when both dates are present)
-  _buildDayPills('yes-day-pills', _yesSorted, _yesDayFilter, 'filterYes');
-  _buildDayPills('no-day-pills',  _noSorted,  _noDayFilter,  'filterNo');
+  // Build date pills — shared filter so selecting a date in one section filters both
+  _buildDayPills('yes-day-pills', null, _dayFilter, 'filterDate');
+  _buildDayPills('no-day-pills',  null, _dayFilter, 'filterDate');
 }
 
 // ─── Data load ───────────────────────────────────────────────────────
@@ -1790,14 +1789,14 @@ function loadOutcomes() {
 }
 
 // ─── Day-filter pills (Dashboard YES/NO sections) ────────────────────
-let _yesDayFilter = null;  // null = All
-let _noDayFilter  = null;
+let _dayFilter = null;  // shared across YES and NO sections
 
 function _buildDayPills(containerId, data, activeDate, onSelect) {
   const container = $(containerId);
   if (!container) return;
-  const dates = [...new Set(data.map(r => r.date).filter(Boolean))].sort();
-  if (dates.length <= 1) { container.innerHTML = ''; return; }
+  // Build date list from both YES and NO so pills are identical in both sections
+  const allDates = [...new Set([..._yesSorted, ..._noSorted].map(r => r.date).filter(Boolean))].sort();
+  if (allDates.length <= 1) { container.innerHTML = ''; return; }
   const today    = _isoToday();
   const tomorrow = _isoTomorrow();
   const yesterday = _isoYesterday();
@@ -1808,21 +1807,21 @@ function _buildDayPills(containerId, data, activeDate, onSelect) {
     return d;
   }
   container.innerHTML = `<button class="day-pill${!activeDate ? ' active' : ''}" onclick="${onSelect}(null)">All</button>` +
-    dates.map(d => `<button class="day-pill${activeDate===d?' active':''}" onclick="${onSelect}('${d}')">${label(d)}</button>`).join('');
+    allDates.map(d => `<button class="day-pill${activeDate===d?' active':''}" onclick="${onSelect}('${d}')">${label(d)}</button>`).join('');
 }
 
-function filterYes(date) {
-  _yesDayFilter = date;
-  const data = date ? _yesSorted.filter(r => r.date === date) : _yesSorted;
-  renderYes(data);
-  _buildDayPills('yes-day-pills', _yesSorted, _yesDayFilter, 'filterYes');
+function filterDate(date) {
+  _dayFilter = date;
+  const yesData = date ? _yesSorted.filter(r => r.date === date) : _yesSorted;
+  const noData  = date ? _noSorted.filter(r => r.date === date)  : _noSorted;
+  renderYes(yesData);
+  renderNo(noData);
+  _buildDayPills('yes-day-pills', null, _dayFilter, 'filterDate');
+  _buildDayPills('no-day-pills',  null, _dayFilter, 'filterDate');
 }
-function filterNo(date) {
-  _noDayFilter = date;
-  const data = date ? _noSorted.filter(r => r.date === date) : _noSorted;
-  renderNo(data);
-  _buildDayPills('no-day-pills', _noSorted, _noDayFilter, 'filterNo');
-}
+// Keep old names as aliases so any existing onclick references still work
+function filterYes(date) { filterDate(date); }
+function filterNo(date)  { filterDate(date); }
 
 // ─── Outcomes date-tab filtering ─────────────────────────────────────
 let _allOutcomes   = [];
