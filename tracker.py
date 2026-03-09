@@ -99,25 +99,35 @@ def _load() -> dict:
         pg = _pg_load(_OUTCOMES_KEY)
         if pg is not None:
             return pg
-        # Postgres is configured but returned None — could be a connection blip
-        # or the key genuinely doesn't exist yet (first run).
-        # Check whether ANY keys exist; if so, treat as a connection failure
-        # and raise rather than silently returning empty data (which would
-        # overwrite real records on the next _save()).
+        # _pg_load returned None — either a connection failure or the key
+        # genuinely doesn't exist yet (first ever run).
+        # Check specifically whether the outcomes key exists:
+        # - If it EXISTS but we couldn't read it → dangerous, raise so
+        #   callers never overwrite real data with an empty state.
+        # - If it DOESN'T EXIST → safe to return empty (first run).
+        # - If Postgres is unreachable entirely → also raise.
         try:
             conn = _pg_conn()
             try:
                 with conn.cursor() as cur:
-                    cur.execute("SELECT COUNT(*) FROM kv_store")
-                    count = cur.fetchone()[0]
-                if count > 0:
-                    # Table has data — our key just doesn't exist yet, that's fine
-                    pass
+                    cur.execute(
+                        "SELECT 1 FROM kv_store WHERE key = %s LIMIT 1",
+                        (_OUTCOMES_KEY,)
+                    )
+                    key_exists = cur.fetchone() is not None
             finally:
                 conn.close()
+            if key_exists:
+                raise RuntimeError(
+                    f"Postgres outcomes key exists but could not be read — "
+                    "refusing to return empty state to avoid data loss"
+                )
+            # Key genuinely doesn't exist yet — first run, safe to start fresh
+        except RuntimeError:
+            raise
         except Exception as e:
-            # Can't reach Postgres at all — raise so callers don't overwrite data
-            raise RuntimeError(f"Postgres unavailable, refusing to load empty state: {e}")
+            raise RuntimeError(f"Postgres unreachable, refusing to load empty state: {e}")
+
     if not os.path.exists(OUTCOMES_FILE):
         return {"opportunities": [], "last_resolved": None}
     with open(OUTCOMES_FILE) as f:
