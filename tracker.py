@@ -422,6 +422,58 @@ def _parse_bracket_midpoint(text: str, unit: str = "F") -> Optional[float]:
     return None
 
 
+def _parse_bracket_ranges(bracket_str: str) -> list:
+    """Parse bracket string like '74-75°F' or '76-77°F + 78-79°F' into [(lo, hi), ...]. Returns [] on parse failure."""
+    out = []
+    # Split by " + " for YES clusters
+    for part in (bracket_str or "").split("+"):
+        part = part.strip()
+        m = re.search(r"between (-?\d+(?:\.\d+)?)-(-?\d+(?:\.\d+)?)°", part)
+        if m:
+            out.append((float(m.group(1)), float(m.group(2))))
+            continue
+        m = re.search(r"(-?\d+(?:\.\d+)?)-(-?\d+(?:\.\d+)?)°", part)
+        if m:
+            out.append((float(m.group(1)), float(m.group(2))))
+            continue
+        m = re.search(r"(-?\d+(?:\.\d+)?)°\s*or\s*(?:below|lower)", part, re.I)
+        if m:
+            t = float(m.group(1))
+            out.append((float("-inf"), t))
+            continue
+        m = re.search(r"(-?\d+(?:\.\d+)?)°\s*or\s*(?:above|higher)", part, re.I)
+        if m:
+            t = float(m.group(1))
+            out.append((t, float("inf")))
+            continue
+        m = re.search(r"(-?\d+(?:\.\d+)?)°", part)
+        if m:
+            t = float(m.group(1))
+            out.append((t, t))
+    return out
+
+
+def _infer_outcome_from_actual_temp(opp: dict, actual_temp: float) -> Optional[str]:
+    """
+    Infer win/loss from actual temperature and bracket(s). Returns 'win', 'loss', or None if cannot infer.
+    """
+    unit = opp.get("temp_unit", "F")
+    bracket_str = opp.get("bracket", "")
+    ranges = _parse_bracket_ranges(bracket_str)
+    if not ranges:
+        return None
+    if opp.get("type") == "no":
+        (lo, hi) = ranges[0]
+        if actual_temp < lo or actual_temp > hi:
+            return "win"
+        return "loss"
+    # YES cluster: we win if actual_temp falls in any of our brackets
+    for (lo, hi) in ranges:
+        if lo <= actual_temp <= hi:
+            return "win"
+    return "loss"
+
+
 def _fetch_actual_temp_from_gamma(event_slug: str) -> Optional[float]:
     """
     Infer actual temperature from the resolved Polymarket event.
@@ -580,61 +632,80 @@ def resolve_outcomes() -> int:
 
         if opp["type"] == "no":
             final_yes = _fetch_market_yes_price(opp["market_id"])
-            if final_yes is None:
-                continue
-            if final_yes <= 0.05:
-                opp["outcome"] = "win"
+            resolved_via_api = False
+            if final_yes is not None and (final_yes <= 0.05 or final_yes >= 0.95):
+                opp["outcome"] = "win" if final_yes <= 0.05 else "loss"
                 opp["final_yes_price"] = final_yes
-                opp["pnl_pct"] = round((1.0 - opp["entry_price"]) / opp["entry_price"] * 100, 2)
-            elif final_yes >= 0.95:
-                opp["outcome"] = "loss"
-                opp["final_yes_price"] = final_yes
-                opp["pnl_pct"] = -100.0
-            else:
-                continue
-            stake = opp.get("paper_size_usd", PAPER_SIZE_USD)
-            opp["paper_size_usd"] = stake
-            opp["paper_pnl_usd"] = round(stake * (opp["pnl_pct"] / 100.0), 2)
-            # Record actual temperature for accuracy tracking
-            if opp.get("actual_temp") is None:
+                opp["pnl_pct"] = round((1.0 - opp["entry_price"]) / opp["entry_price"] * 100, 2) if final_yes <= 0.05 else -100.0
+                resolved_via_api = True
+            if not resolved_via_api:
+                # Fallback: infer from actual temp when API didn't return decisive price (e.g. endpoint/format issue or delay)
                 actual = _fetch_actual_temp_from_gamma(opp.get("event_slug", ""))
                 if actual is not None:
-                    opp["actual_temp"] = actual
-                    wu_pred = (opp.get("forecast_sources") or {}).get("wunderground")
-                    if wu_pred is not None:
-                        opp["wu_error"] = round(abs(wu_pred - actual), 1)
-            resolved_count += 1
+                    outcome = _infer_outcome_from_actual_temp(opp, actual)
+                    if outcome:
+                        opp["outcome"] = outcome
+                        opp["actual_temp"] = actual
+                        opp["final_yes_price"] = 0.0 if outcome == "win" else 1.0
+                        opp["pnl_pct"] = round((1.0 - opp["entry_price"]) / opp["entry_price"] * 100, 2) if outcome == "win" else -100.0
+                        wu_pred = (opp.get("forecast_sources") or {}).get("wunderground")
+                        if wu_pred is not None:
+                            opp["wu_error"] = round(abs(wu_pred - actual), 1)
+                        resolved_via_api = True
+            if resolved_via_api:
+                stake = opp.get("paper_size_usd", PAPER_SIZE_USD)
+                opp["paper_size_usd"] = stake
+                opp["paper_pnl_usd"] = round(stake * (opp["pnl_pct"] / 100.0), 2)
+                if opp.get("actual_temp") is None:
+                    actual = _fetch_actual_temp_from_gamma(opp.get("event_slug", ""))
+                    if actual is not None:
+                        opp["actual_temp"] = actual
+                        wu_pred = (opp.get("forecast_sources") or {}).get("wunderground")
+                        if wu_pred is not None:
+                            opp["wu_error"] = round(abs(wu_pred - actual), 1)
+                resolved_count += 1
 
         elif opp["type"] == "yes":
             prices = [_fetch_market_yes_price(mid) for mid in opp.get("market_ids", [])]
             prices = [p for p in prices if p is not None]
-            if len(prices) < len(opp.get("market_ids", [])):
-                continue
-            if not prices:
-                continue
-            max_p = max(prices)
-            if max_p >= 0.95:
-                opp["outcome"] = "win"
-                opp["final_yes_price"] = max_p
-                opp["pnl_pct"] = round((1.0 - opp["entry_price"]) / opp["entry_price"] * 100, 2)
-            elif max_p <= 0.05:
-                opp["outcome"] = "loss"
-                opp["final_yes_price"] = max_p
-                opp["pnl_pct"] = -100.0
-            else:
-                continue
-            stake = opp.get("paper_size_usd", PAPER_SIZE_USD)
-            opp["paper_size_usd"] = stake
-            opp["paper_pnl_usd"] = round(stake * (opp["pnl_pct"] / 100.0), 2)
-            # Record actual temperature for accuracy tracking
-            if opp.get("actual_temp") is None:
+            max_p = max(prices) if prices else None
+            resolved_via_api = False
+            if max_p is not None and len(prices) >= len(opp.get("market_ids", [])):
+                if max_p >= 0.95:
+                    opp["outcome"] = "win"
+                    opp["final_yes_price"] = max_p
+                    opp["pnl_pct"] = round((1.0 - opp["entry_price"]) / opp["entry_price"] * 100, 2)
+                    resolved_via_api = True
+                elif max_p <= 0.05:
+                    opp["outcome"] = "loss"
+                    opp["final_yes_price"] = max_p
+                    opp["pnl_pct"] = -100.0
+                    resolved_via_api = True
+            if not resolved_via_api:
                 actual = _fetch_actual_temp_from_gamma(opp.get("event_slug", ""))
                 if actual is not None:
-                    opp["actual_temp"] = actual
-                    wu_pred = (opp.get("forecast_sources") or {}).get("wunderground")
-                    if wu_pred is not None:
-                        opp["wu_error"] = round(abs(wu_pred - actual), 1)
-            resolved_count += 1
+                    outcome = _infer_outcome_from_actual_temp(opp, actual)
+                    if outcome:
+                        opp["outcome"] = outcome
+                        opp["actual_temp"] = actual
+                        opp["final_yes_price"] = 1.0 if outcome == "win" else 0.0
+                        opp["pnl_pct"] = round((1.0 - opp["entry_price"]) / opp["entry_price"] * 100, 2) if outcome == "win" else -100.0
+                        wu_pred = (opp.get("forecast_sources") or {}).get("wunderground")
+                        if wu_pred is not None:
+                            opp["wu_error"] = round(abs(wu_pred - actual), 1)
+                        resolved_via_api = True
+            if resolved_via_api:
+                stake = opp.get("paper_size_usd") or round(PAPER_SIZE_USD * opp.get("cluster_size", 1), 2)
+                opp["paper_size_usd"] = stake
+                opp["paper_pnl_usd"] = round(stake * (opp["pnl_pct"] / 100.0), 2)
+                if opp.get("actual_temp") is None:
+                    actual = _fetch_actual_temp_from_gamma(opp.get("event_slug", ""))
+                    if actual is not None:
+                        opp["actual_temp"] = actual
+                        wu_pred = (opp.get("forecast_sources") or {}).get("wunderground")
+                        if wu_pred is not None:
+                            opp["wu_error"] = round(abs(wu_pred - actual), 1)
+                resolved_count += 1
 
     if resolved_count or backfill_actual:
         data["last_resolved"] = datetime.utcnow().isoformat()
