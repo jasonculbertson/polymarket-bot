@@ -649,8 +649,8 @@ def monitor_status():
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8888))
-    # Bind to 0.0.0.0 on Railway so it's reachable externally
-    host = "0.0.0.0" if os.environ.get("RAILWAY_ENVIRONMENT") else "127.0.0.1"
+    # Bind to 0.0.0.0 on Railway so it's reachable externally (Railway sets RAILWAY_ENVIRONMENT_NAME)
+    host = "0.0.0.0" if os.environ.get("RAILWAY_ENVIRONMENT_NAME") else "127.0.0.1"
     _start_scheduler()
 
     # Start position monitor (no-op if POLY_PRIVATE_KEY not set or LIVE_MODE=false)

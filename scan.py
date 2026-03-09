@@ -21,7 +21,8 @@ from fetch_forecasts import fetch_all_forecasts
 from analyzer import analyze_all, print_yes_clusters, print_no_opps
 
 
-DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
+# Use same DATA_DIR as app (env on Railway with volume at /data)
+DATA_DIR = os.environ.get("DATA_DIR", os.path.join(os.path.dirname(__file__), "data"))
 os.makedirs(DATA_DIR, exist_ok=True)
 
 
