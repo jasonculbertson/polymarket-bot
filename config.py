@@ -192,16 +192,16 @@ STRATEGY = {
 # LIVE_MODE=false by default — bot paper-trades until you explicitly enable it.
 TRADING = {
     "live_mode":             os.environ.get("LIVE_MODE", "false").lower() == "true",
-    "stop_loss_pct":         float(os.environ.get("STOP_LOSS_PCT", "50")),   # exit if down X%
-    "take_profit_pct":       float(os.environ.get("TAKE_PROFIT_PCT", "0")),  # 0 = disabled
-    "monitor_interval_secs": int(os.environ.get("MONITOR_INTERVAL_SECS", "300")),
-    "slippage_pct":          float(os.environ.get("SLIPPAGE_PCT", "1")),     # price tolerance %
+    "stop_loss_pct":         float(os.environ.get("STOP_LOSS_PCT") or "50"),    # exit if down X%
+    "take_profit_pct":       float(os.environ.get("TAKE_PROFIT_PCT") or "0"),   # 0 = disabled
+    "monitor_interval_secs": int(os.environ.get("MONITOR_INTERVAL_SECS") or "300"),
+    "slippage_pct":          float(os.environ.get("SLIPPAGE_PCT") or "1"),      # price tolerance %
 }
 
 # Notification settings (override via env vars)
 NOTIFY = {
     "slack_webhook": os.environ.get("SLACK_WEBHOOK_URL", ""),
-    "min_return_pct": float(os.environ.get("NOTIFY_MIN_RETURN_PCT", "20")),
+    "min_return_pct": float(os.environ.get("NOTIFY_MIN_RETURN_PCT") or "20"),
 }
 
 # Forecast source weights when WU_API_KEY is configured (primary setup)

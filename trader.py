@@ -89,7 +89,9 @@ def buy(token_id: str, size_usd: float, price: float,
 
     Returns: {"order_id": str, "shares": float, "price": float, "live": bool}
     """
-    price  = _round_price(price)
+    price = _round_price(price)
+    if price <= 0:
+        raise ValueError(f"Invalid price {price!r} for token {token_id[:16]}")
     shares = round(size_usd / price, 4)
 
     log.info(

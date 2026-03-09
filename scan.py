@@ -166,7 +166,11 @@ def save_results(clusters, no_opps, markets, forecasts, scan_time: str, target_d
         json.dump(out, f, indent=2)
 
     # Persist each date's results separately in Postgres so they survive redeployments
-    _pg_save_scan_dates(out, dates_in_results)
+    # BUG 1 fix: only write when there are actual results to avoid overwriting valid data
+    if clusters_data or no_opps_data:
+        _pg_save_scan_dates(out, dates_in_results)
+    else:
+        print("  [WARN] No opportunities found — skipping Postgres write to avoid data loss")
 
     print(f"\nResults saved to: {out_path}")
     return out_path

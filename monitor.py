@@ -36,7 +36,10 @@ _stop_event = threading.Event()
 
 # Recent monitor events (shown on dashboard)
 _recent_events: list = []
+_recent_events_lock = threading.Lock()
 _MAX_EVENTS = 50
+_exiting_positions: set = set()
+_exiting_lock = threading.Lock()
 
 
 def _log_event(kind: str, opp_id: str, token_id: str, price: float, detail: str = ""):
@@ -49,9 +52,10 @@ def _log_event(kind: str, opp_id: str, token_id: str, price: float, detail: str 
         "price":    price,
         "detail":   detail,
     }
-    _recent_events.insert(0, evt)
-    if len(_recent_events) > _MAX_EVENTS:
-        _recent_events.pop()
+    with _recent_events_lock:
+        _recent_events.insert(0, evt)
+        if len(_recent_events) > _MAX_EVENTS:
+            _recent_events.pop()
     log.info("[monitor] %s opp=%s token=%s price=%.4f %s", kind, opp_id, token_id[:16], price, detail)
 
 
@@ -104,6 +108,10 @@ def check_positions():
         take_profit_threshold = entry * (1 + TAKE_PROFIT_PCT / 100) if TAKE_PROFIT_PCT > 0 else None
 
         if current <= stop_loss_threshold:
+            with _exiting_lock:
+                if opp_id in _exiting_positions:
+                    continue
+                _exiting_positions.add(opp_id)
             _log_event("STOP_LOSS", opp_id, token_id, current,
                        f"entry={entry:.4f} threshold={stop_loss_threshold:.4f}")
             try:
@@ -112,8 +120,14 @@ def check_positions():
                 tracker.mark_stopped_out(opp_id, current)
             except Exception as e:
                 log.error("[monitor] stop-loss sell FAILED for %s: %s", opp_id, e)
+                with _exiting_lock:
+                    _exiting_positions.discard(opp_id)
 
         elif take_profit_threshold and current >= take_profit_threshold:
+            with _exiting_lock:
+                if opp_id in _exiting_positions:
+                    continue
+                _exiting_positions.add(opp_id)
             _log_event("TAKE_PROFIT", opp_id, token_id, current,
                        f"entry={entry:.4f} threshold={take_profit_threshold:.4f}")
             try:
@@ -122,6 +136,8 @@ def check_positions():
                 tracker.mark_exited_early(opp_id, current)
             except Exception as e:
                 log.error("[monitor] take-profit sell FAILED for %s: %s", opp_id, e)
+                with _exiting_lock:
+                    _exiting_positions.discard(opp_id)
 
         else:
             pct_chg = (current - entry) / entry * 100

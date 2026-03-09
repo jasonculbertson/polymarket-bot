@@ -164,9 +164,9 @@ def fetch_city_markets(city_name: str, days_ahead: int = 7) -> list:
             if isinstance(prices_raw, str):
                 prices_raw = json.loads(prices_raw)
             try:
-                yes_price = float(prices_raw[0]) if prices_raw else 0.0
-                no_price = float(prices_raw[1]) if len(prices_raw) > 1 else 0.0
-            except (ValueError, IndexError):
+                yes_price = float(prices_raw[0]) if prices_raw and prices_raw[0] is not None else 0.0
+                no_price = float(prices_raw[1]) if len(prices_raw) > 1 and prices_raw[1] is not None else 0.0
+            except (ValueError, TypeError, IndexError):
                 yes_price, no_price = 0.0, 0.0
 
             token_ids_raw = m_raw.get("clobTokenIds", "[]")

@@ -410,8 +410,16 @@ def find_yes_clusters(event: dict, forecast_temp: float, confidence: str,
             temp_unit=unit,
         )
 
-    # Only generate the 3-bracket cluster (center ± 1) — safer, wider window
-    cluster3 = make_cluster([center_idx - 1, center_idx, center_idx + 1])
+    # Prefer 3-bracket cluster (center ± 1). If forecast is at an edge, shift inward.
+    n = len(active)
+    if center_idx == 0:
+        indices3 = [0, 1, 2]
+    elif center_idx == n - 1:
+        indices3 = [n - 3, n - 2, n - 1]
+    else:
+        indices3 = [center_idx - 1, center_idx, center_idx + 1]
+
+    cluster3 = make_cluster(indices3)
     if cluster3:
         clusters.append(cluster3)
 
@@ -424,7 +432,7 @@ def analyze_event(event: dict, forecast: dict, capital: float, n_opps: int = 20)
     day_fc = forecast.get("forecasts", {}).get(date_str)
     if not day_fc:
         return [], []
-    if day_fc["confidence"] == "low":
+    if day_fc.get("confidence", "low") == "low":
         return [], []
 
     # Polymarket resolves against Wunderground's hourly max directly.

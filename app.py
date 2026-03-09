@@ -26,8 +26,12 @@ os.makedirs(DATA_DIR, exist_ok=True)
 SCAN_INTERVAL_HOURS = int(os.environ.get("SCAN_INTERVAL_HOURS", "1"))
 SCAN_CAPITAL        = int(os.environ.get("SCAN_CAPITAL", "400"))
 
+_scan_lock    = threading.Lock()
 _scan_running = False
 _scan_log     = []
+
+_last_resolve_time: datetime = None
+_RESOLVE_COOLDOWN_SECS = 300  # re-run resolve at most once every 5 min
 
 
 def load_scan():
@@ -48,7 +52,7 @@ def list_scans():
 
 def run_scan_bg(cities=None, capital=None, days=1, target_date=None):
     global _scan_running, _scan_log
-    if _scan_running:
+    if not _scan_lock.acquire(blocking=False):
         return
     _scan_running = True
     _scan_log     = []
@@ -76,6 +80,7 @@ def run_scan_bg(cities=None, capital=None, days=1, target_date=None):
         _scan_log.append(f"ERROR: {e}")
     finally:
         _scan_running = False
+        _scan_lock.release()
 
 
 TAKEN_FILE = os.path.join(DATA_DIR, "taken.json")
@@ -105,15 +110,37 @@ def _pg_kv_load(key: str):
         return None
 
 
+def _pg_ensure_table():
+    """Ensure kv_store table exists (matches tracker.py schema: JSONB, TIMESTAMPTZ)."""
+    try:
+        import psycopg2
+        conn = psycopg2.connect(DATABASE_URL)
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS kv_store (
+                        key        TEXT PRIMARY KEY,
+                        data       JSONB NOT NULL,
+                        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    )
+                """)
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"[WARN] _pg_ensure_table failed: {e}")
+
+
 def _pg_kv_save(key: str, data):
+    _pg_ensure_table()
     try:
         import psycopg2, json as _json
         conn = psycopg2.connect(DATABASE_URL)
         try:
             with conn.cursor() as cur:
                 cur.execute("""
-                    INSERT INTO kv_store (key, data)
-                    VALUES (%s, %s)
+                    INSERT INTO kv_store (key, data, updated_at)
+                    VALUES (%s, %s, NOW())
                     ON CONFLICT (key) DO UPDATE
                         SET data = EXCLUDED.data, updated_at = NOW()
                 """, (key, _json.dumps(data)))
@@ -283,11 +310,13 @@ def data():
     scan_date = request.args.get("date")   # YYYY-MM-DD
     file      = request.args.get("file")   # legacy file-based lookup
 
-    # 1. Specific date requested → load that date from Postgres
-    if scan_date and DATABASE_URL:
-        scan = _pg_kv_load(f"scan_{scan_date}")
-        if scan:
-            return jsonify(_normalize_scan(scan))
+    # 1. Specific date requested → load that date from Postgres only (no silent fallthrough)
+    if scan_date:
+        if DATABASE_URL:
+            scan = _pg_kv_load(f"scan_{scan_date}")
+            if scan:
+                return jsonify(_normalize_scan(scan))
+        return jsonify({"error": f"No scan data found for {scan_date}"}), 404
 
     # 2. No specific date → try Postgres merged view first (survives redeployments)
     if not file and DATABASE_URL:
@@ -354,10 +383,15 @@ def take():
 
 @app.route("/outcomes")
 def outcomes():
+    global _last_resolve_time
     try:
         from tracker import get_summary, resolve_outcomes
-        # Resolve any newly past-date markets and backfill missing actual temps
-        resolve_outcomes()
+        # Throttle resolve_outcomes to at most once per cooldown period
+        now = datetime.now()
+        if (_last_resolve_time is None or
+                (now - _last_resolve_time).total_seconds() > _RESOLVE_COOLDOWN_SECS):
+            resolve_outcomes()
+            _last_resolve_time = now
         return jsonify(get_summary())
     except Exception as e:
         return jsonify({"error": str(e), "total": 0, "resolved": 0,
@@ -444,7 +478,8 @@ _last_auto_scan = None   # ISO string of last auto-scan start time
 
 def _auto_scan_job():
     global _last_auto_scan
-    _last_auto_scan = datetime.now().isoformat()
+    if not _scan_running:
+        _last_auto_scan = datetime.now().isoformat()
     threading.Thread(target=run_scan_bg, daemon=True).start()
 
 

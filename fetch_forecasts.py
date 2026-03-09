@@ -182,9 +182,9 @@ def fetch_wunderground_hourly(station: str, unit: str = "F",
             return None
 
         def _convert(f: float) -> float:
-            """Convert °F → °C using WU's display rounding, or keep as °F."""
+            """Convert °F → °C preserving 1 decimal place, or keep as °F."""
             if unit == "C":
-                return round((f - 32) * 5 / 9)
+                return round((f - 32) * 5 / 9, 1)
             return float(f)
 
         daily: dict = {}

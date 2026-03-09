@@ -12,9 +12,12 @@ Storage: DATA_DIR/outcomes.json  (persists across Railway deploys when volume is
 import json
 import os
 import re
+import threading
 import requests
 from datetime import datetime, date
 from typing import Optional
+
+_tracker_lock = threading.Lock()
 
 DATA_DIR = os.environ.get("DATA_DIR", os.path.join(os.path.dirname(__file__), "data"))
 OUTCOMES_FILE = os.path.join(DATA_DIR, "outcomes.json")
@@ -37,16 +40,30 @@ def _pg_conn():
 
 
 def _pg_ensure_table():
-    """Create the kv_store table if it doesn't exist."""
+    """Create the kv_store table if it doesn't exist (JSONB, TIMESTAMPTZ)."""
     conn = _pg_conn()
     try:
         with conn.cursor() as cur:
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS kv_store (
-                    key  TEXT PRIMARY KEY,
-                    data TEXT NOT NULL,
-                    updated_at TIMESTAMP DEFAULT NOW()
+                    key        TEXT PRIMARY KEY,
+                    data       JSONB NOT NULL,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
+            """)
+            # Migrate existing TEXT column to JSONB if needed
+            cur.execute("""
+                DO $$
+                BEGIN
+                    IF EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_name='kv_store' AND column_name='data'
+                          AND data_type='text'
+                    ) THEN
+                        ALTER TABLE kv_store ALTER COLUMN data TYPE JSONB
+                            USING data::jsonb;
+                    END IF;
+                END$$;
             """)
         conn.commit()
     finally:
@@ -395,7 +412,10 @@ def resolve_outcomes() -> int:
     Returns count of newly resolved outcomes.
     """
     data = _load()
-    today = date.today().isoformat()
+    # Use UTC now so Railway (always UTC) never fires before a market has actually closed.
+    # Compare full ISO datetime to resolution_time when available, else fall back to date.
+    now_utc = datetime.utcnow()
+    today = now_utc.date().isoformat()
     resolved_count = 0
 
     # Auto-backfill any entries missing resolution_time
@@ -427,7 +447,18 @@ def resolve_outcomes() -> int:
     for opp in data["opportunities"]:
         if opp["outcome"] is not None:
             continue
-        if opp["resolution_date"] >= today:
+        # Prefer resolution_time (UTC ISO) when available to avoid resolving early
+        res_time = opp.get("resolution_time")
+        if res_time:
+            try:
+                res_dt = datetime.fromisoformat(res_time.replace("Z", "+00:00"))
+                res_dt_naive = res_dt.replace(tzinfo=None)
+                if res_dt_naive > now_utc:
+                    continue
+            except (ValueError, TypeError):
+                if opp["resolution_date"] >= today:
+                    continue
+        elif opp["resolution_date"] >= today:
             continue
 
         if opp["type"] == "no":
@@ -506,7 +537,6 @@ def get_summary() -> dict:
     losses = [o for o in resolved if o["outcome"] == "loss"]
     pending = [o for o in opps if o["outcome"] is None]
 
-    total_pnl_pct = sum(o["pnl_pct"] or 0 for o in resolved)
     avg_win = sum(o["pnl_pct"] for o in wins) / len(wins) if wins else None
     avg_loss = sum(o["pnl_pct"] for o in losses) / len(losses) if losses else None
 
@@ -556,7 +586,6 @@ def get_summary() -> dict:
         "win_rate": round(len(wins) / len(resolved) * 100, 1) if resolved else None,
         "avg_win_pct": round(avg_win, 1) if avg_win is not None else None,
         "avg_loss_pct": round(avg_loss, 1) if avg_loss is not None else None,
-        "total_pnl_pct": round(total_pnl_pct, 1),
         # Paper trading
         "paper_size_usd": PAPER_SIZE_USD,
         "paper_pnl_total": paper_pnl_total,
@@ -592,19 +621,20 @@ def record_live_trade(
     Mark an opportunity as live-traded. Call this right after buy() succeeds.
     Returns True if the opportunity was found and updated.
     """
-    data = _load()
-    for opp in data["opportunities"]:
-        if opp["id"] == opp_id:
-            opp["is_live"]       = True
-            opp["live_order_id"] = order_id
-            opp["live_size_usd"] = size_usd
-            opp["shares"]        = shares
-            opp["token_id"]      = token_id
-            opp["exit_price"]    = None
-            opp["exit_reason"]   = None
-            opp["live_at"]       = datetime.utcnow().isoformat()
-            _save(data)
-            return True
+    with _tracker_lock:
+        data = _load()
+        for opp in data["opportunities"]:
+            if opp["id"] == opp_id:
+                opp["is_live"]       = True
+                opp["live_order_id"] = order_id
+                opp["live_size_usd"] = size_usd
+                opp["shares"]        = shares
+                opp["token_id"]      = token_id
+                opp["exit_price"]    = None
+                opp["exit_reason"]   = None
+                opp["live_at"]       = datetime.utcnow().isoformat()
+                _save(data)
+                return True
     return False
 
 
@@ -631,23 +661,23 @@ def mark_exited_early(opp_id: str, exit_price: float) -> bool:
 
 
 def _mark_exit(opp_id: str, exit_price: float, reason: str) -> bool:
-    data = _load()
-    for opp in data["opportunities"]:
-        if opp["id"] == opp_id:
-            entry  = opp.get("entry_price", 0) or opp.get("live_size_usd", PAPER_SIZE_USD)
-            shares = opp.get("shares", 0)
-            stake  = opp.get("live_size_usd") or opp.get("paper_size_usd", PAPER_SIZE_USD)
+    with _tracker_lock:
+        data = _load()
+        for opp in data["opportunities"]:
+            if opp["id"] == opp_id:
+                shares = opp.get("shares", 0)
+                stake  = opp.get("live_size_usd") or opp.get("paper_size_usd", PAPER_SIZE_USD)
 
-            proceeds    = shares * exit_price
-            pnl_usd     = round(proceeds - stake, 2)
-            pnl_pct     = round((proceeds - stake) / stake * 100, 2) if stake else 0.0
+                proceeds    = shares * exit_price
+                pnl_usd     = round(proceeds - stake, 2)
+                pnl_pct     = round((proceeds - stake) / stake * 100, 2) if stake else 0.0
 
-            opp["exit_price"]    = exit_price
-            opp["exit_reason"]   = reason
-            opp["exit_at"]       = datetime.utcnow().isoformat()
-            opp["pnl_pct"]       = pnl_pct
-            opp["paper_pnl_usd"] = pnl_usd
-            opp["outcome"]       = "win" if pnl_usd > 0 else "loss"
-            _save(data)
-            return True
+                opp["exit_price"]    = exit_price
+                opp["exit_reason"]   = reason
+                opp["exit_at"]       = datetime.utcnow().isoformat()
+                opp["pnl_pct"]       = pnl_pct
+                opp["paper_pnl_usd"] = pnl_usd
+                opp["outcome"]       = "win" if pnl_usd > 0 else "loss"
+                _save(data)
+                return True
     return False
