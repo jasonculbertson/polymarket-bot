@@ -190,7 +190,7 @@ def _normalize_scan(scan: dict) -> dict:
 
 
 def _pg_merge_latest() -> dict | None:
-    """Load and merge today + tomorrow (and any other recent dates) from Postgres."""
+    """Load and merge the most recent scans from Postgres (today + tomorrow preferred)."""
     if not DATABASE_URL:
         return None
     dates = _pg_list_scan_dates()
@@ -200,20 +200,30 @@ def _pg_merge_latest() -> dict | None:
     today    = _date.today().isoformat()
     tomorrow = (_date.today() + timedelta(days=1)).isoformat()
     target_dates = {today, tomorrow}
-    # Load today + tomorrow; fall back to the two most-recent dates if neither exists
+
+    # First pass: try to load today + tomorrow
     loaded = []
     for entry in dates:
         d = entry["date"]
-        if d in target_dates or (not loaded and len(dates) <= 2):
+        if d in target_dates:
             scan = _pg_kv_load(f"scan_{d}")
             if scan:
                 loaded.append(_normalize_scan(scan))
         if len(loaded) >= 2:
             break
+
+    # Fallback: load the two most-recent scans regardless of date
+    if not loaded:
+        for entry in dates[:2]:
+            scan = _pg_kv_load(f"scan_{entry['date']}")
+            if scan:
+                loaded.append(_normalize_scan(scan))
+
     if not loaded:
         return None
     if len(loaded) == 1:
         return loaded[0]
+
     # Merge multiple date scans into one combined payload
     merged = {
         "scan_time": loaded[0].get("scan_time", ""),
