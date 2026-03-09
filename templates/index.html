@@ -1457,7 +1457,12 @@ function renderFc(fcs) {
 
 // ─── Render all ──────────────────────────────────────────────────────
 function render(d) {
-  if (!d || d.error) return;
+  if (!d || d.error) {
+    $('scan-status').textContent = 'No scan data in Postgres yet — click ▶ Run Scan';
+    $('scan-status').style.color = 'var(--yellow)';
+    return;
+  }
+  $('scan-status').style.color = '';
   _data = d;
 
   const ts = d.scan_time ? new Date(d.scan_time).toLocaleString() : '—';
