@@ -16,6 +16,7 @@ import re
 import json
 import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timedelta
 from typing import Optional
 from config import CITIES, GAMMA_API, CLOB_API
 
@@ -139,13 +140,24 @@ def fetch_city_markets(city_name: str, days_ahead: int = 7) -> list:
 
         station = parse_station(markets_raw[0].get("resolutionSource", "")) or cfg["station"]
 
-        date_str = markets_raw[0].get("endDateIso") or ""
-        if not date_str:
+        # Resolution = when the market settles (e.g. 2026-03-09 05:00). Forecast date = weather day (e.g. 2026-03-08).
+        resolution_date_str = markets_raw[0].get("endDateIso") or ""
+        if not resolution_date_str:
             slug = event.get("slug", "")
             m = re.search(r"(\d{4}-\d{2}-\d{2})", slug)
-            date_str = m.group(1) if m else ""
+            resolution_date_str = m.group(1) if m else ""
         # Full ISO resolution timestamp (UTC) e.g. "2026-03-05T12:00:00Z"
         resolution_time = markets_raw[0].get("endDate") or event.get("endDate") or ""
+
+        # Weather markets typically resolve the morning *after* the weather day → forecast_date = resolution_date - 1 day
+        try:
+            res_dt = datetime.fromisoformat(resolution_date_str[:10].replace("Z", ""))
+            forecast_dt = (res_dt - timedelta(days=1)).date()
+            date_str = forecast_dt.isoformat()
+        except (ValueError, TypeError):
+            date_str = resolution_date_str or ""
+        if not resolution_date_str:
+            resolution_date_str = date_str
 
         markets_out = []
         for m_raw in markets_raw:
@@ -204,6 +216,7 @@ def fetch_city_markets(city_name: str, days_ahead: int = 7) -> list:
                 "event_id": str(event.get("id", "")),
                 "event_slug": event.get("slug", ""),
                 "date": date_str,
+                "resolution_date": resolution_date_str,
                 "resolution_time": resolution_time,
                 "station": station,
                 "temp_unit": city_unit,

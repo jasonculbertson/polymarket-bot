@@ -343,6 +343,11 @@ def data():
     if not file and DATABASE_URL:
         merged = _pg_merge_latest()
         if merged:
+            try:
+                from tracker import record_scan_from_merged
+                record_scan_from_merged(merged)
+            except Exception as e:
+                print(f"[WARN] outcomes backfill from merged: {e}")
             return jsonify(merged)
 
     # 3. Fall back to local file (only available on current deployment)

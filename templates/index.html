@@ -1084,6 +1084,10 @@ function _isoTomorrow() {
   const d = new Date(); d.setDate(d.getDate() + 1);
   return _isoLocalDate(d);
 }
+function _isoYesterday() {
+  const d = new Date(); d.setDate(d.getDate() - 1);
+  return _isoLocalDate(d);
+}
 function setDate(which) {
   _scanDateMode = which;
   const input = $('scan-date');
@@ -1597,10 +1601,12 @@ function loadDateTabs() {
       empty.style.display = 'none';
       const today = _isoToday();
       const tomorrow = _isoTomorrow();
+      const yesterday = _isoYesterday();
 
       function labelFor(d) {
         if (d === today)    return `Today (${d})`;
         if (d === tomorrow) return `Tomorrow (${d})`;
+        if (d === yesterday) return `Yesterday (${d})`;
         return d;
       }
 
@@ -1778,9 +1784,11 @@ function _buildDayPills(containerId, data, activeDate, onSelect) {
   if (dates.length <= 1) { container.innerHTML = ''; return; }
   const today    = _isoToday();
   const tomorrow = _isoTomorrow();
+  const yesterday = _isoYesterday();
   function label(d) {
     if (d === today)    return 'Today';
     if (d === tomorrow) return 'Tomorrow';
+    if (d === yesterday) return 'Yesterday';
     return d;
   }
   container.innerHTML = `<button class="day-pill${!activeDate ? ' active' : ''}" onclick="${onSelect}(null)">All</button>` +
@@ -1880,20 +1888,22 @@ function _renderOutcomeRows(opps) {
 function _buildOutcomeDateTabs(opps) {
   const container = $('oc-date-tabs');
   if (!container) return;
-  const dates = [...new Set(opps.map(o => o.resolution_date || o.date).filter(Boolean))].sort().reverse();
+  const dates = [...new Set(opps.map(o => o.date || o.resolution_date).filter(Boolean))].sort().reverse();
   if (dates.length < 2) { container.innerHTML = ''; return; }
   const active = _outcomesFilter;
   function label(d) {
     const today    = _isoToday();
     const tomorrow = _isoTomorrow();
+    const yesterday = _isoYesterday();
     if (d === today)    return `Today (${d})`;
     if (d === tomorrow) return `Tomorrow (${d})`;
+    if (d === yesterday) return `Yesterday (${d})`;
     return d;
   }
   container.innerHTML =
     `<button class="date-tab-btn${!active?' active':''}" onclick="filterOutcomesByDate(null)">All (${opps.length})</button>` +
     dates.map(d => {
-      const count = opps.filter(o => (o.resolution_date||o.date) === d).length;
+      const count = opps.filter(o => (o.date || o.resolution_date) === d).length;
       return `<button class="date-tab-btn${active===d?' active':''}" onclick="filterOutcomesByDate('${d}')">${label(d)} · ${count}</button>`;
     }).join('');
 }
@@ -1915,20 +1925,22 @@ function _dayStats(rows) {
 function _buildDaySummaries(opps) {
   const container = $('oc-day-summaries');
   if (!container) return;
-  const dates = [...new Set(opps.map(o => o.resolution_date || o.date).filter(Boolean))].sort().reverse();
+  const dates = [...new Set(opps.map(o => o.date || o.resolution_date).filter(Boolean))].sort().reverse();
   if (!dates.length) { container.innerHTML = ''; return; }
 
   const today    = _isoToday();
   const tomorrow = _isoTomorrow();
+  const yesterday = _isoYesterday();
   function shortLabel(d) {
     if (d === today)    return 'Today';
     if (d === tomorrow) return 'Tomorrow';
+    if (d === yesterday) return 'Yesterday';
     const [,m,dy] = d.split('-');
     return `${parseInt(m)}/${parseInt(dy)}`;
   }
 
   container.innerHTML = dates.map(d => {
-    const dayRows = opps.filter(o => (o.resolution_date||o.date) === d);
+    const dayRows = opps.filter(o => (o.date || o.resolution_date) === d);
     const s = _dayStats(dayRows);
     const pnlColor = s.pnl > 0 ? 'var(--green)' : s.pnl < 0 ? 'var(--red)' : 'var(--text-muted)';
     const pnlStr   = (s.pnl >= 0 ? '+' : '') + '$' + s.pnl.toFixed(2);
@@ -1946,7 +1958,7 @@ function _buildDaySummaries(opps) {
 function filterOutcomesByDate(date) {
   _outcomesFilter = date;
   const filtered = date
-    ? _allOutcomes.filter(o => (o.resolution_date || o.date) === date)
+    ? _allOutcomes.filter(o => (o.date || o.resolution_date) === date)
     : _allOutcomes;
   _renderOutcomeRows(filtered);
   _buildOutcomeDateTabs(_allOutcomes);

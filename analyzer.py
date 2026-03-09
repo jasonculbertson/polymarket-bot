@@ -84,6 +84,7 @@ class NoOpp:
     temp_unit: str = "F"     # "F" or "C"
     market_slug: str = ""
     resolution_time: str = ""
+    resolution_date: str = ""  # settle date (YYYY-MM-DD) for resolve logic; date = forecast/weather day
 
 
 @dataclass
@@ -121,6 +122,7 @@ class YesCluster:
     predicted_win_prob: float = 0.75
     temp_unit: str = "F"     # "F" or "C"
     resolution_time: str = ""  # ISO UTC timestamp from Gamma endDate
+    resolution_date: str = ""   # settle date (YYYY-MM-DD) for resolve logic; date = forecast/weather day
 
     def bracket_labels(self) -> str:
         return " + ".join(b.group_title for b in self.brackets)
@@ -305,6 +307,7 @@ def find_no_opps(event: dict, forecast_temp: float, confidence: str,
                     temp_unit=unit,
                     market_slug=mkt.get("market_slug", ""),
                     resolution_time=event.get("resolution_time", ""),
+                    resolution_date=event.get("resolution_date", event.get("date", "")),
                 ))
     return opps
 
@@ -408,6 +411,7 @@ def find_yes_clusters(event: dict, forecast_temp: float, confidence: str,
             total_cost=total_cost,
             liquidity_min=min(s.liquidity for s in slots),
             temp_unit=unit,
+            resolution_date=event.get("resolution_date", event.get("date", "")),
         )
 
     # Prefer 3-bracket cluster (center ± 1). If forecast is at an edge, shift inward.

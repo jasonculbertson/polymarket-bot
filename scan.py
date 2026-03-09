@@ -59,6 +59,7 @@ def save_results(clusters, no_opps, markets, forecasts, scan_time: str, target_d
             "type": "YES_CLUSTER",
             "city": c.city,
             "date": c.date,
+            "resolution_date": getattr(c, "resolution_date", "") or c.date,
             "resolution_time": getattr(c, "resolution_time", ""),
             "station": c.station,
             "event_slug": c.event_slug,
@@ -107,6 +108,7 @@ def save_results(clusters, no_opps, markets, forecasts, scan_time: str, target_d
             "type": "NO",
             "city": o.city,
             "date": o.date,
+            "resolution_date": getattr(o, "resolution_date", "") or o.date,
             "station": o.station,
             "event_slug": o.event_slug,
             "market_id": o.market_id,
@@ -354,13 +356,14 @@ def main():
     scan_time = datetime.now().isoformat()
 
     today    = date.today()
+    yesterday = today - timedelta(days=1)
     tomorrow = today + timedelta(days=1)
 
-    # Always scan today + tomorrow together unless a specific date is forced
+    # Always scan yesterday + today + tomorrow (date = forecast/weather day; yesterday's resolve this morning)
     if args.date in (None, "both"):
-        scan_dates = [today.isoformat(), tomorrow.isoformat()]
-        date_label = "today + tomorrow"
-        fetch_days = 3   # enough to cover both
+        scan_dates = [yesterday.isoformat(), today.isoformat(), tomorrow.isoformat()]
+        date_label = "yesterday + today + tomorrow"
+        fetch_days = 4
     elif args.date == "today":
         scan_dates = [today.isoformat()]
         date_label = "today"
@@ -442,7 +445,9 @@ def main():
         else:
             print()
     except Exception as e:
+        import traceback
         print(f"  [WARN] Tracker skipped: {e}")
+        traceback.print_exc()
 
     try:
         from learner import learn_from_outcomes

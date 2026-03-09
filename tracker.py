@@ -228,7 +228,8 @@ def record_scan(yes_clusters, no_opps, all_forecasts: dict = None) -> int:
             "confidence": o.forecast_confidence,
             "predicted_win_prob": round(getattr(o, "predicted_win_prob", 0.75), 4),
             "forecast_sources": _get_sources(o.city, o.date),
-            "resolution_date": o.date,
+            "date": o.date,
+            "resolution_date": getattr(o, "resolution_date", None) or o.date,
             "resolution_time": getattr(o, "resolution_time", ""),
             "first_seen": now,
             "paper_size_usd": PAPER_SIZE_USD,
@@ -262,7 +263,8 @@ def record_scan(yes_clusters, no_opps, all_forecasts: dict = None) -> int:
             "confidence": c.forecast_confidence,
             "predicted_win_prob": round(getattr(c, "predicted_win_prob", 0.75), 4),
             "forecast_sources": _get_sources(c.city, c.date),
-            "resolution_date": c.date,
+            "date": c.date,
+            "resolution_date": getattr(c, "resolution_date", None) or c.date,
             "resolution_time": getattr(c, "resolution_time", ""),
             "first_seen": now,
             "paper_size_usd": round(PAPER_SIZE_USD * c.cluster_size, 2),
@@ -278,6 +280,100 @@ def record_scan(yes_clusters, no_opps, all_forecasts: dict = None) -> int:
     if added:
         with _tracker_lock:
             _save(data)
+    return len(data["opportunities"])
+
+
+def record_scan_from_merged(merged: dict) -> int:
+    """
+    Add opportunities from a merged scan payload (dict form from Postgres) into the tracker.
+    Used when serving /data so dashboard and outcomes stay in sync even if record_scan
+    failed during the scan (e.g. transient DB error). Idempotent: skips existing IDs.
+    """
+    try:
+        data = _load()
+    except RuntimeError as e:
+        print(f"[WARN] record_scan_from_merged: skip — {e}")
+        return 0
+    existing_ids = {o["id"] for o in data["opportunities"]}
+    now = datetime.utcnow().isoformat()
+    added = 0
+
+    for o in merged.get("no_opportunities") or []:
+        oid = _no_id(o.get("market_id", ""))
+        if not oid or oid == "no_" or oid in existing_ids:
+            continue
+        data["opportunities"].append({
+            "id": oid,
+            "type": "no",
+            "city": o.get("city", ""),
+            "bracket": o.get("bracket", ""),
+            "event_slug": o.get("event_slug", ""),
+            "market_id": o.get("market_id", ""),
+            "no_token_id": o.get("no_token_id", ""),
+            "entry_price": round(float(o.get("no_price", 0) or 0), 4),
+            "return_pct": round(float(o.get("return_pct", 0) or 0), 2),
+            "forecast_temp": float(o.get("forecast_temp", 0) or 0),
+            "temp_unit": o.get("temp_unit", "F"),
+            "confidence": o.get("forecast_confidence", "medium"),
+            "predicted_win_prob": 0.75,
+            "forecast_sources": {},
+            "date": o.get("date", ""),
+            "resolution_date": o.get("resolution_date") or o.get("date", ""),
+            "resolution_time": o.get("resolution_time", ""),
+            "first_seen": now,
+            "paper_size_usd": PAPER_SIZE_USD,
+            "outcome": None,
+            "final_yes_price": None,
+            "pnl_pct": None,
+            "paper_pnl_usd": None,
+            "learned": False,
+        })
+        existing_ids.add(oid)
+        added += 1
+
+    for c in merged.get("yes_clusters") or []:
+        brackets = c.get("brackets") or []
+        mids = [b.get("market_id", "") for b in brackets if b.get("market_id")]
+        if not mids:
+            continue
+        oid = _yes_id(c.get("event_slug", ""), mids)
+        if oid in existing_ids:
+            continue
+        bracket_str = c.get("bracket") or " + ".join(b.get("group_title", "") for b in brackets)
+        data["opportunities"].append({
+            "id": oid,
+            "type": "yes",
+            "city": c.get("city", ""),
+            "bracket": bracket_str,
+            "event_slug": c.get("event_slug", ""),
+            "market_ids": mids,
+            "yes_token_ids": [b.get("yes_token_id", "") for b in brackets],
+            "entry_price": round(float(c.get("total_price", 0) or 0), 4),
+            "return_pct": round(float(c.get("return_pct", 0) or 0), 2),
+            "cluster_size": int(c.get("cluster_size", 0) or 0),
+            "forecast_temp": float(c.get("forecast_temp", 0) or 0),
+            "temp_unit": c.get("temp_unit", "F"),
+            "confidence": c.get("forecast_confidence", "medium"),
+            "predicted_win_prob": 0.75,
+            "forecast_sources": {},
+            "date": c.get("date", ""),
+            "resolution_date": c.get("resolution_date") or c.get("date", ""),
+            "resolution_time": c.get("resolution_time", ""),
+            "first_seen": now,
+            "paper_size_usd": round(PAPER_SIZE_USD * (c.get("cluster_size") or 1), 2),
+            "outcome": None,
+            "final_yes_price": None,
+            "pnl_pct": None,
+            "paper_pnl_usd": None,
+            "learned": False,
+        })
+        existing_ids.add(oid)
+        added += 1
+
+    if added:
+        with _tracker_lock:
+            _save(data)
+        print(f"[tracker] backfill: added {added} opportunities from merged scan")
     return len(data["opportunities"])
 
 
@@ -394,7 +490,10 @@ def _backfill_resolution_times(data: dict) -> bool:
                 if r.status_code == 200:
                     events = r.json()
                     if events:
-                        end = events[0].get("endDate", "")
+                        ev = events[0] if isinstance(events, list) else events
+                        end = ev.get("endDate", "")
+                        if not end and ev.get("markets"):
+                            end = ev["markets"][0].get("endDate", "")  # full ISO timestamp only, not endDateIso
                         if end:
                             o["resolution_time"] = end
                             filled += 1
@@ -448,8 +547,16 @@ def resolve_outcomes() -> int:
                     opp["wu_error"] = round(abs(wu_pred - actual), 1)
                 backfill_actual += 1
 
+    # When we only have resolution_date (no resolution_time), assume markets resolve by noon UTC
+    # on that day (typical for US weather resolving morning local). Otherwise we'd wait until the
+    # next UTC day and resolve too late (e.g. 8 AM Eastern on Mar 9 would never resolve on Mar 9 UTC).
+    noon_utc_on_res_date = None  # set below when we need it for same-day heuristic
+
     for opp in data["opportunities"]:
         if opp["outcome"] is not None:
+            continue
+        res_date = opp.get("resolution_date") or ""
+        if not res_date:
             continue
         # Prefer resolution_time (UTC ISO) when available to avoid resolving early
         res_time = opp.get("resolution_time")
@@ -460,10 +567,16 @@ def resolve_outcomes() -> int:
                 if res_dt_naive > now_utc:
                     continue
             except (ValueError, TypeError):
-                if opp["resolution_date"] >= today:
+                res_time = None  # treat as missing so date heuristic applies
+        if not res_time:
+            # No resolution_time (or parse failed): use date + noon-UTC heuristic so we resolve after ~7–8 AM Eastern
+            if res_date > today:
+                continue
+            if res_date == today:
+                if noon_utc_on_res_date is None:
+                    noon_utc_on_res_date = now_utc.replace(hour=12, minute=0, second=0, microsecond=0)
+                if now_utc < noon_utc_on_res_date:
                     continue
-        elif opp["resolution_date"] >= today:
-            continue
 
         if opp["type"] == "no":
             final_yes = _fetch_market_yes_price(opp["market_id"])
