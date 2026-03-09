@@ -166,12 +166,11 @@ def save_results(clusters, no_opps, markets, forecasts, scan_time: str, target_d
     with open(latest_path, "w") as f:
         json.dump(out, f, indent=2)
 
-    # Persist each date's results separately in Postgres so they survive redeployments
-    # BUG 1 fix: only write when there are actual results to avoid overwriting valid data
-    if clusters_data or no_opps_data:
-        _pg_save_scan_dates(out, dates_in_results)
-    else:
-        print("  [WARN] No opportunities found — skipping Postgres write to avoid data loss")
+    # Persist each date's results separately in Postgres so they survive redeployments.
+    # Always write (even when 0 opportunities) so the dashboard has a "latest" to load.
+    _pg_save_scan_dates(out, dates_in_results)
+    if not clusters_data and not no_opps_data:
+        print("  [WARN] No opportunities found — saved empty scan so dashboard can load")
 
     print(f"\nResults saved to: {out_path}")
     return out_path

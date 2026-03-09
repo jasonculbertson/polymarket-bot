@@ -702,50 +702,9 @@ tr.taken-row:hover td { opacity: 0.55; }
     <span class="badge badge-purple" id="outcomes-badge">—</span>
   </button>
 
-  <span class="sidebar-label">Filters</span>
-  <div style="padding: 6px 8px; display:flex; flex-direction:column; gap:8px;">
-    <div class="form-group" style="flex-direction:column; align-items:flex-start; gap:4px;">
-      <label class="form-label">Min Return %</label>
-      <div style="display:flex; align-items:center; gap:6px; width:100%;">
-        <input type="range" id="min-return-filter" min="0" max="50" step="1" value="0"
-          style="flex:1; accent-color:var(--purple);"
-          oninput="document.getElementById('min-return-val').textContent=this.value+'%'; applyFilters()">
-        <span id="min-return-val" style="font-size:.72rem; color:var(--text-dim); width:32px;">0%</span>
-      </div>
-    </div>
-    <div class="form-group" style="flex-direction:column; align-items:flex-start; gap:4px;">
-      <label class="form-label">Min Liquidity $</label>
-      <div style="display:flex; align-items:center; gap:6px; width:100%;">
-        <input type="range" id="min-liq-filter" min="0" max="500" step="25" value="0"
-          style="flex:1; accent-color:var(--purple);"
-          oninput="document.getElementById('min-liq-val').textContent='$'+this.value; applyFilters()">
-        <span id="min-liq-val" style="font-size:.72rem; color:var(--text-dim); width:36px;">$0</span>
-      </div>
-    </div>
-    <div class="form-group" style="flex-direction:column; align-items:flex-start; gap:4px;">
-      <label class="form-label">Confidence</label>
-      <select id="conf-filter" onchange="applyFilters()"
-        style="width:100%; background:var(--bg); border-color:var(--border); color:var(--text-dim);">
-        <option value="all">All</option>
-        <option value="high">High only</option>
-        <option value="medium">Medium+</option>
-      </select>
-    </div>
-    <div class="form-group" style="gap:6px;">
-      <input type="checkbox" id="hide-taken-filter" onchange="applyFilters()" style="accent-color:var(--purple);">
-      <label class="form-label" for="hide-taken-filter">Hide taken</label>
-    </div>
-  </div>
-
-  <span class="sidebar-label">Actions</span>
-  <button class="nav-btn" onclick="exportCSV('yes')">⬇ Export YES CSV</button>
-  <button class="nav-btn" onclick="exportCSV('no')">⬇ Export NO CSV</button>
-  <button class="nav-btn" onclick="loadData()">↻ Refresh data</button>
-
   <div style="flex:1"></div>
   <div style="padding: 8px; font-size:.62rem; color:var(--text-muted);">
-    <kbd class="kbd">R</kbd> run scan &nbsp;
-    <kbd class="kbd">F</kbd> focus filter
+    <kbd class="kbd">R</kbd> run scan
   </div>
 </nav>
 
@@ -1036,6 +995,23 @@ tr.taken-row:hover td { opacity: 0.55; }
 
 <div id="toast"></div>
 
+<!-- Trade Modal (must exist before script so addEventListener can attach) -->
+<div id="trade-modal-bg">
+  <div id="trade-modal">
+    <h3 id="trade-modal-title">Place Trade</h3>
+    <div style="font-size:.75rem;color:var(--text-dim);margin-bottom:10px" id="trade-price-display"></div>
+    <label for="trade-size-input">Size (USDC)</label>
+    <input type="number" id="trade-size-input" min="1" step="1" placeholder="10">
+    <div class="modal-note">
+      Shares = size ÷ price. In paper mode (LIVE_MODE=false) no real order is submitted.
+    </div>
+    <div class="modal-row">
+      <button onclick="closeTradeModal()">Cancel</button>
+      <button id="trade-confirm-btn" class="confirm-btn" onclick="confirmTrade()">Confirm Trade</button>
+    </div>
+  </div>
+</div>
+
 <script>
 // ─── State ───────────────────────────────────────────────────────────
 let _data = null;
@@ -1171,13 +1147,15 @@ function showTab(name) {
   if (name === 'outcomes') loadOutcomes();
 }
 
-// ─── Filters ─────────────────────────────────────────────────────────
+// ─── Filters (sidebar removed; use permissive defaults so all rows show)
 function getFilters() {
+  const minReturnEl = $('min-return-filter'), minLiqEl = $('min-liq-filter');
+  const confEl = $('conf-filter'), hideTakenEl = $('hide-taken-filter');
   return {
-    minReturn: parseFloat($('min-return-filter').value) || 0,
-    minLiq:    parseFloat($('min-liq-filter').value)    || 0,
-    conf:      $('conf-filter').value || 'all',
-    hideTaken: $('hide-taken-filter').checked,
+    minReturn: minReturnEl ? (parseFloat(minReturnEl.value) || 0) : 0,
+    minLiq:    minLiqEl    ? (parseFloat(minLiqEl.value) || 0)    : 0,
+    conf:      confEl      ? (confEl.value || 'all')             : 'all',
+    hideTaken: hideTakenEl ? hideTakenEl.checked                  : false,
   };
 }
 function passesFilter(row, isYes, id) {
@@ -1519,8 +1497,11 @@ function render(d) {
 
 // ─── Data load ───────────────────────────────────────────────────────
 let _activeScanDate = null;  // null = latest
+const _dataFetchTimeoutMs = 15000;
+const _dataFetchMaxRetries = 2;
 
-function loadData(file, scanDate) {
+function loadData(file, scanDate, retryCount) {
+  retryCount = retryCount || 0;
   let url;
   if (scanDate) {
     url = `/data?date=${encodeURIComponent(scanDate)}`;
@@ -1532,17 +1513,33 @@ function loadData(file, scanDate) {
     url = '/data';
     _activeScanDate = null;
   }
-  fetch(url)
-    .then(r => r.json())
+  if (!file && !scanDate && $('header-meta')) $('header-meta').textContent = 'Loading…';
+  const ac = new AbortController();
+  const to = setTimeout(() => ac.abort(), _dataFetchTimeoutMs);
+  fetch(url, { signal: ac.signal })
+    .then(r => {
+      clearTimeout(to);
+      if (!r.ok && r.status !== 404) throw new Error('Fetch failed');
+      return r.json();
+    })
     .then(d => {
       render(d);
       _highlightDateTab(scanDate || '__latest__');
-      // If no data and no specific date was requested, auto-trigger a scan
       if ((d.error || !d.yes_clusters) && !scanDate && !file) {
         _autoBootstrapScan();
       }
     })
-    .catch(() => {});
+    .catch(err => {
+      clearTimeout(to);
+      if (!file && !scanDate && retryCount < _dataFetchMaxRetries) {
+        if ($('header-meta')) $('header-meta').textContent = `Loading… (retry ${retryCount + 1})`;
+        setTimeout(() => loadData(null, null, retryCount + 1), 2000);
+      } else {
+        if ($('header-meta')) $('header-meta').textContent = 'No scan data — click ▶ Run Scan';
+        render({ error: 'no scan data' });
+        _autoBootstrapScan();
+      }
+    });
 }
 
 // Auto-trigger a scan if the dashboard has no data and no scan is running
@@ -2041,7 +2038,6 @@ function exportCSV(type) {
 document.addEventListener('keydown', e => {
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
   if (e.key === 'r' || e.key === 'R') runScan();
-  if (e.key === 'f' || e.key === 'F') $('min-return-filter').focus();
 });
 
 // ─── Schedule status ─────────────────────────────────────────────────
@@ -2198,7 +2194,8 @@ function confirmTrade() {
 }
 
 // Close modal on background click
-document.getElementById('trade-modal-bg').addEventListener('click', function(e) {
+var _modalBg = document.getElementById('trade-modal-bg');
+if (_modalBg) _modalBg.addEventListener('click', function(e) {
   if (e.target === this) closeTradeModal();
 });
 
@@ -2211,22 +2208,5 @@ setInterval(loadData, 90000);
 setInterval(loadDateTabs, 60000);   // refresh date tabs every 60s
 setInterval(loadSchedule, 15000);  // refresh countdown every 15s
 </script>
-
-<!-- Trade Modal -->
-<div id="trade-modal-bg">
-  <div id="trade-modal">
-    <h3 id="trade-modal-title">Place Trade</h3>
-    <div style="font-size:.75rem;color:var(--text-dim);margin-bottom:10px" id="trade-price-display"></div>
-    <label for="trade-size-input">Size (USDC)</label>
-    <input type="number" id="trade-size-input" min="1" step="1" placeholder="10">
-    <div class="modal-note">
-      Shares = size ÷ price. In paper mode (LIVE_MODE=false) no real order is submitted.
-    </div>
-    <div class="modal-row">
-      <button onclick="closeTradeModal()">Cancel</button>
-      <button id="trade-confirm-btn" class="confirm-btn" onclick="confirmTrade()">Confirm Trade</button>
-    </div>
-  </div>
-</div>
 </body>
 </html>
