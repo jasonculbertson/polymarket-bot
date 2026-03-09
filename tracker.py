@@ -456,28 +456,28 @@ def _parse_bracket_midpoint(text: str, unit: str = "F") -> Optional[float]:
 def _parse_bracket_ranges(bracket_str: str) -> list:
     """Parse bracket string like '74-75°F' or '76-77°F + 78-79°F' into [(lo, hi), ...]. Returns [] on parse failure."""
     out = []
-    # Split by " + " for YES clusters
-    for part in (bracket_str or "").split("+"):
+    # Split by "+" (with or without spaces) for YES clusters
+    for part in re.split(r"\s*\+\s*", (bracket_str or "")):
         part = part.strip()
-        m = re.search(r"between (-?\d+(?:\.\d+)?)-(-?\d+(?:\.\d+)?)°", part)
+        m = re.search(r"between (-?\d+(?:\.\d+)?)-(-?\d+(?:\.\d+)?)[°º]?", part)
         if m:
             out.append((float(m.group(1)), float(m.group(2))))
             continue
-        m = re.search(r"(-?\d+(?:\.\d+)?)-(-?\d+(?:\.\d+)?)°", part)
+        m = re.search(r"(-?\d+(?:\.\d+)?)-(-?\d+(?:\.\d+)?)[°º]?", part)
         if m:
             out.append((float(m.group(1)), float(m.group(2))))
             continue
-        m = re.search(r"(-?\d+(?:\.\d+)?)°\s*or\s*(?:below|lower)", part, re.I)
+        m = re.search(r"(-?\d+(?:\.\d+)?)[°º]?\s*or\s*(?:below|lower)", part, re.I)
         if m:
             t = float(m.group(1))
             out.append((float("-inf"), t))
             continue
-        m = re.search(r"(-?\d+(?:\.\d+)?)°\s*or\s*(?:above|higher)", part, re.I)
+        m = re.search(r"(-?\d+(?:\.\d+)?)[°º]?\s*or\s*(?:above|higher)", part, re.I)
         if m:
             t = float(m.group(1))
             out.append((t, float("inf")))
             continue
-        m = re.search(r"(-?\d+(?:\.\d+)?)°", part)
+        m = re.search(r"(-?\d+(?:\.\d+)?)[°º]?", part)
         if m:
             t = float(m.group(1))
             out.append((t, t))

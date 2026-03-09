@@ -261,6 +261,12 @@ def save_taken(taken_set: set):
 
 
 
+@app.route("/favicon.ico")
+def favicon():
+    """Avoid 404 when the browser requests a favicon."""
+    return "", 204
+
+
 @app.route("/")
 def index():
     return render_template("index.html")
@@ -442,6 +448,20 @@ def outcomes():
     except Exception as e:
         return jsonify({"error": str(e), "total": 0, "resolved": 0,
                         "wins": 0, "losses": 0, "pending": 0, "recent": []})
+
+
+@app.route("/outcomes/backfill")
+def outcomes_backfill():
+    """Run resolution once (no cooldown) to fill pending outcomes. Call once to manually fill the table."""
+    try:
+        from tracker import get_summary, resolve_outcomes
+        n = resolve_outcomes()
+        summary = get_summary()
+        summary["backfill_run"] = True
+        summary["newly_resolved"] = n
+        return jsonify(summary)
+    except Exception as e:
+        return jsonify({"error": str(e), "backfill_run": False, "newly_resolved": 0})
 
 
 @app.route("/learning")

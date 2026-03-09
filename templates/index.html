@@ -956,6 +956,7 @@ tr.taken-row:hover td { opacity: 0.55; }
         <span class="section-title" style="color:var(--purple-light)">Tracked Opportunities</span>
         <span class="section-count badge-purple badge" id="oc-total-badge">0</span>
         <span style="font-size:.68rem; color:var(--text-muted);">Recorded each scan · auto-resolved after market date</span>
+        <button type="button" class="date-tab-btn" id="oc-fill-pending-btn" onclick="runOutcomesBackfill()" title="Resolve all pending from WU/Gamma and refresh table">Fill pending</button>
         <div id="oc-date-tabs" style="display:flex; gap:4px; flex-wrap:wrap; margin-left:auto;"></div>
       </div>
 
@@ -1696,6 +1697,21 @@ function loadLearning() {
 }
 
 // ─── Outcomes ────────────────────────────────────────────────────────
+function runOutcomesBackfill() {
+  const btn = $('oc-fill-pending-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Filling…'; }
+  fetch('/outcomes/backfill')
+    .then(r => r.json())
+    .then(data => {
+      if (btn) { btn.disabled = false; btn.textContent = 'Fill pending'; }
+      if (data.error) return;
+      const n = data.newly_resolved != null ? data.newly_resolved : 0;
+      loadOutcomes();
+      if (n > 0 && typeof showToast === 'function') showToast(`Resolved ${n} pending`);
+    })
+    .catch(() => { if (btn) { btn.disabled = false; btn.textContent = 'Fill pending'; } });
+}
+
 function loadOutcomes() {
   loadLearning();
   fetch('/outcomes')
