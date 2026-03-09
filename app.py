@@ -32,6 +32,25 @@ _scan_log     = []
 
 _last_resolve_time: datetime = None
 _RESOLVE_COOLDOWN_SECS = 300  # re-run resolve at most once every 5 min
+_resolve_lock = threading.Lock()
+
+
+def _maybe_run_resolve_background():
+    """Run resolve_outcomes in a background thread if cooldown has passed (so dashboard load also fills pending)."""
+    global _last_resolve_time
+    now = datetime.now()
+    with _resolve_lock:
+        if _last_resolve_time is not None and (now - _last_resolve_time).total_seconds() <= _RESOLVE_COOLDOWN_SECS:
+            return
+        _last_resolve_time = now
+    def _run():
+        try:
+            from tracker import resolve_outcomes
+            resolve_outcomes()
+        except Exception as e:
+            print(f"[WARN] background resolve: {e}")
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
 
 
 def load_scan():
@@ -348,6 +367,7 @@ def data():
                 record_scan_from_merged(merged)
             except Exception as e:
                 print(f"[WARN] outcomes backfill from merged: {e}")
+            _maybe_run_resolve_background()
             return jsonify(merged)
 
     # 3. Fall back to local file (only available on current deployment)

@@ -2,6 +2,12 @@
 Outcome tracker: records scanned opportunities and resolves their P&L
 after the market resolution date passes.
 
+Resolution: we do not require Polymarket. Once past resolution time we can infer
+win/loss from the actual temperature for the forecast day. Actual temp is fetched
+in order: (1) Wunderground PWS history (same source Polymarket uses) if WU_PWS_KEY
+is set, (2) Polymarket Gamma API (which bracket won). Then we compare actual vs
+bracket to infer outcome.
+
 Paper trading is simulated at PAPER_SIZE_USD per position.
   - Win  P&L = PAPER_SIZE_USD × (return_pct / 100)
   - Loss P&L = −PAPER_SIZE_USD
@@ -14,7 +20,7 @@ import os
 import re
 import threading
 import requests
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from typing import Optional
 
 _tracker_lock = threading.Lock()
@@ -164,6 +170,31 @@ def _save(data: dict):
     os.makedirs(DATA_DIR, exist_ok=True)
     with open(OUTCOMES_FILE, "w") as f:
         json.dump(data, f, indent=2)
+
+
+def _migrate_forecast_dates(data: dict) -> bool:
+    """
+    One-time: set date (forecast day) to resolution_date - 1 for any opportunity
+    where date is missing or >= resolution_date, so 3/8-style markets get date=3/8.
+    Returns True if any change was made.
+    """
+    changed = False
+    for opp in data.get("opportunities", []):
+        res = opp.get("resolution_date") or ""
+        if not res:
+            continue
+        day = opp.get("date") or ""
+        need_fix = not day or day >= res
+        if not need_fix:
+            continue
+        try:
+            r = datetime.fromisoformat(res[:10]).date()
+            forecast_day = (r - timedelta(days=1)).isoformat()
+            opp["date"] = forecast_day
+            changed = True
+        except Exception:
+            pass
+    return changed
 
 
 # ─── ID helpers ───────────────────────────────────────────────────────────────
@@ -474,6 +505,49 @@ def _infer_outcome_from_actual_temp(opp: dict, actual_temp: float) -> Optional[s
     return "loss"
 
 
+def _forecast_date_for_actual(opp: dict) -> str:
+    """
+    Return the forecast day (YYYY-MM-DD) we need actual temp for. Weather markets
+    resolve the morning after the forecast day, so use date if set and before
+    resolution_date; else resolution_date - 1 day so 3/8-style markets always get 3/8.
+    """
+    res = opp.get("resolution_date") or ""
+    day = opp.get("date") or ""
+    if day and res and day < res:
+        return day
+    if res:
+        try:
+            r = datetime.fromisoformat(res[:10]).date()
+            return (r - timedelta(days=1)).isoformat()
+        except Exception:
+            pass
+    return day or res
+
+
+def _get_actual_temp_for_opp(opp: dict) -> Optional[float]:
+    """
+    Get actual high temp for the opportunity's forecast day. Prefer Wunderground
+    (same source Polymarket uses) so we can resolve without Polymarket API.
+    Order: (1) WU PWS history if WU_PWS_KEY set, (2) Gamma API (which bracket won).
+    """
+    forecast_day = _forecast_date_for_actual(opp)
+    if not forecast_day:
+        return _fetch_actual_temp_from_gamma(opp.get("event_slug", ""))
+    try:
+        from learner import fetch_actual_temperature
+        actual = fetch_actual_temperature(
+            opp.get("event_slug", ""),
+            city=opp.get("city", ""),
+            unit=opp.get("temp_unit", "F"),
+            resolution_date=forecast_day,
+        )
+        if actual is not None:
+            return actual
+    except Exception:
+        pass
+    return _fetch_actual_temp_from_gamma(opp.get("event_slug", ""))
+
+
 def _fetch_actual_temp_from_gamma(event_slug: str) -> Optional[float]:
     """
     Infer actual temperature from the resolved Polymarket event.
@@ -566,8 +640,11 @@ def resolve_outcomes() -> int:
     # Load snapshot under lock, do HTTP work outside lock, then save under lock
     with _tracker_lock:
         data = _load()
+    # Manually fix dates: set date = resolution_date - 1 for any opp where date is missing or >= resolution_date (e.g. 3/8 markets)
+    if _migrate_forecast_dates(data):
+        with _tracker_lock:
+            _save(data)
     # Use UTC now so Railway (always UTC) never fires before a market has actually closed.
-    # Compare full ISO datetime to resolution_time when available, else fall back to date.
     now_utc = datetime.utcnow()
     today = now_utc.date().isoformat()
     resolved_count = 0
@@ -591,7 +668,7 @@ def resolve_outcomes() -> int:
 
         # Re-attempt actual_temp for already-resolved rows that are missing it
         if opp["outcome"] is not None and opp.get("actual_temp") is None:
-            actual = _fetch_actual_temp_from_gamma(opp.get("event_slug", ""))
+            actual = _get_actual_temp_for_opp(opp)
             if actual is not None:
                 opp["actual_temp"] = actual
                 wu_pred = (opp.get("forecast_sources") or {}).get("wunderground")
@@ -599,10 +676,8 @@ def resolve_outcomes() -> int:
                     opp["wu_error"] = round(abs(wu_pred - actual), 1)
                 backfill_actual += 1
 
-    # When we only have resolution_date (no resolution_time), assume markets resolve by noon UTC
-    # on that day (typical for US weather resolving morning local). Otherwise we'd wait until the
-    # next UTC day and resolve too late (e.g. 8 AM Eastern on Mar 9 would never resolve on Mar 9 UTC).
-    noon_utc_on_res_date = None  # set below when we need it for same-day heuristic
+    # resolution_date in the past → allow. Same day → allow after noon UTC (weather resolves morning local).
+    noon_utc_on_res_date = None
 
     for opp in data["opportunities"]:
         if opp["outcome"] is not None:
@@ -610,54 +685,58 @@ def resolve_outcomes() -> int:
         res_date = opp.get("resolution_date") or ""
         if not res_date:
             continue
-        # Prefer resolution_time (UTC ISO) when available to avoid resolving early
-        res_time = opp.get("resolution_time")
-        if res_time:
-            try:
-                res_dt = datetime.fromisoformat(res_time.replace("Z", "+00:00"))
-                res_dt_naive = res_dt.replace(tzinfo=None)
-                if res_dt_naive > now_utc:
-                    continue
-            except (ValueError, TypeError):
-                res_time = None  # treat as missing so date heuristic applies
-        if not res_time:
-            # No resolution_time (or parse failed): use date + noon-UTC heuristic so we resolve after ~7–8 AM Eastern
-            if res_date > today:
-                continue
-            if res_date == today:
-                if noon_utc_on_res_date is None:
-                    noon_utc_on_res_date = now_utc.replace(hour=12, minute=0, second=0, microsecond=0)
-                if now_utc < noon_utc_on_res_date:
+        if res_date > today:
+            continue
+        if res_date == today:
+            if noon_utc_on_res_date is None:
+                noon_utc_on_res_date = now_utc.replace(hour=12, minute=0, second=0, microsecond=0)
+            if now_utc < noon_utc_on_res_date:
+                res_time = opp.get("resolution_time") or ""
+                passed_res_time = False
+                if res_time:
+                    try:
+                        res_dt = datetime.fromisoformat(res_time.replace("Z", "+00:00"))
+                        res_dt_naive = res_dt.replace(tzinfo=None)
+                        passed_res_time = res_dt_naive <= now_utc
+                    except (ValueError, TypeError):
+                        pass
+                if not passed_res_time:
                     continue
 
+        # Prefer Wunderground (previous day's observed high): resolve from actual temp first so we learn faster
+        # and don't wait for Polymarket. Fall back to Polymarket market price only if we can't get actual temp.
+        def _resolve_via_actual_temp() -> bool:
+            actual = _get_actual_temp_for_opp(opp)
+            if actual is None:
+                return False
+            outcome = _infer_outcome_from_actual_temp(opp, actual)
+            if not outcome:
+                return False
+            opp["outcome"] = outcome
+            opp["actual_temp"] = actual
+            opp["final_yes_price"] = 0.0 if outcome == "win" else 1.0
+            opp["pnl_pct"] = round((1.0 - opp["entry_price"]) / opp["entry_price"] * 100, 2) if outcome == "win" else -100.0
+            wu_pred = (opp.get("forecast_sources") or {}).get("wunderground")
+            if wu_pred is not None:
+                opp["wu_error"] = round(abs(wu_pred - actual), 1)
+            return True
+
+        resolved = False
         if opp["type"] == "no":
-            final_yes = _fetch_market_yes_price(opp["market_id"])
-            resolved_via_api = False
-            if final_yes is not None and (final_yes <= 0.05 or final_yes >= 0.95):
-                opp["outcome"] = "win" if final_yes <= 0.05 else "loss"
-                opp["final_yes_price"] = final_yes
-                opp["pnl_pct"] = round((1.0 - opp["entry_price"]) / opp["entry_price"] * 100, 2) if final_yes <= 0.05 else -100.0
-                resolved_via_api = True
-            if not resolved_via_api:
-                # Fallback: infer from actual temp when API didn't return decisive price (e.g. endpoint/format issue or delay)
-                actual = _fetch_actual_temp_from_gamma(opp.get("event_slug", ""))
-                if actual is not None:
-                    outcome = _infer_outcome_from_actual_temp(opp, actual)
-                    if outcome:
-                        opp["outcome"] = outcome
-                        opp["actual_temp"] = actual
-                        opp["final_yes_price"] = 0.0 if outcome == "win" else 1.0
-                        opp["pnl_pct"] = round((1.0 - opp["entry_price"]) / opp["entry_price"] * 100, 2) if outcome == "win" else -100.0
-                        wu_pred = (opp.get("forecast_sources") or {}).get("wunderground")
-                        if wu_pred is not None:
-                            opp["wu_error"] = round(abs(wu_pred - actual), 1)
-                        resolved_via_api = True
-            if resolved_via_api:
+            resolved = _resolve_via_actual_temp()
+            if not resolved:
+                final_yes = _fetch_market_yes_price(opp["market_id"])
+                if final_yes is not None and (final_yes <= 0.05 or final_yes >= 0.95):
+                    opp["outcome"] = "win" if final_yes <= 0.05 else "loss"
+                    opp["final_yes_price"] = final_yes
+                    opp["pnl_pct"] = round((1.0 - opp["entry_price"]) / opp["entry_price"] * 100, 2) if final_yes <= 0.05 else -100.0
+                    resolved = True
+            if resolved:
                 stake = opp.get("paper_size_usd", PAPER_SIZE_USD)
                 opp["paper_size_usd"] = stake
                 opp["paper_pnl_usd"] = round(stake * (opp["pnl_pct"] / 100.0), 2)
                 if opp.get("actual_temp") is None:
-                    actual = _fetch_actual_temp_from_gamma(opp.get("event_slug", ""))
+                    actual = _get_actual_temp_for_opp(opp)
                     if actual is not None:
                         opp["actual_temp"] = actual
                         wu_pred = (opp.get("forecast_sources") or {}).get("wunderground")
@@ -666,40 +745,28 @@ def resolve_outcomes() -> int:
                 resolved_count += 1
 
         elif opp["type"] == "yes":
-            prices = [_fetch_market_yes_price(mid) for mid in opp.get("market_ids", [])]
-            prices = [p for p in prices if p is not None]
-            max_p = max(prices) if prices else None
-            resolved_via_api = False
-            if max_p is not None and len(prices) >= len(opp.get("market_ids", [])):
-                if max_p >= 0.95:
-                    opp["outcome"] = "win"
-                    opp["final_yes_price"] = max_p
-                    opp["pnl_pct"] = round((1.0 - opp["entry_price"]) / opp["entry_price"] * 100, 2)
-                    resolved_via_api = True
-                elif max_p <= 0.05:
-                    opp["outcome"] = "loss"
-                    opp["final_yes_price"] = max_p
-                    opp["pnl_pct"] = -100.0
-                    resolved_via_api = True
-            if not resolved_via_api:
-                actual = _fetch_actual_temp_from_gamma(opp.get("event_slug", ""))
-                if actual is not None:
-                    outcome = _infer_outcome_from_actual_temp(opp, actual)
-                    if outcome:
-                        opp["outcome"] = outcome
-                        opp["actual_temp"] = actual
-                        opp["final_yes_price"] = 1.0 if outcome == "win" else 0.0
-                        opp["pnl_pct"] = round((1.0 - opp["entry_price"]) / opp["entry_price"] * 100, 2) if outcome == "win" else -100.0
-                        wu_pred = (opp.get("forecast_sources") or {}).get("wunderground")
-                        if wu_pred is not None:
-                            opp["wu_error"] = round(abs(wu_pred - actual), 1)
-                        resolved_via_api = True
-            if resolved_via_api:
+            resolved = _resolve_via_actual_temp()
+            if not resolved:
+                prices = [_fetch_market_yes_price(mid) for mid in opp.get("market_ids", [])]
+                prices = [p for p in prices if p is not None]
+                max_p = max(prices) if prices else None
+                if max_p is not None and len(prices) >= len(opp.get("market_ids", [])):
+                    if max_p >= 0.95:
+                        opp["outcome"] = "win"
+                        opp["final_yes_price"] = max_p
+                        opp["pnl_pct"] = round((1.0 - opp["entry_price"]) / opp["entry_price"] * 100, 2)
+                        resolved = True
+                    elif max_p <= 0.05:
+                        opp["outcome"] = "loss"
+                        opp["final_yes_price"] = max_p
+                        opp["pnl_pct"] = -100.0
+                        resolved = True
+            if resolved:
                 stake = opp.get("paper_size_usd") or round(PAPER_SIZE_USD * opp.get("cluster_size", 1), 2)
                 opp["paper_size_usd"] = stake
                 opp["paper_pnl_usd"] = round(stake * (opp["pnl_pct"] / 100.0), 2)
                 if opp.get("actual_temp") is None:
-                    actual = _fetch_actual_temp_from_gamma(opp.get("event_slug", ""))
+                    actual = _get_actual_temp_for_opp(opp)
                     if actual is not None:
                         opp["actual_temp"] = actual
                         wu_pred = (opp.get("forecast_sources") or {}).get("wunderground")
