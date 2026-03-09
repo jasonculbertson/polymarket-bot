@@ -467,12 +467,12 @@ def _parse_bracket_ranges(bracket_str: str) -> list:
         if m:
             out.append((float(m.group(1)), float(m.group(2))))
             continue
-        m = re.search(r"(-?\d+(?:\.\d+)?)[°º]?\s*or\s*(?:below|lower)", part, re.I)
+        m = re.search(r"(-?\d+(?:\.\d+)?)[°º]?[FC]?\s*or\s*(?:below|lower)", part, re.I)
         if m:
             t = float(m.group(1))
             out.append((float("-inf"), t))
             continue
-        m = re.search(r"(-?\d+(?:\.\d+)?)[°º]?\s*or\s*(?:above|higher)", part, re.I)
+        m = re.search(r"(-?\d+(?:\.\d+)?)[°º]?[FC]?\s*or\s*(?:above|higher)", part, re.I)
         if m:
             t = float(m.group(1))
             out.append((t, float("inf")))

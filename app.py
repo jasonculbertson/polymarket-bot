@@ -450,6 +450,77 @@ def outcomes():
                         "wins": 0, "losses": 0, "pending": 0, "recent": []})
 
 
+@app.route("/outcomes/correct", methods=["POST"])
+def outcomes_correct():
+    """
+    Manually correct a resolved market's actual temperature and re-infer outcome.
+
+    POST JSON: { "event_slug": "...", "actual_temp": 75.0 }
+      OR       { "opp_id": "yes_...", "actual_temp": 75.0 }
+
+    Use when the bot resolved a market with a bad WU value (e.g. resolved too
+    early before WU compiled the day's history). The corrected actual_temp is
+    used to re-infer win/loss from the bracket and update P&L.
+    """
+    try:
+        from tracker import _load, _save, _tracker_lock, _infer_outcome_from_actual_temp, PAPER_SIZE_USD
+        body = request.get_json(force=True) or {}
+        actual_temp = body.get("actual_temp")
+        event_slug  = body.get("event_slug", "")
+        opp_id      = body.get("opp_id", "")
+
+        if actual_temp is None:
+            return jsonify({"error": "actual_temp required"}), 400
+        actual_temp = float(actual_temp)
+
+        with _tracker_lock:
+            data = _load()
+
+        matched = []
+        for opp in data["opportunities"]:
+            if opp_id and opp.get("id") != opp_id:
+                continue
+            if event_slug and opp.get("event_slug") != event_slug:
+                continue
+            matched.append(opp)
+
+        if not matched:
+            return jsonify({"error": "no matching opportunity found"}), 404
+
+        updated = []
+        for opp in matched:
+            outcome = _infer_outcome_from_actual_temp(opp, actual_temp)
+            if not outcome:
+                continue
+            entry = opp["entry_price"]
+            stake = opp.get("paper_size_usd") or round(PAPER_SIZE_USD * opp.get("cluster_size", 1), 2)
+            pnl_pct = round((1.0 - entry) / entry * 100, 2) if outcome == "win" else -100.0
+            wu_pred = (opp.get("forecast_sources") or {}).get("wunderground")
+
+            opp["outcome"]       = outcome
+            opp["actual_temp"]   = actual_temp
+            opp["final_yes_price"] = 0.0 if outcome == "win" else 1.0
+            opp["pnl_pct"]       = pnl_pct
+            opp["paper_size_usd"] = stake
+            opp["paper_pnl_usd"] = round(stake * (pnl_pct / 100.0), 2)
+            opp["corrected"]     = True
+            if wu_pred is not None:
+                opp["wu_error"] = round(abs(wu_pred - actual_temp), 1)
+
+            updated.append({
+                "id": opp["id"], "city": opp["city"], "bracket": opp["bracket"],
+                "actual_temp": actual_temp, "outcome": outcome, "pnl_pct": pnl_pct,
+            })
+
+        if updated:
+            with _tracker_lock:
+                _save(data)
+
+        return jsonify({"corrected": len(updated), "markets": updated})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/outcomes/backfill")
 def outcomes_backfill():
     """Run resolution once (no cooldown) to fill pending outcomes. Call once to manually fill the table."""

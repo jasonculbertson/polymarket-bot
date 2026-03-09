@@ -350,12 +350,10 @@ def _parse_wu_history_script_for_high_temp(html: str, date_str: str) -> Optional
                 if -40 <= v <= 130:
                     return v
 
-        # temperatureMax24Hour: hourly obs; max over the list is the day's high.
-        all_max24 = re.findall(r'"temperatureMax24Hour"\s*:\s*(\d+)', script)
-        if all_max24:
-            temps = [int(t) for t in all_max24 if -40 <= int(t) <= 130]
-            if temps:
-                return float(max(temps))
+        # temperatureMax24Hour is a rolling 24-hr window, not a calendar-day high.
+        # It is unreliable at resolution time (bot runs early morning, WU hasn't
+        # compiled yesterday's full history yet — the value reflects the current
+        # temp, not the previous day's peak). Skip this field to avoid bad resolves.
     return None
 
 

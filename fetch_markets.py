@@ -149,13 +149,25 @@ def fetch_city_markets(city_name: str, days_ahead: int = 7) -> list:
         # Full ISO resolution timestamp (UTC) e.g. "2026-03-05T12:00:00Z"
         resolution_time = markets_raw[0].get("endDate") or event.get("endDate") or ""
 
-        # Weather markets typically resolve the morning *after* the weather day → forecast_date = resolution_date - 1 day
-        try:
-            res_dt = datetime.fromisoformat(resolution_date_str[:10].replace("Z", ""))
-            forecast_dt = (res_dt - timedelta(days=1)).date()
-            date_str = forecast_dt.isoformat()
-        except (ValueError, TypeError):
-            date_str = resolution_date_str or ""
+        # The slug contains the actual weather day: "highest-temperature-in-chicago-on-march-10-2026"
+        # Parse it directly so date_str = the day being measured (what WU will show).
+        import calendar as _cal
+        _month_map = {m.lower(): i for i, m in enumerate(_cal.month_name) if m}
+        slug = event.get("slug", "")
+        _sm = re.search(r"on-([a-z]+)-(\d{1,2})-(\d{4})", slug)
+        if _sm:
+            _mon = _month_map.get(_sm.group(1))
+            if _mon:
+                date_str = f"{_sm.group(3)}-{_mon:02d}-{int(_sm.group(2)):02d}"
+            else:
+                date_str = resolution_date_str[:10] if resolution_date_str else ""
+        else:
+            # Fallback: resolution_date - 1 (old behaviour for non-standard slugs)
+            try:
+                res_dt = datetime.fromisoformat(resolution_date_str[:10].replace("Z", ""))
+                date_str = (res_dt - timedelta(days=1)).date().isoformat()
+            except (ValueError, TypeError):
+                date_str = resolution_date_str or ""
         if not resolution_date_str:
             resolution_date_str = date_str
 
