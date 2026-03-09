@@ -91,10 +91,17 @@ def _pg_kv_load(key: str):
             with conn.cursor() as cur:
                 cur.execute("SELECT data FROM kv_store WHERE key = %s", (key,))
                 row = cur.fetchone()
-            return _json.loads(row[0]) if row else None
+            if not row:
+                return None
+            val = row[0]
+            # psycopg2 returns a dict when column is JSONB, str when TEXT
+            if isinstance(val, (dict, list)):
+                return val
+            return _json.loads(val)
         finally:
             conn.close()
-    except Exception:
+    except Exception as e:
+        print(f"[WARN] _pg_kv_load({key}) failed: {e}")
         return None
 
 
