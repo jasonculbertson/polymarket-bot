@@ -124,21 +124,44 @@ def _pg_list_scan_dates() -> list:
         conn = psycopg2.connect(DATABASE_URL)
         try:
             with conn.cursor() as cur:
+                # Order by key name as fallback when updated_at is NULL
                 cur.execute(
-                    "SELECT key, updated_at FROM kv_store WHERE key LIKE 'scan_%' ORDER BY updated_at DESC"
+                    "SELECT key, updated_at FROM kv_store WHERE key LIKE 'scan_%' ORDER BY key DESC"
                 )
                 rows = cur.fetchall()
-            # key format: scan_YYYY-MM-DD  → extract date part
             dates = []
             for key, updated_at in rows:
                 date_part = key[len("scan_"):]
-                dates.append({"date": date_part, "saved_at": updated_at.isoformat()})
+                saved_at = updated_at.isoformat() if updated_at else ""
+                dates.append({"date": date_part, "saved_at": saved_at})
             return dates
         finally:
             conn.close()
     except Exception as e:
         print(f"[WARN] pg_list_scan_dates failed: {e}")
         return []
+
+
+@app.route("/debug/pg")
+def debug_pg():
+    """Show all keys in Postgres kv_store — useful for diagnosing blank dashboard."""
+    if not DATABASE_URL:
+        return jsonify({"error": "DATABASE_URL not set"})
+    try:
+        import psycopg2
+        conn = psycopg2.connect(DATABASE_URL)
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT key, updated_at, length(data::text) as size FROM kv_store ORDER BY key")
+                rows = cur.fetchall()
+            return jsonify([
+                {"key": r[0], "updated_at": r[1].isoformat() if r[1] else None, "bytes": r[2]}
+                for r in rows
+            ])
+        finally:
+            conn.close()
+    except Exception as e:
+        return jsonify({"error": str(e)})
 
 
 def load_taken() -> set:

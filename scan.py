@@ -197,8 +197,8 @@ def _pg_save_scan_dates(out: dict, dates: list):
                         "forecasts":       [f for f in out["forecasts"]        if f.get("date") == d],
                     }
                     cur.execute("""
-                        INSERT INTO kv_store (key, data)
-                        VALUES (%s, %s)
+                        INSERT INTO kv_store (key, data, updated_at)
+                        VALUES (%s, %s, NOW())
                         ON CONFLICT (key) DO UPDATE
                             SET data = EXCLUDED.data, updated_at = NOW()
                     """, (f"scan_{d}", json.dumps(date_out)))
