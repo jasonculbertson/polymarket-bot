@@ -348,7 +348,7 @@ def data():
     # 3. Fall back to local file (only available on current deployment)
     path = os.path.join(DATA_DIR, os.path.basename(file)) if file else LATEST
     if not os.path.exists(path):
-        return jsonify({"error": "no scan data"})
+        return jsonify({"error": "no scan data"}), 404
 
     with open(path) as f:
         scan = json.load(f)
@@ -453,8 +453,12 @@ def scan_status():
 
 @app.route("/export/csv/<type>")
 def export_csv(type):
-    """Server-side CSV export fallback."""
-    raw = load_scan()
+    """Server-side CSV export. Uses same data source as dashboard (Postgres merged or local LATEST)."""
+    raw = None
+    if DATABASE_URL:
+        raw = _pg_merge_latest()
+    if not raw:
+        raw = load_scan()
     if not raw:
         return "No scan data", 404
     scan = _normalize_scan(raw)
