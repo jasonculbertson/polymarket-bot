@@ -83,13 +83,284 @@ def _save_calibration(c: dict):
         json.dump(c, f, indent=2)
 
 
-# ─── Wunderground PWS history — actual station temperature verification ───────
+# ─── Wunderground: PWS API + history page scrape (exact station from config) ───
 
 WU_PWS_KEY = os.environ.get("WU_PWS_KEY", "")
 WU_PWS_API = "https://api.weather.com/v2/pws"
+WU_HISTORY_BASE = "https://www.wunderground.com"
+# Weather Company v3 historical daily summary (last 30 days) — same source as the Summary table on WU history pages
+WU_HISTORY_API = "https://api.weather.com/v3/wx/conditions/historical/dailysummary/30day"
+# Public key used by wunderground.com; override with WU_HISTORY_API_KEY if you have one
+WU_HISTORY_API_KEY = os.environ.get("WU_HISTORY_API_KEY", "e1f10a1e78da46f5b10a1e78da96f525")
+# Browser-like User-Agent so history page returns parseable HTML
+WU_HEADERS = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
+
+
+def _wu_location_id(city: str) -> Optional[str]:
+    """
+    Build a Weather Company location ID for a city from config, e.g. 'KATL:9:US'.
+    Derives the 2-letter country code from the wu_path, e.g. '/hourly/us/ga/...' → 'US'.
+    """
+    try:
+        from config import CITIES
+        cfg = CITIES.get(city)
+        if not cfg:
+            return None
+        icao = cfg.get("station", "")
+        wu_path = cfg.get("wu_path", "")
+        # wu_path: /hourly/us/ga/atlanta/KATL/date/  → parts[2] = 'us'
+        parts = [p for p in wu_path.split("/") if p]
+        if len(parts) >= 2 and parts[0] == "hourly":
+            country = parts[1].upper()   # 'us' → 'US', 'gb' → 'GB', etc.
+        else:
+            country = "US"
+        if not icao:
+            return None
+        return f"{icao}:9:{country}"
+    except Exception:
+        return None
+
+
+def fetch_actual_temp_wu_observations_api(city: str, date_str: str, unit: str = "F") -> Optional[float]:
+    """
+    Fetch daily high temperature from the Weather Company hourly-observations history API.
+
+    This is the SAME data source the wunderground.com history page uses to render the
+    "Summary → High Temp" table (loaded client-side via JavaScript).  The API returns
+    one observation per ~30 min; we take max(temp) for the date as the day's high.
+
+    Endpoint:
+        GET https://api.weather.com/v1/location/{ICAO}:9:{CC}/observations/historical.json
+            ?units=e|m&startDate=YYYYMMDD&endDate=YYYYMMDD&apiKey=...
+
+    The public key embedded in every wunderground.com page is used by default;
+    override with the WU_HISTORY_API_KEY env var if desired.
+
+    Works for all cities in config.py (US and international).
+    Returns the daily high temperature, or None on error.
+    """
+    try:
+        loc_id = _wu_location_id(city)
+        if not loc_id:
+            return None
+        # Normalize date_str -> YYYYMMDD
+        parts = date_str.split("-")
+        if len(parts) != 3:
+            return None
+        date_compact = f"{parts[0]}{parts[1].zfill(2)}{parts[2].zfill(2)}"
+        units_param = "e" if unit == "F" else "m"
+        url = f"https://api.weather.com/v1/location/{loc_id}/observations/historical.json"
+        r = requests.get(
+            url,
+            params={
+                "units": units_param,
+                "startDate": date_compact,
+                "endDate": date_compact,
+                "apiKey": WU_HISTORY_API_KEY,
+            },
+            headers=WU_HEADERS,
+            timeout=12,
+        )
+        if r.status_code != 200:
+            return None
+        data = r.json()
+        obs = data.get("observations", [])
+        if not obs:
+            return None
+        temps = [float(o["temp"]) for o in obs if o.get("temp") is not None]
+        if not temps:
+            return None
+        high = max(temps)
+        if -40 <= high <= 150:
+            return high
+        return None
+    except Exception:
+        return None
+
+
+def fetch_actual_temp_wu_api_historical(city: str, date_str: str, unit: str = "F") -> Optional[float]:
+    """
+    Fetch daily high from Weather Company v3 historical API (last 30 days).
+    Same data as the "Summary" table on wunderground.com/history/daily/... — literal recorded high.
+    Returns temperatureMax for the given date, or None if date not in window or API error.
+    """
+    try:
+        from config import CITIES
+        cfg = CITIES.get(city)
+        if not cfg:
+            return None
+        icao = cfg.get("station")
+        if not icao or len(icao) != 4:
+            return None
+        units_param = "e" if unit == "F" else "m"
+        params = {
+            "icaoCode": icao,
+            "units": units_param,
+            "language": "en-US",
+            "format": "json",
+            "apiKey": WU_HISTORY_API_KEY,
+        }
+        r = requests.get(WU_HISTORY_API, params=params, headers=WU_HEADERS, timeout=12)
+        if r.status_code != 200:
+            return None
+        data = r.json()
+        valid_local = data.get("validTimeLocal") or []
+        temp_max = data.get("temperatureMax") or []
+        if not valid_local or not temp_max:
+            return None
+        # Normalize date_str to YYYY-MM-DD for comparison
+        parts = date_str.split("-")
+        if len(parts) != 3:
+            return None
+        target = f"{parts[0]}-{parts[1].zfill(2)}-{parts[2].zfill(2)}"
+        for i, v in enumerate(valid_local):
+            if not v:
+                continue
+            date_part = v.split("T")[0] if "T" in v else v[:10]
+            if date_part == target and i < len(temp_max):
+                val = temp_max[i]
+                if val is not None and -40 <= float(val) <= 130:
+                    return float(val)
+        return None
+    except Exception:
+        return None
+
+
+def fetch_actual_temp_wu_history(city: str, date_str: str, unit: str = "F") -> Optional[float]:
+    """
+    Scrape the daily high from Wunderground's history page for the exact station in config.
+    The WU/Weather Company API does not expose history for airport stations (only PWS).
+    The Summary table (High Temp) is rendered client-side from JSON embedded in a <script> tag;
+    we parse that JSON instead of the visible HTML. URL from wu_path, e.g.:
+    /history/daily/us/il/chicago/KORD/date/2026-3-8
+    Returns the maximum temperature or None if page has no data / parse failure.
+    """
+    try:
+        from config import CITIES
+        cfg = CITIES.get(city)
+        if not cfg:
+            return None
+        wu_path = cfg.get("wu_path")
+        if not wu_path or "/hourly/" not in wu_path:
+            return None
+        # /hourly/us/il/chicago/KORD/date/ -> /history/daily/us/il/chicago/KORD/date/2026-3-8
+        path = wu_path.replace("/hourly/", "/history/daily/", 1).rstrip("/")
+        # date_str "2026-03-08" -> "2026-3-8" for URL
+        parts = date_str.split("-")
+        if len(parts) != 3:
+            return None
+        y, m, d = parts[0], str(int(parts[1])), str(int(parts[2]))
+        date_slug = f"{y}-{m}-{d}"
+        url = f"{WU_HISTORY_BASE}{path}/date/{date_slug}"
+        r = requests.get(url, headers=WU_HEADERS, timeout=12)
+        if r.status_code != 200:
+            return None
+        html = r.text
+
+        # 1) Prefer: parse JSON from <script> (same data the Summary table uses in the browser).
+        #    Page often returns "No data recorded" in the body but still embeds observation data in script.
+        script_high = _parse_wu_history_script_for_high_temp(html, date_str)
+        if script_high is not None:
+            return script_high
+
+        # 2) If no script data, skip if body says no data (no point in parsing table).
+        if "no data recorded" in html.lower():
+            return None
+
+        # 3) Fallback: parse "High Temp" from server-rendered table (some pages may still have it).
+        for label in ("High Temp", "High Temperature", "Maximum Temperature", "Maximum Temp", "Actual"):
+            idx = html.find(label)
+            if idx == -1:
+                continue
+            chunk = html[idx : idx + 500]
+            m = re.search(r'class="wx-value"[^>]*>([^<]+)</span>', chunk, re.I)
+            if m:
+                try:
+                    v = float(m.group(1).strip().replace(",", ""))
+                    if -40 <= v <= 130:
+                        return v
+                except ValueError:
+                    pass
+            m = re.search(r">\s*([0-9]+(?:\.[0-9]+)?)\s*[°º]?\s*[FC]?\s*</", chunk, re.I)
+            if m:
+                try:
+                    v = float(m.group(1))
+                    if -40 <= v <= 130:
+                        return v
+                except (ValueError, IndexError):
+                    pass
+            m = re.search(r">\s*([0-9]+(?:\.[0-9]+)?)\s*[°º]\s*[FC]", chunk, re.I)
+            if m:
+                try:
+                    v = float(m.group(1))
+                    if -40 <= v <= 130:
+                        return v
+                except (ValueError, IndexError):
+                    pass
+        for m in re.finditer(r'class="wx-value"[^>]*>([^<]+)</span>', html, re.I):
+            try:
+                v = float(m.group(1).strip().replace(",", ""))
+                if -40 <= v <= 130:
+                    return v
+            except ValueError:
+                pass
+        return None
+    except Exception:
+        return None
+
+
+def _parse_wu_history_script_for_high_temp(html: str, date_str: str) -> Optional[float]:
+    """
+    Extract daily high from WU history page's embedded script JSON.
+    The Summary table is built client-side from this data; we parse it server-side.
+    """
+    # Normalize date for matching: "2025-03-08" -> "2025-03-08"; also accept 2025-3-8
+    parts = date_str.split("-")
+    if len(parts) != 3:
+        return None
+    target_date = f"{parts[0]}-{parts[1].zfill(2)}-{parts[2].zfill(2)}"  # 2025-03-08
+
+    for m in re.finditer(r"<script[^>]*>([^<]+)</script>", html):
+        script = m.group(1)
+        if "calendarDayTemperatureMax" not in script and "temperatureMax24Hour" not in script:
+            continue
+
+        # Try to align calendarDayTemperatureMax with validTimeLocal so we use the requested date.
+        cal_max = re.search(r'"calendarDayTemperatureMax"\s*:\s*\[(\d+(?:,\d+)*)\]', script)
+        valid_local = re.search(r'"validTimeLocal"\s*:\s*\[([^\]]+)\]', script)
+        if cal_max and valid_local:
+            values = [int(x) for x in cal_max.group(1).split(",")]
+            # Parse dates from validTimeLocal: "2025-03-08T07:00:00-0400", ...
+            date_strs = re.findall(r'"([^"]*?)"', valid_local.group(1))
+            for i, ds in enumerate(date_strs):
+                if target_date in ds or ds.startswith(target_date):
+                    if i < len(values):
+                        v = float(values[i])
+                        if -40 <= v <= 130:
+                            return v
+                    break
+            # No matching date found: the page returned forecast data, not history.
+            # Do NOT fall back to first value — it would be wrong data.
+            return None
+        elif cal_max:
+            # Only safe to use if there's exactly one value (single-day history page with no date array).
+            values = [int(x) for x in cal_max.group(1).split(",")]
+            if len(values) == 1:
+                v = float(values[0])
+                if -40 <= v <= 130:
+                    return v
+
+        # temperatureMax24Hour: hourly obs; max over the list is the day's high.
+        all_max24 = re.findall(r'"temperatureMax24Hour"\s*:\s*(\d+)', script)
+        if all_max24:
+            temps = [int(t) for t in all_max24 if -40 <= int(t) <= 130]
+            if temps:
+                return float(max(temps))
+    return None
+
 
 # Maps each city to a nearby high-quality PWS station (qcStatus=1 from WU near search)
-# These are fallbacks — used when PWS key is set to verify actual temps
+# Used when PWS key is set; history scrape uses config station (exact WU location) first.
 _CITY_PWS_STATION = {
     "NYC":          "KNYNEWYO1509",   # Upper East Side, qcStatus=1
     "Chicago":      "KILILLIN294",    # fallback: use Gamma API if missing
@@ -166,20 +437,38 @@ def fetch_actual_temperature(event_slug: str, city: str = "", unit: str = "F",
     Fetch the actual recorded temperature for a resolved event.
 
     Strategy (in order):
-      1. WU PWS key: fetch actual daily high directly from the PWS station.
-         Most accurate — same network Wunderground uses for station history.
-      2. Polymarket Gamma API: infer temperature from which YES bracket resolved.
-         Fallback when PWS key not available or station unknown.
+      1. WU observations history API: hourly obs → max = High Temp. Works for all cities, no scraping.
+      2. Weather Company v3 historical API: last 30 days window (dailysummary).
+      3. WU history page scrape: exact station from config (wu_path), older dates or API failures.
+      4. WU PWS API: if key set, fetch from PWS station.
+      5. Polymarket Gamma API: infer from which YES bracket resolved.
 
     Returns the actual temperature, or None if not yet resolved / unavailable.
     """
-    # Strategy 1: direct PWS station history (most accurate)
+    # Strategy 1: observations history API — same source as WU history page "Summary → High Temp"
+    # Works for all cities (US + international), no extra key needed, no scraping required.
+    if city and resolution_date:
+        actual = fetch_actual_temp_wu_observations_api(city, resolution_date, unit)
+        if actual is not None:
+            return actual
+    # Strategy 2: v3 historical dailysummary (last 30 days window)
+    if city and resolution_date:
+        actual = fetch_actual_temp_wu_api_historical(city, resolution_date, unit)
+        if actual is not None:
+            return actual
+    # Strategy 3: scrape WU history page (fallback for older dates or API failures)
+    if city and resolution_date:
+        actual = fetch_actual_temp_wu_history(city, resolution_date, unit)
+        if actual is not None:
+            return actual
+    # Strategy 4 (5 total): PWS API when key is set
     if WU_PWS_KEY and city and resolution_date:
         pws_id = _CITY_PWS_STATION.get(city)
         if pws_id:
             actual = fetch_actual_temp_pws(pws_id, resolution_date, unit)
             if actual is not None:
                 return actual
+    # Strategy 4: Gamma API (which bracket won)
     try:
         r = requests.get(
             f"{GAMMA_API}/events",
