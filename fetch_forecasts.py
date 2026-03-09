@@ -274,7 +274,51 @@ def fetch_nws_forecast(lat: float, lon: float) -> Optional[dict]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# wttr.in — fallback when WU API key not configured
+# Open-Meteo — free, no API key, global coverage, cross-check for intl cities
+# ─────────────────────────────────────────────────────────────────────────────
+
+def fetch_open_meteo_forecast(lat: float, lon: float, unit: str = "C") -> Optional[dict]:
+    """
+    Fetch daily high temperatures from Open-Meteo (free, no key, global).
+    Used as the cross-check source for international cities.
+
+    Returns {date_str: max_temp} in °C (or °F if unit="F").
+    """
+    try:
+        from collections import defaultdict as _dd
+        r = requests.get(
+            "https://api.open-meteo.com/v1/forecast",
+            params={
+                "latitude": lat, "longitude": lon,
+                "hourly": "temperature_2m",
+                "temperature_unit": "celsius",
+                "forecast_days": 7,
+                "timezone": "auto",
+            },
+            timeout=10,
+        )
+        if r.status_code != 200:
+            return None
+        data = r.json()
+        times = data.get("hourly", {}).get("time", [])
+        temps = data.get("hourly", {}).get("temperature_2m", [])
+        if not times or not temps:
+            return None
+        daily: dict = _dd(list)
+        for t, temp in zip(times, temps):
+            if temp is not None and t:
+                daily[t[:10]].append(float(temp))
+        result = {d: round(max(v), 1) for d, v in daily.items() if v}
+        if unit == "F":
+            result = {d: round(v * 9 / 5 + 32, 1) for d, v in result.items()}
+        return result if result else None
+    except Exception as exc:
+        print(f"    [WARN] Open-Meteo failed for ({lat},{lon}): {exc}")
+        return None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# wttr.in — kept as tertiary fallback only
 # ─────────────────────────────────────────────────────────────────────────────
 
 def fetch_wttr_forecast(station: str, days: int = 2, unit: str = "F") -> Optional[dict]:
@@ -399,9 +443,9 @@ def fetch_city_forecast(city_name: str, days: int = 2) -> dict:
         fu["wu"] = pool.submit(fetch_wunderground_hourly, station, unit, lat, lon)
         if is_us:
             fu["nws"]  = pool.submit(fetch_nws_forecast, lat, lon)
-        if not is_us:
-            # wttr.in as independent validation for international cities
-            fu["wttr"] = pool.submit(fetch_wttr_forecast, station, days, unit)
+        else:
+            # Open-Meteo as cross-check for international cities (free, no key, reliable)
+            fu["wttr"] = pool.submit(fetch_open_meteo_forecast, lat, lon, unit)
 
         if "wu"   in fu: wu_hourly_result = fu["wu"].result()
         if "nws"  in fu: nws_result       = fu["nws"].result()
@@ -497,7 +541,7 @@ def fetch_all_forecasts(cities=None, days: int = 2) -> dict:
                         peak = f"@{f['wu_peak_hour']}" if f.get("wu_peak_hour") else ""
                         parts.append(f"wu={f['wunderground']:.1f}{peak}")
                     if f["nws"]  is not None: parts.append(f"nws={f['nws']:.1f}")
-                    if f["wttr"] is not None: parts.append(f"wttr={f['wttr']:.1f}")
+                    if f["wttr"] is not None: parts.append(f"om={f['wttr']:.1f}")
                     print(f"  {city}: {f['consensus']:.1f}°{unit} conf={f['confidence']} ({', '.join(parts)})")
                 else:
                     print(f"  {city}: no tomorrow forecast")
