@@ -124,8 +124,16 @@ def buy(token_id: str, size_usd: float, price: float,
     response = client.post_order(signed, OrderType.GTC)
 
     order_id = response.get("orderID") or response.get("id", "")
-    log.info("[trader] BUY placed  order_id=%s", order_id)
-    return {"order_id": order_id, "shares": shares, "price": price, "live": True}
+    # Capture actual fill price from exchange response if available
+    execution_price = response.get("price") or response.get("avgPrice") or price
+    log.info("[trader] BUY placed  order_id=%s  execution_price=%.4f", order_id, execution_price)
+    return {
+        "order_id": order_id,
+        "shares": shares,
+        "price": price,               # intended price (from scan)
+        "execution_price": round(float(execution_price), 6),  # actual fill price
+        "live": True,
+    }
 
 
 def sell(token_id: str, shares: float, price: Optional[float] = None) -> dict:

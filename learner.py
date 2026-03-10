@@ -30,8 +30,9 @@ from datetime import datetime
 from typing import Optional
 
 DATA_DIR = os.environ.get("DATA_DIR", os.path.join(os.path.dirname(__file__), "data"))
-WEIGHTS_FILE     = os.path.join(DATA_DIR, "forecast_weights.json")
-CALIBRATION_FILE = os.path.join(DATA_DIR, "calibration.json")
+WEIGHTS_FILE          = os.path.join(DATA_DIR, "forecast_weights.json")
+CALIBRATION_FILE      = os.path.join(DATA_DIR, "calibration.json")
+CITY_ADJUSTMENTS_FILE = os.path.join(DATA_DIR, "city_adjustments.json")
 
 GAMMA_API = "https://gamma-api.polymarket.com"
 LEARNING_RATE = float(os.environ.get("LEARNING_RATE", "0.15"))
@@ -539,6 +540,59 @@ def _errors_to_weights(errors: dict[str, list[float]]) -> dict[str, float]:
 
 # ─── Main learning function ───────────────────────────────────────────────────
 
+def load_city_adjustments() -> dict:
+    """Load per-city distance bonus (°F) from file. Returns {} if not found."""
+    try:
+        if os.path.exists(CITY_ADJUSTMENTS_FILE):
+            with open(CITY_ADJUSTMENTS_FILE) as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return {}
+
+
+def _save_city_adjustments(adjustments: dict) -> None:
+    os.makedirs(DATA_DIR, exist_ok=True)
+    with open(CITY_ADJUSTMENTS_FILE, "w") as f:
+        json.dump(adjustments, f, indent=2)
+
+
+def _compute_city_distance_adjustments(data: dict) -> dict:
+    """
+    Compute per-city extra distance (°F) based on historical wu_error from resolved NO bets.
+
+    Cities where WU forecasts have been consistently inaccurate need a higher effective
+    min_distance to avoid adjacent-bracket losses.
+
+    Returns {city: bonus_distance_f} — only cities with enough samples and meaningful error.
+    """
+    from collections import defaultdict
+    city_errors: dict = defaultdict(list)
+    for opp in data.get("opportunities", []):
+        if opp.get("type") != "no":
+            continue
+        if opp.get("wu_error") is None:
+            continue
+        city_errors[opp["city"]].append(opp["wu_error"])
+
+    adjustments: dict = {}
+    min_samples = 5          # need at least 5 resolved NO bets to be statistically meaningful
+    base_accuracy_f = 2.0   # WU expected accuracy in ideal conditions (°F)
+
+    for city, errors in city_errors.items():
+        if len(errors) < min_samples:
+            continue
+        avg_err = sum(errors) / len(errors)
+        bonus = max(0.0, round(avg_err - base_accuracy_f, 1))
+        if bonus > 0:
+            adjustments[city] = {
+                "bonus_f": bonus,
+                "samples": len(errors),
+                "avg_wu_error_f": round(avg_err, 2),
+            }
+    return adjustments
+
+
 def learn_from_outcomes() -> dict:
     """
     Main learning step — called once per scan after resolve_outcomes().
@@ -694,11 +748,16 @@ def learn_from_outcomes() -> dict:
         with _tracker_lock:
             _save_tracker(data)
 
+    # Per-city distance adjustments — recomputed from full history each time
+    city_adj = _compute_city_distance_adjustments(data)
+    _save_city_adjustments(city_adj)
+
     return {
-        "learned":        learned_count,
-        "temps_fetched":  temp_found,
-        "weights_updated": weights_updated,
-        "calib_updated":  calib_updated,
+        "learned":           learned_count,
+        "temps_fetched":     temp_found,
+        "weights_updated":   weights_updated,
+        "calib_updated":     calib_updated,
+        "city_adjustments":  city_adj,
         "source_samples": {u: {s: len(e) for s, e in source_errors[u].items()} for u in ("F", "C")},
         "current_weights": {
             u: weights.get(u, {}) for u in ("F", "C")

@@ -236,7 +236,7 @@ def record_scan(yes_clusters, no_opps, all_forecasts: dict = None) -> int:
         return {
             "wunderground": day_fc.get("wunderground"),
             "nws":          day_fc.get("nws"),
-            "open_meteo":   day_fc.get("open_meteo") or day_fc.get("wttr"),
+            "wttr":         day_fc.get("wttr"),
             "consensus":    day_fc.get("consensus"),
         }
 
@@ -639,60 +639,62 @@ def resolve_outcomes() -> int:
     Safe to call after every scan — only touches markets past their date.
     Also re-attempts actual_temp fetch for resolved rows still missing it.
     Returns count of newly resolved outcomes.
-
-    Avoids race with record_scan/record_live_trade: we collect all updates in a
-    dict, then under lock load fresh data, apply updates by opp id, and save.
     """
+    # Load snapshot under lock, do HTTP work outside lock, then save under lock
     with _tracker_lock:
         data = _load()
+    # Manually fix dates: set date = resolution_date - 1 for any opp where date is missing or >= resolution_date (e.g. 3/8 markets)
     if _migrate_forecast_dates(data):
         with _tracker_lock:
             _save(data)
-        with _tracker_lock:
-            data = _load()
-    if _backfill_resolution_times(data):
-        with _tracker_lock:
-            _save(data)
-        with _tracker_lock:
-            data = _load()
-
+    # Use UTC now so Railway (always UTC) never fires before a market has actually closed.
     now_utc = datetime.utcnow()
     today = now_utc.date().isoformat()
     resolved_count = 0
-    updates = {}  # opp_id -> {field: value, ...}; applied to fresh load under lock at end
 
+    # Auto-backfill any entries missing resolution_time
+    if _backfill_resolution_times(data):
+        with _tracker_lock:
+            _save(data)
+
+    backfill_actual = 0
     for opp in data["opportunities"]:
-        oid = opp["id"]
-        # Backfill YES: paper stake and shares (equal-shares model)
-        if (opp.get("type") == "yes") and (opp.get("cluster_size", 1) > 1):
+        # Fix YES clusters: paper stake = total cost; backfill shares for equal-shares model
+        if (opp.get("type") == "yes"
+                and opp.get("cluster_size", 1) > 1):
             entry = float(opp.get("entry_price", 0) or 0)
             if entry > 0 and opp.get("paper_size_usd", PAPER_SIZE_USD) == PAPER_SIZE_USD:
                 correct = round(PAPER_SIZE_USD * opp["cluster_size"], 2)
-                u = updates.setdefault(oid, {})
-                u["paper_size_usd"] = correct
+                opp["paper_size_usd"] = correct
                 if opp.get("pnl_pct") is not None:
-                    u["paper_pnl_usd"] = round(correct * (opp["pnl_pct"] / 100.0), 2)
-            if entry > 0 and not opp.get("shares"):
+                    opp["paper_pnl_usd"] = round(correct * (opp["pnl_pct"] / 100.0), 2)
+                backfill_actual += 1
+            # Backfill shares so paper P&L uses equal-shares payout (shares×$1) when resolving
+            if not opp.get("shares") and entry > 0:
                 stake = opp.get("paper_size_usd") or round(PAPER_SIZE_USD * opp["cluster_size"], 2)
-                updates.setdefault(oid, {})["shares"] = round(stake / entry, 2)
+                opp["shares"] = round(stake / entry, 2)
+                backfill_actual += 1
 
-        # Re-attempt actual_temp for already-resolved rows missing it
-        if opp.get("outcome") is not None and opp.get("actual_temp") is None:
+        # Re-attempt actual_temp for already-resolved rows that are missing it
+        if opp["outcome"] is not None and opp.get("actual_temp") is None:
             actual = _get_actual_temp_for_opp(opp)
             if actual is not None:
-                u = updates.setdefault(oid, {})
-                u["actual_temp"] = actual
+                opp["actual_temp"] = actual
                 wu_pred = (opp.get("forecast_sources") or {}).get("wunderground")
                 if wu_pred is not None:
-                    u["wu_error"] = round(abs(wu_pred - actual), 1)
+                    opp["wu_error"] = round(abs(wu_pred - actual), 1)
+                backfill_actual += 1
 
+    # resolution_date in the past → allow. Same day → allow after noon UTC (weather resolves morning local).
     noon_utc_on_res_date = None
 
     for opp in data["opportunities"]:
         if opp["outcome"] is not None:
             continue
         res_date = opp.get("resolution_date") or ""
-        if not res_date or res_date > today:
+        if not res_date:
+            continue
+        if res_date > today:
             continue
         if res_date == today:
             if noon_utc_on_res_date is None:
@@ -703,14 +705,15 @@ def resolve_outcomes() -> int:
                 if res_time:
                     try:
                         res_dt = datetime.fromisoformat(res_time.replace("Z", "+00:00"))
-                        passed_res_time = res_dt.replace(tzinfo=None) <= now_utc
+                        res_dt_naive = res_dt.replace(tzinfo=None)
+                        passed_res_time = res_dt_naive <= now_utc
                     except (ValueError, TypeError):
                         pass
                 if not passed_res_time:
                     continue
 
-        oid = opp["id"]
-
+        # Prefer Wunderground (previous day's observed high): resolve from actual temp first so we learn faster
+        # and don't wait for Polymarket. Fall back to Polymarket market price only if we can't get actual temp.
         def _resolve_via_actual_temp() -> bool:
             actual = _get_actual_temp_for_opp(opp)
             if actual is None:
@@ -718,14 +721,14 @@ def resolve_outcomes() -> int:
             outcome = _infer_outcome_from_actual_temp(opp, actual)
             if not outcome:
                 return False
-            u = updates.setdefault(oid, {})
-            u["outcome"] = outcome
-            u["actual_temp"] = actual
-            u["final_yes_price"] = 0.0 if outcome == "win" else 1.0
-            u["pnl_pct"] = round((1.0 - opp["entry_price"]) / opp["entry_price"] * 100, 2) if outcome == "win" else -100.0
+            opp["outcome"] = outcome
+            opp["actual_temp"] = actual
+            opp["final_yes_price"] = 0.0 if outcome == "win" else 1.0
+            cost_basis = opp.get("execution_price") or opp["entry_price"]
+            opp["pnl_pct"] = round((1.0 - cost_basis) / cost_basis * 100, 2) if outcome == "win" else -100.0
             wu_pred = (opp.get("forecast_sources") or {}).get("wunderground")
             if wu_pred is not None:
-                u["wu_error"] = round(abs(wu_pred - actual), 1)
+                opp["wu_error"] = round(abs(wu_pred - actual), 1)
             return True
 
         resolved = False
@@ -734,23 +737,22 @@ def resolve_outcomes() -> int:
             if not resolved:
                 final_yes = _fetch_market_yes_price(opp["market_id"])
                 if final_yes is not None and (final_yes <= 0.05 or final_yes >= 0.95):
-                    u = updates.setdefault(oid, {})
-                    u["outcome"] = "win" if final_yes <= 0.05 else "loss"
-                    u["final_yes_price"] = final_yes
-                    u["pnl_pct"] = round((1.0 - opp["entry_price"]) / opp["entry_price"] * 100, 2) if final_yes <= 0.05 else -100.0
+                    opp["outcome"] = "win" if final_yes <= 0.05 else "loss"
+                    opp["final_yes_price"] = final_yes
+                    cost_basis = opp.get("execution_price") or opp["entry_price"]
+                    opp["pnl_pct"] = round((1.0 - cost_basis) / cost_basis * 100, 2) if final_yes <= 0.05 else -100.0
                     resolved = True
             if resolved:
                 stake = opp.get("paper_size_usd", PAPER_SIZE_USD)
-                u = updates[oid]
-                u["paper_size_usd"] = stake
-                u["paper_pnl_usd"] = round(stake * (u["pnl_pct"] / 100.0), 2)
+                opp["paper_size_usd"] = stake
+                opp["paper_pnl_usd"] = round(stake * (opp["pnl_pct"] / 100.0), 2)
                 if opp.get("actual_temp") is None:
                     actual = _get_actual_temp_for_opp(opp)
                     if actual is not None:
-                        u["actual_temp"] = actual
+                        opp["actual_temp"] = actual
                         wu_pred = (opp.get("forecast_sources") or {}).get("wunderground")
                         if wu_pred is not None:
-                            u["wu_error"] = round(abs(wu_pred - actual), 1)
+                            opp["wu_error"] = round(abs(wu_pred - actual), 1)
                 resolved_count += 1
 
         elif opp["type"] == "yes":
@@ -760,42 +762,37 @@ def resolve_outcomes() -> int:
                 prices = [p for p in prices if p is not None]
                 max_p = max(prices) if prices else None
                 if max_p is not None and len(prices) >= len(opp.get("market_ids", [])):
-                    u = updates.setdefault(oid, {})
                     if max_p >= 0.95:
-                        u["outcome"] = "win"
-                        u["final_yes_price"] = max_p
-                        u["pnl_pct"] = round((1.0 - opp["entry_price"]) / opp["entry_price"] * 100, 2)
+                        opp["outcome"] = "win"
+                        opp["final_yes_price"] = max_p
+                        cost_basis = opp.get("execution_price") or opp["entry_price"]
+                        opp["pnl_pct"] = round((1.0 - cost_basis) / cost_basis * 100, 2)
                         resolved = True
                     elif max_p <= 0.05:
-                        u["outcome"] = "loss"
-                        u["final_yes_price"] = max_p
-                        u["pnl_pct"] = -100.0
+                        opp["outcome"] = "loss"
+                        opp["final_yes_price"] = max_p
+                        opp["pnl_pct"] = -100.0
                         resolved = True
             if resolved:
                 stake = opp.get("paper_size_usd") or round(PAPER_SIZE_USD * opp.get("cluster_size", 1), 2)
-                u = updates[oid]
-                u["paper_size_usd"] = stake
-                if u.get("outcome") == "win" and opp.get("shares") and opp["shares"] > 0:
-                    u["paper_pnl_usd"] = round(opp["shares"] - stake, 2)
+                opp["paper_size_usd"] = stake
+                # Paper P&L: equal-shares model — payout = shares×$1 when any bracket wins
+                if opp.get("outcome") == "win" and opp.get("shares") and opp["shares"] > 0:
+                    opp["paper_pnl_usd"] = round(opp["shares"] - stake, 2)
                 else:
-                    u["paper_pnl_usd"] = round(stake * (u["pnl_pct"] / 100.0), 2)
+                    opp["paper_pnl_usd"] = round(stake * (opp["pnl_pct"] / 100.0), 2)
                 if opp.get("actual_temp") is None:
                     actual = _get_actual_temp_for_opp(opp)
                     if actual is not None:
-                        u["actual_temp"] = actual
+                        opp["actual_temp"] = actual
                         wu_pred = (opp.get("forecast_sources") or {}).get("wunderground")
                         if wu_pred is not None:
-                            u["wu_error"] = round(abs(wu_pred - actual), 1)
+                            opp["wu_error"] = round(abs(wu_pred - actual), 1)
                 resolved_count += 1
 
-    if updates:
+    if resolved_count or backfill_actual:
+        data["last_resolved"] = datetime.utcnow().isoformat()
         with _tracker_lock:
-            data = _load()
-            for o in data["opportunities"]:
-                if o["id"] in updates:
-                    o.update(updates[o["id"]])
-            if resolved_count:
-                data["last_resolved"] = datetime.utcnow().isoformat()
             _save(data)
 
     return resolved_count
@@ -907,6 +904,7 @@ def record_live_trade(
     size_usd: float,
     shares: float,
     token_id: str,
+    execution_price: Optional[float] = None,
 ) -> bool:
     """
     Mark an opportunity as live-traded. Call this right after buy() succeeds.
@@ -916,14 +914,15 @@ def record_live_trade(
         data = _load()
         for opp in data["opportunities"]:
             if opp["id"] == opp_id:
-                opp["is_live"]       = True
-                opp["live_order_id"] = order_id
-                opp["live_size_usd"] = size_usd
-                opp["shares"]        = shares
-                opp["token_id"]      = token_id
-                opp["exit_price"]    = None
-                opp["exit_reason"]   = None
-                opp["live_at"]       = datetime.utcnow().isoformat()
+                opp["is_live"]          = True
+                opp["live_order_id"]    = order_id
+                opp["live_size_usd"]    = size_usd
+                opp["shares"]           = shares
+                opp["token_id"]         = token_id
+                opp["execution_price"]  = execution_price  # actual fill price (None = paper/unknown)
+                opp["exit_price"]       = None
+                opp["exit_reason"]      = None
+                opp["live_at"]          = datetime.utcnow().isoformat()
                 _save(data)
                 return True
     return False

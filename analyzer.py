@@ -54,6 +54,25 @@ def _load_calibrated_sigma() -> dict:
     return defaults
 
 
+def _load_city_adjustments() -> dict:
+    """Load per-city distance bonus (°F) from learner output. Returns {} if not available."""
+    try:
+        adj_file = os.path.join(
+            os.environ.get("DATA_DIR", os.path.join(os.path.dirname(__file__), "data")),
+            "city_adjustments.json",
+        )
+        if os.path.exists(adj_file):
+            with open(adj_file) as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return {}
+
+
+# Loaded once at module import; refreshed on each analyze_all() call
+_CITY_ADJUSTMENTS: dict = _load_city_adjustments()
+
+
 def _adjust_for_peak_passed(city: str, date_str: str, confidence: str) -> str:
     """
     Boost 'medium' to 'high' for same-day markets after 14:00 local city time.
@@ -261,13 +280,17 @@ def no_size(
     win_prob = estimate_no_win_prob(distance, confidence, unit)
     no_price = 100.0 / (100.0 + return_pct)   # derived from return_pct definition
     cap_per_opp = capital / max(n_opps / 3, 1)
+    # Scale max_size with distance: farther from bracket = higher confidence = allow larger bet
+    base_distance = cfg.get("no_min_distance_f", 6) if unit == "F" else cfg.get("no_min_distance_c", 3.5)
+    distance_scale = min(distance / max(base_distance, 0.1), cfg.get("no_max_distance_scale", 3.0))
+    scaled_max = cfg["default_no_size"] * distance_scale
     return kelly_size(
         win_prob,
         no_price,
         capital,
         kelly_fraction=cfg.get("kelly_fraction", 0.5),
         min_size=cfg["min_order_size"],
-        max_size=min(cfg.get("max_single_bet", 50), cfg["default_no_size"] * 2, cap_per_opp),
+        max_size=min(cfg.get("max_single_bet", 50), scaled_max, cap_per_opp),
     )
 
 
@@ -296,11 +319,17 @@ def yes_cluster_size_each(
 # ─────────────────────────────────────────────────────────────────────────────
 
 def find_no_opps(event: dict, forecast_temp: float, confidence: str,
-                 capital: float, n_opps: int) -> list:
-    """Find NO opportunities: brackets far enough from forecast."""
+                 capital: float, n_opps: int, city_bonus_f: float = 0.0) -> list:
+    """Find NO opportunities: brackets far enough from forecast.
+
+    city_bonus_f — extra distance requirement (°F) for cities with historically poor forecast accuracy.
+    """
     cfg = STRATEGY
     unit = event.get("temp_unit", "F")
-    min_dist = cfg["no_min_distance_c"] if unit == "C" else cfg["no_min_distance_f"]
+    base_min_dist = cfg["no_min_distance_c"] if unit == "C" else cfg["no_min_distance_f"]
+    # Convert bonus to correct unit if needed
+    bonus = (city_bonus_f / 1.8) if unit == "C" else city_bonus_f
+    min_dist = base_min_dist + bonus
     opps = []
     for mkt in event["markets"]:
         if not mkt["accepting_orders"]:
@@ -422,8 +451,10 @@ def find_yes_clusters(event: dict, forecast_temp: float, confidence: str,
             return None
 
         total_price = round(sum(s.yes_price for s in slots), 4)
-        # Profit only when one bracket pays $1 and total cost < $1. Reject thin or losing clusters (>= 0.97 covers >= 1.0).
-        if total_price >= 0.97:
+        # Profit only when one bracket pays $1 and total cost < $1. Reject thin or losing clusters.
+        if total_price >= 0.97:  # need at least ~3% edge
+            return None
+        if total_price >= 1.0:   # would lose even when "right" (temp in range)
             return None
 
         ret_pct = round((1.0 - total_price) / total_price * 100, 1)
@@ -433,6 +464,15 @@ def find_yes_clusters(event: dict, forecast_temp: float, confidence: str,
         # Win range: from the lowest bracket's lo to the highest bracket's hi
         win_lo_val = slots[0].bracket_lo if slots[0].bracket_lo is not None else float("-inf")
         win_hi_val = slots[-1].bracket_hi  # None = open high
+
+        # Require forecast to be well-centered within the cluster
+        # (not near the outer edge, where a small forecast error causes a loss)
+        unit_for_margin = event.get("temp_unit", "F")
+        margin_threshold = cfg.get("yes_min_margin_f", 2.0) if unit_for_margin == "F" else cfg.get("yes_min_margin_c", 1.0)
+        lo_margin = (forecast_temp - win_lo_val) if win_lo_val != float("-inf") else float("inf")
+        hi_margin = (win_hi_val - forecast_temp) if win_hi_val is not None else float("inf")
+        if min(lo_margin, hi_margin) < margin_threshold:
+            return None
 
         # Size by equal SHARES so payout = S×$1 whichever bracket wins (math above).
         # T = target total cost from Kelly; S = T/P → cost = S·P, payout = S.
@@ -483,18 +523,8 @@ def find_yes_clusters(event: dict, forecast_temp: float, confidence: str,
             resolution_date=event.get("resolution_date", event.get("date", "")),
         )
 
+    # Prefer 3-bracket cluster (center ± 1). If forecast is at an edge, shift inward.
     n = len(active)
-    # 2-bracket cluster: center and one neighbor (higher return, narrower window).
-    if center_idx + 1 < n:
-        indices2 = [center_idx, center_idx + 1]
-    else:
-        indices2 = [center_idx - 1, center_idx] if center_idx > 0 else []
-    if indices2:
-        cluster2 = make_cluster(indices2)
-        if cluster2:
-            clusters.append(cluster2)
-
-    # 3-bracket cluster (center ± 1). If forecast is at an edge, shift inward.
     if center_idx == 0:
         indices3 = [0, 1, 2]
     elif center_idx == n - 1:
@@ -509,7 +539,8 @@ def find_yes_clusters(event: dict, forecast_temp: float, confidence: str,
     return clusters
 
 
-def analyze_event(event: dict, forecast: dict, capital: float, n_opps: int = 20) -> tuple:
+def analyze_event(event: dict, forecast: dict, capital: float, n_opps: int = 20,
+                  city_bonus_f: float = 0.0) -> tuple:
     """Returns (yes_clusters, no_opps) for a single event."""
     date_str = event["date"]
     day_fc = forecast.get("forecasts", {}).get(date_str)
@@ -523,18 +554,15 @@ def analyze_event(event: dict, forecast: dict, capital: float, n_opps: int = 20)
         return [], []
 
     # YES clusters require both sources to agree closely (confidence = "high").
-    # Medium confidence means WU and NWS/OM diverge 2-4°F — too risky for directional bets.
-    # NO bets are allowed on medium confidence (betting against outlier brackets is safer).
-    #
-    # We use WU as the forecast temperature (not consensus) because WU IS the resolution
-    # source: Polymarket settles against the Wunderground station reading for the day.
-    # When confidence == "high" both sources are already within 2°F, so WU and consensus
-    # are nearly identical and using WU keeps our bet direction tightly aligned to settlement.
+    # NO bets default to high-confidence only; can relax via no_require_high_confidence=False.
     wu_temp = day_fc.get("wunderground")
     forecast_temp = wu_temp if wu_temp is not None else day_fc["consensus"]
 
     yes_clusters = find_yes_clusters(event, forecast_temp, confidence, capital) if confidence == "high" else []
-    no_opps = find_no_opps(event, forecast_temp, confidence, capital, n_opps)
+    no_require_high = STRATEGY.get("no_require_high_confidence", True)
+    no_opps = find_no_opps(event, forecast_temp, confidence, capital, n_opps, city_bonus_f) if (
+        confidence == "high" or not no_require_high
+    ) else []
     return yes_clusters, no_opps
 
 
@@ -551,6 +579,9 @@ def analyze_all(all_markets: dict, all_forecasts: dict,
     if max_capital is None:
         max_capital = STRATEGY["max_capital"]
 
+    # Reload city adjustments from learner output (fresh each run)
+    city_adjustments = _load_city_adjustments()
+
     all_clusters = []
     all_no_opps = []
 
@@ -558,13 +589,14 @@ def analyze_all(all_markets: dict, all_forecasts: dict,
         city_forecast = all_forecasts.get(city)
         if not city_forecast:
             continue
+        city_adj = city_adjustments.get(city, {})
+        city_bonus_f = city_adj.get("bonus_f", 0.0) if isinstance(city_adj, dict) else 0.0
         for event in events:
-            clusters, no_opps = analyze_event(event, city_forecast, max_capital)
+            clusters, no_opps = analyze_event(event, city_forecast, max_capital,
+                                              city_bonus_f=city_bonus_f)
 
             if clusters:
-                # Primary = highest return; alt = other cluster for UI toggle (2- vs 3-bracket).
-                clusters.sort(key=lambda c: c.return_pct, reverse=True)
-                clusters[0].alt = clusters[1] if len(clusters) > 1 else None
+                clusters[0].alt = None
                 all_clusters.append(clusters[0])
 
             all_no_opps.extend(no_opps)
