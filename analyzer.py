@@ -6,7 +6,7 @@ Two strategies:
   1. NO — buy NO on brackets that are clearly far from forecast. You win if that bracket
      doesn't resolve. Low risk, 8-50% returns depending on how far from forecast.
 
-  2. YES CLUSTER — buy YES on 2-3 adjacent brackets that together "surround" the forecast.
+  2. YES CLUSTER — buy YES on exactly 3 adjacent brackets that together "surround" the forecast.
      Exactly one bracket always resolves YES when the temp falls in your range — but that
      does *not* guarantee profit. You only profit if the total you pay for all 3 brackets
      is less than $1 (one bracket pays $1). So we only suggest clusters where total_price < 0.97.
@@ -19,13 +19,12 @@ Two strategies:
      Example — 76-77@12c, 78-79@35c, 80-81@28c: P=0.75. T=$30 → S=40. Spend $4.80+$14+$11.20=$30.
 
      Any bracket wins → 40*$1 = $40, profit $10. We only suggest P < 0.97.
-     Smaller cluster (2 brackets) → higher return, narrower window
-     Larger cluster (3 brackets) → lower return, wider safety window
+     Always 3 brackets — 2-bracket clusters have too-high total price, winning barely covers cost.
+     One cluster per city per date — multiple clusters on the same city/date are correlated risk.
 
 Confidence:
-  - "high" (NWS + Open-Meteo agree ≤2°F): use cluster of 2
-  - "medium": use cluster of 3 for safety
-  - "low": skip
+  - "high" (NWS + Open-Meteo agree ≤2°F): build 3-bracket cluster
+  - "medium" or "low": skip YES clusters entirely
 """
 
 from __future__ import annotations
@@ -132,7 +131,7 @@ class BracketSlot:
 
 @dataclass
 class YesCluster:
-    """YES cluster: 2-3 adjacent brackets surrounding the forecast."""
+    """YES cluster: exactly 3 adjacent brackets surrounding the forecast."""
     city: str
     date: str
     event_slug: str
@@ -417,6 +416,11 @@ def find_yes_clusters(event: dict, forecast_temp: float, confidence: str,
                 market_slug=m.get("market_slug", ""),
             ))
 
+        # Hard minimum: 3-bracket clusters only. 2-bracket total prices are too high
+        # — winning barely covers cost, and some wins show negative P&L.
+        if len(slots) < 3:
+            return None
+
         total_price = round(sum(s.yes_price for s in slots), 4)
         # Profit only when one bracket pays $1 and total cost < $1. Reject thin or losing clusters.
         if total_price >= 0.97:  # need at least ~3% edge
@@ -434,13 +438,23 @@ def find_yes_clusters(event: dict, forecast_temp: float, confidence: str,
 
         # Size by equal SHARES so payout = S×$1 whichever bracket wins (math above).
         # T = target total cost from Kelly; S = T/P → cost = S·P, payout = S.
+        # S is shares PER BRACKET. Payout when any one bracket wins = S×$1.
+        # Profit = S - total_cost = S(1 - P). Correct formula: S = total_cost / total_price.
         unit_val = event.get("temp_unit", "F")
         win_prob = estimate_yes_win_prob(len(slots), confidence, unit_val)
-        total_target = min(cfg["default_yes_size"] * len(slots), capital * 0.05)
+        # Lottery clusters (total_price < threshold) get capped at a smaller size
+        # to limit exposure while preserving upside.
+        lottery_threshold = cfg.get("yes_lottery_threshold", 0.25)
+        is_lottery = total_price < lottery_threshold
+        if is_lottery:
+            lottery_size = cfg.get("yes_lottery_size", 5)
+            total_target = lottery_size * len(slots)
+        else:
+            total_target = min(cfg["default_yes_size"] * len(slots), capital * 0.05)
         size_each_legacy = yes_cluster_size_each(total_target, len(slots), win_prob, total_price, capital)
         total_cost = round(size_each_legacy * len(slots), 2)
-        shares = total_cost / total_price   # S = T/P
-        total_cost = round(shares * total_price, 2)
+        shares = round(total_cost / total_price, 2)  # S = T/P — shares per bracket
+        total_cost = round(shares * total_price, 2)  # recalc to match
         size_each_avg = round(total_cost / len(slots), 2)
         for s in slots:
             s.amount_usd = round(shares * s.yes_price, 2)  # amount_i = S·p_i
@@ -515,12 +529,11 @@ def analyze_all(all_markets: dict, all_forecasts: dict,
                 max_capital: Optional[float] = None) -> tuple:
     """
     Run full analysis.
-    Returns (yes_clusters, no_opps) sorted by return_pct descending.
+    Returns (yes_clusters, no_opps) sorted by ev_score descending.
 
-    Each event produces at most one YES cluster (the highest-return option).
-    Both 2-bracket (tighter, higher return) and 3-bracket (safer, lower return)
-    are evaluated; the best one per event is kept. The alternative cluster is
-    stored in cluster.alt so the UI can show it as a toggle.
+    Each event produces at most one YES cluster (3 adjacent brackets).
+    At most one cluster per city per date is kept (highest ev_score wins),
+    preventing correlated over-concentration on the same temperature.
     """
     if max_capital is None:
         max_capital = STRATEGY["max_capital"]
@@ -540,6 +553,14 @@ def analyze_all(all_markets: dict, all_forecasts: dict,
                 all_clusters.append(clusters[0])
 
             all_no_opps.extend(no_opps)
+
+    # Keep at most 1 cluster per city per date (highest ev_score wins)
+    seen_city_date: dict = {}
+    for c in all_clusters:
+        key = (c.city, c.date)
+        if key not in seen_city_date or c.ev_score > seen_city_date[key].ev_score:
+            seen_city_date[key] = c
+    all_clusters = list(seen_city_date.values())
 
     all_clusters.sort(key=lambda c: (c.forecast_confidence == "high", c.ev_score), reverse=True)
     all_no_opps.sort(key=lambda o: (o.forecast_confidence == "high", o.ev_score), reverse=True)

@@ -255,6 +255,7 @@ def record_scan(yes_clusters, no_opps, all_forecasts: dict = None) -> int:
             "entry_price": round(o.no_price, 4),
             "return_pct": round(o.return_pct, 2),
             "forecast_temp": o.forecast_temp,
+            "distance": round(o.distance_f, 2) if getattr(o, "distance_f", None) is not None else None,
             "temp_unit": o.temp_unit,
             "confidence": o.forecast_confidence,
             "predicted_win_prob": round(getattr(o, "predicted_win_prob", 0.75), 4),

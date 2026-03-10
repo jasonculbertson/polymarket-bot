@@ -164,8 +164,8 @@ CLOB_API = "https://clob.polymarket.com"
 # Strategy parameters
 STRATEGY = {
     # BUY NO: bracket must be at least this far from forecast (°F for F cities, °C for C cities)
-    "no_min_distance_f": 4,    # °F
-    "no_min_distance_c": 2.5,  # °C  (~4.5°F equivalent)
+    "no_min_distance_f": 6,    # °F  (raised from 4 — adjacent-bracket losses too frequent)
+    "no_min_distance_c": 3.5,  # °C  (raised from 2.5 — ~6.3°F equivalent)
     # BUY NO: minimum NO price
     "no_min_price": 0.65,
     # BUY YES: maximum YES price to consider (looking for underpriced YES)
@@ -180,6 +180,9 @@ STRATEGY = {
     "default_no_size": 20,
     # Default order size for YES bets (USDC) — used as Kelly cap
     "default_yes_size": 10,
+    # YES lottery: clusters with total_price < threshold get smaller per-bracket sizing
+    "yes_lottery_threshold": 0.25,   # total_price below this = lottery cluster
+    "yes_lottery_size": 5,           # $ per bracket for lottery clusters (vs default_yes_size)
     # Max total capital to deploy per run (USDC)
     "max_capital": 400,
     # Kelly criterion fraction (0.5 = half-Kelly for safety)
