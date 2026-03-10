@@ -69,6 +69,7 @@ def save_results(clusters, no_opps, markets, forecasts, scan_time: str, target_d
                     "market_id": b.market_id,
                     "group_title": b.group_title,
                     "yes_price": b.yes_price,
+                    "amount_usd": round(getattr(b, "amount_usd", 0), 2),
                     "yes_token_id": b.yes_token_id,
                     "is_forecast_bracket": b.is_forecast_bracket,
                     "liquidity": b.liquidity,
@@ -81,6 +82,7 @@ def save_results(clusters, no_opps, markets, forecasts, scan_time: str, target_d
                 for b in c.brackets
             ],
             "cluster_size": c.cluster_size,
+            "shares": round(getattr(c, "shares", 0), 2),
             "total_price": c.total_price,
             "return_pct": round(c.return_pct, 2),
             "win_lo": c.win_lo if c.win_lo != float("-inf") else None,

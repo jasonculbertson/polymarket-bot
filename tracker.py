@@ -289,6 +289,7 @@ def record_scan(yes_clusters, no_opps, all_forecasts: dict = None) -> int:
             "entry_price": round(c.total_price, 4),
             "return_pct": round(c.return_pct, 2),
             "cluster_size": c.cluster_size,
+            "shares": round(getattr(c, "shares", 0), 2),  # equal shares per bracket → same payout whichever wins
             "forecast_temp": c.forecast_temp,
             "temp_unit": c.temp_unit,
             "confidence": c.forecast_confidence,
@@ -298,7 +299,7 @@ def record_scan(yes_clusters, no_opps, all_forecasts: dict = None) -> int:
             "resolution_date": getattr(c, "resolution_date", None) or c.date,
             "resolution_time": getattr(c, "resolution_time", ""),
             "first_seen": now,
-            "paper_size_usd": round(PAPER_SIZE_USD * c.cluster_size, 2),
+            "paper_size_usd": round(c.total_cost, 2),  # actual cost (shares × total_price)
             "outcome": None,
             "final_yes_price": None,
             "pnl_pct": None,
@@ -382,6 +383,7 @@ def record_scan_from_merged(merged: dict) -> int:
             "entry_price": round(float(c.get("total_price", 0) or 0), 4),
             "return_pct": round(float(c.get("return_pct", 0) or 0), 2),
             "cluster_size": int(c.get("cluster_size", 0) or 0),
+            "shares": round(float(c.get("shares", 0) or 0), 2),
             "forecast_temp": float(c.get("forecast_temp", 0) or 0),
             "temp_unit": c.get("temp_unit", "F"),
             "confidence": c.get("forecast_confidence", "medium"),
@@ -391,7 +393,7 @@ def record_scan_from_merged(merged: dict) -> int:
             "resolution_date": c.get("resolution_date") or c.get("date", ""),
             "resolution_time": c.get("resolution_time", ""),
             "first_seen": now,
-            "paper_size_usd": round(PAPER_SIZE_USD * (c.get("cluster_size") or 1), 2),
+            "paper_size_usd": round(float(c.get("total_cost", 0) or 0), 2) or round(PAPER_SIZE_USD * (c.get("cluster_size") or 1), 2),
             "outcome": None,
             "final_yes_price": None,
             "pnl_pct": None,

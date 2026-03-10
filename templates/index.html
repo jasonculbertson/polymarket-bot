@@ -758,10 +758,10 @@ tr.taken-row:hover td { opacity: 0.55; }
       <div class="card scan"><div class="label">Last Scan</div><div class="value">—</div></div>
     </div>
 
-    <!-- YES Clusters -->
+    <!-- YES Clusters: buy YES on 3 adjacent brackets; one pays $1. Profit only if Cost < $1. -->
     <div class="section">
       <div class="section-header">
-        <span class="section-title yes-title">YES Clusters</span>
+        <span class="section-title yes-title" title="One bracket pays $1 when temp lands in range. You profit only if Cost (sum of 3 prices) &lt; $1.">YES Clusters</span>
         <span class="section-count badge-green badge" id="yes-count">0</span>
         <div id="yes-day-pills" style="display:flex; gap:4px; margin-left:8px;"></div>
         <div class="section-right">
@@ -777,20 +777,21 @@ tr.taken-row:hover td { opacity: 0.55; }
               <th onclick="sortTable('yes','date',1)">Date <span class="sort-arrow"></span></th>
               <th>Brackets</th>
               <th onclick="sortTable('yes','cluster_size',1)" style="text-align:center">n <span class="sort-arrow"></span></th>
-              <th onclick="sortTable('yes','total_price',1)">Cost <span class="sort-arrow"></span></th>
+              <th onclick="sortTable('yes','total_price',1)" title="Sum of 3 bracket prices. Must be &lt; $1 to profit (one bracket pays $1).">Cost <span class="sort-arrow"></span></th>
               <th onclick="sortTable('yes','return_pct',-1)">Return <span class="sort-arrow"></span></th>
+              <th onclick="sortTable('yes','shares',1)" title="Equal shares in each bracket → same $1 payout whichever wins.">Shares <span class="sort-arrow"></span></th>
               <th>Win Range</th>
               <th onclick="sortTable('yes','forecast_temp',1)">Forecast <span class="sort-arrow"></span></th>
               <th onclick="sortTable('yes','forecast_confidence',1)">Conf <span class="sort-arrow"></span></th>
               <th onclick="sortTable('yes','liquidity_min',-1)">Liq <span class="sort-arrow"></span></th>
-              <th onclick="sortTable('yes','size_each',1)">$/bkt <span class="sort-arrow"></span></th>
-              <th onclick="sortTable('yes','total_cost',1)">Total $ <span class="sort-arrow"></span></th>
+              <th onclick="sortTable('yes','size_each',1)" title="Average $ per bracket. Spend per bracket = shares × price (differs by bracket).">$/bkt <span class="sort-arrow"></span></th>
+              <th onclick="sortTable('yes','total_cost',1)" title="Total cost. Payout = shares × $1 when any bracket wins.">Total $ <span class="sort-arrow"></span></th>
               <th>Link</th>
               <th>Action</th>
             </tr>
           </thead>
           <tbody id="yes-body">
-            <tr><td colspan="14"><div class="empty"><div class="empty-icon">📡</div>Run a scan to see opportunities</div></td></tr>
+            <tr><td colspan="15"><div class="empty"><div class="empty-icon">📡</div>Run a scan to see opportunities</div></td></tr>
           </tbody>
         </table>
       </div>
@@ -1278,7 +1279,7 @@ function renderYes(clusters) {
   $('yes-count').textContent = filtered.length;
 
   if (!filtered.length) {
-    tb.innerHTML = '<tr><td colspan="14"><div class="empty"><div class="empty-icon">🎯</div>No YES clusters pass current filters</div></td></tr>';
+    tb.innerHTML = '<tr><td colspan="15"><div class="empty"><div class="empty-icon">🎯</div>No YES clusters pass current filters</div></td></tr>';
     return;
   }
 
@@ -1318,6 +1319,7 @@ function renderYes(clusters) {
       <td style="text-align:center">${c.cluster_size}</td>
       <td class="price-cell">${fmt(c.total_price, 3)}</td>
       <td class="ret-cell ${retCls}">${fmt(c.return_pct)}%</td>
+      <td class="size-cell" title="${(c.brackets||[]).map(b=>b.group_title+' $'+fmt(b.amount_usd||0,2)).join(', ')}">${fmt(c.shares||0, 0)}</td>
       <td class="winrange-cell">${winRange}</td>
       <td class="forecast-cell">${fmtTemp(c.forecast_temp, u)}</td>
       <td>${confBadge(c.forecast_confidence)}</td>
@@ -1334,7 +1336,7 @@ function renderYes(clusters) {
       </td>
     </tr>
     <tr id="detail-yes-${i}" class="bracket-detail">
-      <td colspan="14" style="padding:0">
+      <td colspan="15" style="padding:0">
         <div style="padding:8px 16px;">${bktDetails}</div>
       </td>
     </tr>`;

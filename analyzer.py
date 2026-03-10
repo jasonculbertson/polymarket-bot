@@ -7,18 +7,19 @@ Two strategies:
      doesn't resolve. Low risk, 8-50% returns depending on how far from forecast.
 
   2. YES CLUSTER — buy YES on 2-3 adjacent brackets that together "surround" the forecast.
-     Exactly one bracket always resolves YES, so you are guaranteed to win ONE of the cluster
-     as long as the actual temp falls within the cluster range.
+     Exactly one bracket always resolves YES when the temp falls in your range — but that
+     does *not* guarantee profit. You only profit if the total you pay for all 3 brackets
+     is less than $1 (one bracket pays $1). So we only suggest clusters where total_price < 0.97.
 
-     Economics:
-       Total cost  = sum(yes_price_i for bracket_i in cluster)
-       Payout      = $1 × (shares of whichever bracket wins)
-       Return %    = (1 - total_price) / total_price × 100
+     MATH (equal shares so same payout whichever bracket wins):
+       P = p1+p2+p3 (sum of YES prices; must be < 1). Buy S shares in EACH bracket.
+       Cost = S*P,  Payout = S*$1  →  Profit = S(1-P).  Return % = (1-P)/P*100.
+       Target cost T  →  S = T/P.  Spend on bracket i = S*p_i (we set amount_usd per slot).
 
-     Example — forecast 46°F, buy YES on 44-45, 46-47, 48-49 at 26¢ each:
-       total_price = 0.78  →  return = 28%  (covers ±4°F window)
+     Example — 76-77@12c, 78-79@35c, 80-81@28c: P=0.75. T=$30 → S=40. Spend $4.80+$14+$11.20=$30.
 
-     Smaller cluster (2 brackets) → higher return, narrower safety window
+     Any bracket wins → 40*$1 = $40, profit $10. We only suggest P < 0.97.
+     Smaller cluster (2 brackets) → higher return, narrower window
      Larger cluster (3 brackets) → lower return, wider safety window
 
 Confidence:
@@ -99,6 +100,7 @@ class BracketSlot:
     liquidity: float
     is_forecast_bracket: bool   # True for the bracket directly containing the forecast
     market_slug: str = ""
+    amount_usd: float = 0.0    # spend this much on this bracket (shares × yes_price); set when cluster is sized
 
 
 @dataclass
@@ -116,8 +118,9 @@ class YesCluster:
     win_hi: Optional[float]  # highest guaranteed win boundary (None = open high)
     forecast_temp: float
     forecast_confidence: str
-    size_each: float         # USDC per bracket
-    total_cost: float        # size_each × cluster_size
+    shares: float            # equal shares in each bracket → same $1 payout whichever wins
+    size_each: float         # average USDC per bracket (total_cost / cluster_size), for display
+    total_cost: float        # shares × total_price; same payout = shares × $1 whichever bracket wins
     liquidity_min: float     # min liquidity across brackets
     predicted_win_prob: float = 0.75
     temp_unit: str = "F"     # "F" or "C"
@@ -373,7 +376,10 @@ def find_yes_clusters(event: dict, forecast_temp: float, confidence: str,
             ))
 
         total_price = round(sum(s.yes_price for s in slots), 4)
-        if total_price >= 0.97:  # not enough edge
+        # Profit only when one bracket pays $1 and total cost < $1. Reject thin or losing clusters.
+        if total_price >= 0.97:  # need at least ~3% edge
+            return None
+        if total_price >= 1.0:   # would lose even when "right" (temp in range)
             return None
 
         ret_pct = round((1.0 - total_price) / total_price * 100, 1)
@@ -384,12 +390,18 @@ def find_yes_clusters(event: dict, forecast_temp: float, confidence: str,
         win_lo_val = slots[0].bracket_lo if slots[0].bracket_lo is not None else float("-inf")
         win_hi_val = slots[-1].bracket_hi  # None = open high
 
-        # Size: Kelly-based, targeting cluster as a unit
+        # Size by equal SHARES so payout = S×$1 whichever bracket wins (math above).
+        # T = target total cost from Kelly; S = T/P → cost = S·P, payout = S.
         unit_val = event.get("temp_unit", "F")
         win_prob = estimate_yes_win_prob(len(slots), confidence, unit_val)
         total_target = min(cfg["default_yes_size"] * len(slots), capital * 0.05)
-        size_each = yes_cluster_size_each(total_target, len(slots), win_prob, total_price, capital)
-        total_cost = round(size_each * len(slots), 2)
+        size_each_legacy = yes_cluster_size_each(total_target, len(slots), win_prob, total_price, capital)
+        total_cost = round(size_each_legacy * len(slots), 2)
+        shares = total_cost / total_price   # S = T/P
+        total_cost = round(shares * total_price, 2)
+        size_each_avg = round(total_cost / len(slots), 2)
+        for s in slots:
+            s.amount_usd = round(shares * s.yes_price, 2)  # amount_i = S·p_i
 
         unit = event.get("temp_unit", "F")
         return YesCluster(
@@ -407,7 +419,8 @@ def find_yes_clusters(event: dict, forecast_temp: float, confidence: str,
             win_hi=win_hi_val,
             forecast_temp=forecast_temp,
             forecast_confidence=confidence,
-            size_each=size_each,
+            shares=round(shares, 2),
+            size_each=size_each_avg,
             total_cost=total_cost,
             liquidity_min=min(s.liquidity for s in slots),
             temp_unit=unit,
