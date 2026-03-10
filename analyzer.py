@@ -452,6 +452,8 @@ def find_yes_clusters(event: dict, forecast_temp: float, confidence: str,
 
         total_price = round(sum(s.yes_price for s in slots), 4)
         # Profit only when one bracket pays $1 and total cost < $1. Reject thin or losing clusters.
+        if total_price < cfg.get("yes_min_total_price", 0.04):  # market likely already resolved
+            return None
         if total_price >= 0.97:  # need at least ~3% edge
             return None
         if total_price >= 1.0:   # would lose even when "right" (temp in range)
@@ -542,7 +544,15 @@ def find_yes_clusters(event: dict, forecast_temp: float, confidence: str,
 def analyze_event(event: dict, forecast: dict, capital: float, n_opps: int = 20,
                   city_bonus_f: float = 0.0) -> tuple:
     """Returns (yes_clusters, no_opps) for a single event."""
+    import datetime as _dt
     date_str = event["date"]
+
+    # Skip markets whose resolution date has already passed — prices will be garbage
+    resolution_date = event.get("resolution_date") or date_str
+    today = _dt.date.today().isoformat()
+    if resolution_date < today:
+        return [], []
+
     day_fc = forecast.get("forecasts", {}).get(date_str)
     if not day_fc:
         return [], []
