@@ -376,10 +376,8 @@ def find_yes_clusters(event: dict, forecast_temp: float, confidence: str,
             ))
 
         total_price = round(sum(s.yes_price for s in slots), 4)
-        # Profit only when one bracket pays $1 and total cost < $1. Reject thin or losing clusters.
-        if total_price >= 0.97:  # need at least ~3% edge
-            return None
-        if total_price >= 1.0:   # would lose even when "right" (temp in range)
+        # Profit only when one bracket pays $1 and total cost < $1. Reject thin or losing clusters (>= 0.97 covers >= 1.0).
+        if total_price >= 0.97:
             return None
 
         ret_pct = round((1.0 - total_price) / total_price * 100, 1)
@@ -427,8 +425,18 @@ def find_yes_clusters(event: dict, forecast_temp: float, confidence: str,
             resolution_date=event.get("resolution_date", event.get("date", "")),
         )
 
-    # Prefer 3-bracket cluster (center ± 1). If forecast is at an edge, shift inward.
     n = len(active)
+    # 2-bracket cluster: center and one neighbor (higher return, narrower window).
+    if center_idx + 1 < n:
+        indices2 = [center_idx, center_idx + 1]
+    else:
+        indices2 = [center_idx - 1, center_idx] if center_idx > 0 else []
+    if indices2:
+        cluster2 = make_cluster(indices2)
+        if cluster2:
+            clusters.append(cluster2)
+
+    # 3-bracket cluster (center ± 1). If forecast is at an edge, shift inward.
     if center_idx == 0:
         indices3 = [0, 1, 2]
     elif center_idx == n - 1:
@@ -456,8 +464,13 @@ def analyze_event(event: dict, forecast: dict, capital: float, n_opps: int = 20)
         return [], []
 
     # YES clusters require both sources to agree closely (confidence = "high").
-    # Medium confidence means WU and NWS diverge 2-4°F — too risky for directional bets.
+    # Medium confidence means WU and NWS/OM diverge 2-4°F — too risky for directional bets.
     # NO bets are allowed on medium confidence (betting against outlier brackets is safer).
+    #
+    # We use WU as the forecast temperature (not consensus) because WU IS the resolution
+    # source: Polymarket settles against the Wunderground station reading for the day.
+    # When confidence == "high" both sources are already within 2°F, so WU and consensus
+    # are nearly identical and using WU keeps our bet direction tightly aligned to settlement.
     wu_temp = day_fc.get("wunderground")
     forecast_temp = wu_temp if wu_temp is not None else day_fc["consensus"]
 
@@ -491,7 +504,9 @@ def analyze_all(all_markets: dict, all_forecasts: dict,
             clusters, no_opps = analyze_event(event, city_forecast, max_capital)
 
             if clusters:
-                clusters[0].alt = None
+                # Primary = highest return; alt = other cluster for UI toggle (2- vs 3-bracket).
+                clusters.sort(key=lambda c: c.return_pct, reverse=True)
+                clusters[0].alt = clusters[1] if len(clusters) > 1 else None
                 all_clusters.append(clusters[0])
 
             all_no_opps.extend(no_opps)

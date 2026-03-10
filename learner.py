@@ -38,8 +38,8 @@ LEARNING_RATE = float(os.environ.get("LEARNING_RATE", "0.15"))
 
 # Defaults (mirrors config.py — kept here to avoid circular import)
 _DEFAULT_WEIGHTS = {
-    "F": {"wunderground": 0.70, "nws": 0.30, "wttr": 0.00},
-    "C": {"wunderground": 1.00, "nws": 0.00, "wttr": 0.00},
+    "F": {"wunderground": 0.70, "nws": 0.30, "open_meteo": 0.00},
+    "C": {"wunderground": 1.00, "nws": 0.00, "open_meteo": 0.00},
 }
 _DEFAULT_CALIBRATION = {
     "no_sigma":  {"F": {"high": 1.8, "medium": 3.2}, "C": {"high": 1.0, "medium": 1.8}},
@@ -55,7 +55,11 @@ def load_weights() -> dict:
     try:
         if os.path.exists(WEIGHTS_FILE):
             with open(WEIGHTS_FILE) as f:
-                return json.load(f)
+                w = json.load(f)
+            for unit in ("F", "C"):
+                if isinstance(w.get(unit), dict) and "open_meteo" not in w[unit] and "wttr" in w[unit]:
+                    w[unit]["open_meteo"] = w[unit]["wttr"]
+            return w
     except Exception:
         pass
     return {**_DEFAULT_WEIGHTS, "samples": 0, "updated": None}
@@ -558,8 +562,8 @@ def learn_from_outcomes() -> dict:
 
     # Accumulate errors and calibration samples across all newly resolved opps
     source_errors: dict[str, dict[str, list]] = {
-        "F": {"wunderground": [], "nws": [], "wttr": []},
-        "C": {"wunderground": [], "nws": [], "wttr": []},
+        "F": {"wunderground": [], "nws": [], "open_meteo": []},
+        "C": {"wunderground": [], "nws": [], "open_meteo": []},
     }
     # Separate by confidence for sigma calibration
     win_prob_samples: dict[str, dict[str, list]] = {
@@ -590,8 +594,8 @@ def learn_from_outcomes() -> dict:
                                               resolution_date=resolution_date)
             if actual is not None:
                 temp_found += 1
-                for src in ["wunderground", "nws", "wttr"]:
-                    val = sources.get(src)
+                for src in ["wunderground", "nws", "open_meteo"]:
+                    val = sources.get(src) if src != "open_meteo" else (sources.get("open_meteo") or sources.get("wttr"))
                     if val is not None:
                         source_errors[unit][src].append(abs(val - actual))
 
@@ -615,15 +619,15 @@ def learn_from_outcomes() -> dict:
         if unit not in weights or not isinstance(weights.get(unit), dict):
             weights[unit] = dict(_DEFAULT_WEIGHTS.get(unit, {}))
 
-        for src in ("wunderground", "nws", "wttr"):
+        for src in ("wunderground", "nws", "open_meteo"):
             if src in new_w:
                 old = weights[unit].get(src, _DEFAULT_WEIGHTS.get(unit, {}).get(src, 0.33))
                 weights[unit][src] = _ema_update(old, new_w[src], alpha)
 
         # Renormalize so weights sum to 1
-        total = sum(weights[unit].get(s, 0) for s in ("wunderground", "nws", "wttr"))
+        total = sum(weights[unit].get(s, 0) for s in ("wunderground", "nws", "open_meteo"))
         if total > 0:
-            for src in ("wunderground", "nws", "wttr"):
+            for src in ("wunderground", "nws", "open_meteo"):
                 weights[unit][src] = round(weights[unit].get(src, 0) / total, 4)
 
         n_samples = sum(len(e) for e in source_errors[unit].values())

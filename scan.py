@@ -44,7 +44,7 @@ def build_forecast_rows(forecasts: dict, target_date: str) -> list:
             "wu_peak_hour": day.get("wu_peak_hour"),
             "wu_hours":     day.get("wu_hours", []),
             "nws":          day.get("nws"),
-            "wttr":         day.get("wttr"),
+            "open_meteo":   day.get("open_meteo") or day.get("wttr"),
             "consensus":    day.get("consensus"),
             "confidence":   day.get("confidence"),
         })
@@ -299,7 +299,7 @@ def print_forecast_summary(forecasts: dict, cities: list, target_date: str):
     print(f"\n{'='*90}")
     print(f"{'WEATHER FORECASTS — ' + target_date:^90}")
     print(f"{'='*90}")
-    print(f"{'City':<16} {'Station':<8} {'WU':>8} {'NWS':>8} {'wttr':>8} {'Consensus':>10} {'Conf':>6}")
+    print(f"{'City':<16} {'Station':<8} {'WU':>8} {'NWS':>8} {'OM':>8} {'Consensus':>10} {'Conf':>6}")
     print("-" * 90)
 
     for city in cities:
@@ -311,9 +311,9 @@ def print_forecast_summary(forecasts: dict, cities: list, target_date: str):
         if day:
             wu_s   = f"{day['wunderground']:.1f}°{unit}" if day.get("wunderground") is not None else "--"
             nws_s  = f"{day['nws']:.1f}°{unit}"          if day.get("nws")          is not None else "--"
-            wttr_s = f"{day['wttr']:.1f}°{unit}"         if day.get("wttr")         is not None else "--"
+            om_s = f"{day['open_meteo']:.1f}°{unit}" if day.get("open_meteo") is not None else (f"{day['wttr']:.1f}°{unit}" if day.get("wttr") is not None else "--")
             conf_icon = "✓✓ HIGH" if day["confidence"] == "high" else ("✓ MED" if day["confidence"] == "medium" else "? LOW")
-            print(f"{city:<16} {station:<8} {wu_s:>8} {nws_s:>8} {wttr_s:>8} {day['consensus']:>7.1f}°{unit} {conf_icon:>6}")
+            print(f"{city:<16} {station:<8} {wu_s:>8} {nws_s:>8} {om_s:>8} {day['consensus']:>7.1f}°{unit} {conf_icon:>6}")
         else:
             print(f"{city:<16} {station:<8} {'--':>8} {'--':>8} {'--':>8} {'no data':>10}")
 
@@ -460,7 +460,7 @@ def main():
                 w = result["current_weights"]
                 print(f"    Source weights F: wu={w.get('F',{}).get('wunderground',0):.2f} "
                       f"nws={w.get('F',{}).get('nws',0):.2f} "
-                      f"wttr={w.get('F',{}).get('wttr',0):.2f}")
+                      f"om={w.get('F',{}).get('open_meteo',0):.2f}")
             if result["calib_updated"]:
                 print(f"    Sigma calibration updated")
     except Exception as e:

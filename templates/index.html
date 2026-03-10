@@ -854,7 +854,7 @@ tr.taken-row:hover td { opacity: 0.55; }
               <th>WU Hourly Max</th>
               <th>Peaks At</th>
               <th>NWS</th>
-              <th>wttr.in</th>
+              <th>Open-Meteo</th>
               <th onclick="sortTable('fc','consensus',1)">Consensus <span class="sort-arrow"></span></th>
               <th onclick="sortTable('fc','confidence',1)">Confidence <span class="sort-arrow"></span></th>
             </tr>
@@ -932,12 +932,12 @@ tr.taken-row:hover td { opacity: 0.55; }
           <div style="font-size:.62rem; color:var(--text-muted); margin-bottom:4px;">US cities (°F)</div>
           <div class="weight-row"><span class="weight-label">Wunderground</span><div class="weight-bar-wrap"><div class="weight-bar w-wu"   id="wf-wu-F"   style="width:70%"></div></div><span class="weight-pct" id="wt-wu-F">70%</span></div>
           <div class="weight-row"><span class="weight-label">NWS</span><div class="weight-bar-wrap"><div class="weight-bar w-nws"  id="wf-nws-F"  style="width:30%"></div></div><span class="weight-pct" id="wt-nws-F">30%</span></div>
-          <div class="weight-row"><span class="weight-label">wttr.in</span><div class="weight-bar-wrap"><div class="weight-bar w-wttr" id="wf-wttr-F" style="width:0%"></div></div><span class="weight-pct" id="wt-wttr-F">0%</span></div>
+          <div class="weight-row"><span class="weight-label">Open-Meteo</span><div class="weight-bar-wrap"><div class="weight-bar w-wttr" id="wf-wttr-F" style="width:0%"></div></div><span class="weight-pct" id="wt-wttr-F">0%</span></div>
         </div>
         <div>
           <div style="font-size:.62rem; color:var(--text-muted); margin-bottom:4px;">Intl cities (°C)</div>
           <div class="weight-row"><span class="weight-label">Wunderground</span><div class="weight-bar-wrap"><div class="weight-bar w-wu"   id="wf-wu-C"   style="width:100%"></div></div><span class="weight-pct" id="wt-wu-C">100%</span></div>
-          <div class="weight-row"><span class="weight-label">wttr.in</span><div class="weight-bar-wrap"><div class="weight-bar w-wttr" id="wf-wttr-C" style="width:0%"></div></div><span class="weight-pct" id="wt-wttr-C">0%</span></div>
+          <div class="weight-row"><span class="weight-label">Open-Meteo</span><div class="weight-bar-wrap"><div class="weight-bar w-wttr" id="wf-wttr-C" style="width:0%"></div></div><span class="weight-pct" id="wt-wttr-C">0%</span></div>
         </div>
         <div style="margin-top:8px; font-size:.62rem; color:var(--text-muted)">
           <span id="wu-status"></span> · Updated: <span id="learn-updated">—</span>
@@ -1444,7 +1444,7 @@ function renderFc(fcs) {
       <td class="forecast-cell" style="font-weight:700;color:${f.wunderground != null ? '#f97316' : 'inherit'}">${f.wunderground != null ? fmtTemp(f.wunderground, u) : '<span style="color:var(--text-muted)">—</span>'}</td>
       <td class="forecast-cell">${peakHour}</td>
       <td class="forecast-cell">${f.nws   != null ? fmtTemp(f.nws, u)   : '<span style="color:var(--text-muted)">—</span>'}</td>
-      <td class="forecast-cell">${f.wttr  != null ? fmtTemp(f.wttr, u)  : '<span style="color:var(--text-muted)">—</span>'}</td>
+      <td class="forecast-cell">${f.open_meteo != null ? fmtTemp(f.open_meteo, u) : f.wttr != null ? fmtTemp(f.wttr, u) : '<span style="color:var(--text-muted)">—</span>'}</td>
       <td style="font-weight:700">${fmtTemp(f.consensus, u)}${spread ? ` <span style="font-size:.65rem; font-weight:400; color:var(--text-muted)">±${spread}°</span>` : ''}</td>
       <td>${confBadge(f.confidence)}</td>
     </tr>${hourlyChart}`;
@@ -1678,9 +1678,9 @@ function loadLearning() {
       }
       setPct('wf-wu-F',   'wt-wu-F',   wF.wunderground);
       setPct('wf-nws-F',  'wt-nws-F',  wF.nws);
-      setPct('wf-wttr-F', 'wt-wttr-F', wF.wttr);
+      setPct('wf-wttr-F', 'wt-wttr-F', wF.open_meteo ?? wF.wttr);
       setPct('wf-wu-C',   'wt-wu-C',   wC.wunderground);
-      setPct('wf-wttr-C', 'wt-wttr-C', wC.wttr);
+      setPct('wf-wttr-C', 'wt-wttr-C', wC.open_meteo ?? wC.wttr);
 
       const samples = w.samples || 0;
       $('learn-samples').textContent = samples ? `· ${samples} samples` : '· no data yet';
@@ -1867,11 +1867,11 @@ function _renderOutcomeRows(opps) {
     const src      = o.forecast_sources || {};
     const wuPred   = src.wunderground;
     const consPred = src.consensus;
-    const wttrPred = src.wttr;
-    const predVal  = wuPred ?? consPred ?? wttrPred;
+    const omPred   = src.open_meteo ?? src.wttr;
+    const predVal  = wuPred ?? consPred ?? omPred;
     const predTag  = wuPred != null ? '' : consPred != null
       ? ' <span style="font-size:.55rem;color:var(--text-muted)">(cons)</span>'
-      : wttrPred != null ? ' <span style="font-size:.55rem;color:var(--text-muted)">(wttr)</span>' : '';
+      : omPred != null ? ' <span style="font-size:.55rem;color:var(--text-muted)">(om)</span>' : '';
     const wuCell   = predVal != null
       ? `${predVal.toFixed(1)}°${u}${predTag}`
       : '<span style="color:var(--text-muted)">—</span>';

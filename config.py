@@ -206,14 +206,14 @@ NOTIFY = {
 
 # Forecast source weights when WU_API_KEY is configured (primary setup)
 # Wunderground IS the resolution source, so it gets dominant weight.
-# NWS provides an independent US-only sanity check.
+# NWS (US) / Open-Meteo (international) provide cross-check.
 FORECAST_WEIGHTS = {
-    "F": {"wunderground": 0.70, "nws": 0.30, "wttr": 0.00},
-    "C": {"wunderground": 1.00, "nws": 0.00, "wttr": 0.00},
+    "F": {"wunderground": 0.70, "nws": 0.30, "open_meteo": 0.00},
+    "C": {"wunderground": 1.00, "nws": 0.00, "open_meteo": 0.00},
 }
 
-# Fallback weights when WU_API_KEY is not set (uses wttr.in + NWS)
+# Fallback when WU not configured (NWS + Open-Meteo for international)
 FORECAST_WEIGHTS_FALLBACK = {
-    "F": {"wunderground": 0.00, "nws": 0.40, "wttr": 0.60},
-    "C": {"wunderground": 0.00, "nws": 0.00, "wttr": 1.00},
+    "F": {"wunderground": 0.00, "nws": 0.40, "open_meteo": 0.60},
+    "C": {"wunderground": 0.00, "nws": 0.00, "open_meteo": 1.00},
 }

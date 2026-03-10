@@ -8,6 +8,15 @@ Railway: deploys automatically, auto-scans every SCAN_INTERVAL_HOURS hours
 import json
 import os
 import sys
+
+# Load .env from project root so POLY_PRIVATE_KEY, LIVE_MODE, etc. work when running locally
+try:
+    from dotenv import load_dotenv
+    _env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    if os.path.isfile(_env_path):
+        load_dotenv(_env_path)
+except ImportError:
+    pass
 import subprocess
 import threading
 from datetime import datetime, timedelta
@@ -624,8 +633,9 @@ _last_auto_scan = None   # ISO string of last auto-scan start time
 
 def _auto_scan_job():
     global _last_auto_scan
-    if not _scan_running:
-        _last_auto_scan = datetime.now().isoformat()
+    if _scan_running:
+        return
+    _last_auto_scan = datetime.now().isoformat()
     threading.Thread(target=run_scan_bg, daemon=True).start()
 
 

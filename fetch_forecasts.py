@@ -318,10 +318,11 @@ def fetch_open_meteo_forecast(lat: float, lon: float, unit: str = "C") -> Option
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# wttr.in — kept as tertiary fallback only
+# wttr.in — unused; international cross-check uses Open-Meteo (fetch_open_meteo_forecast).
+# fetch_wttr_forecast is dead code; kept for reference only.
 # ─────────────────────────────────────────────────────────────────────────────
 
-def fetch_wttr_forecast(station: str, days: int = 2, unit: str = "F") -> Optional[dict]:
+def _fetch_wttr_forecast_unused(station: str, days: int = 2, unit: str = "F") -> Optional[dict]:
     """
     Fetch hourly forecast from wttr.in for an ICAO station.
     Returns {date_str: max_temp} in °F or °C depending on unit.
@@ -396,7 +397,7 @@ def fetch_city_forecast(city_name: str, days: int = 2) -> dict:
         Daily high = max of the 48-hour hourly forecast for that day.
         Also stores peak hour and full hourly curve for dashboard display.
       - NWS: US cities only, secondary validation.
-      - wttr.in: fallback when WU_API_KEY is not configured.
+      - Open-Meteo: international cities cross-check (free, no key).
 
     Confidence:
       - "high"   : sources agree within threshold (2°F or 1°C)
@@ -415,7 +416,7 @@ def fetch_city_forecast(city_name: str, days: int = 2) -> dict:
                 "wu_peak_hour": str | None,      # e.g. "14:00" — when high hits
                 "wu_hours":    list | None,      # [(hour, temp), ...] full curve
                 "nws":         float | None,
-                "wttr":        float | None,
+                "open_meteo":  float | None,
                 "consensus":   float,
                 "confidence":  "high" | "medium" | "low",
             }
@@ -434,22 +435,21 @@ def fetch_city_forecast(city_name: str, days: int = 2) -> dict:
     wu_active = True
 
     # Fetch sources concurrently within this city
-    wu_hourly_result = None
-    nws_result       = None
-    wttr_result      = None
+    wu_hourly_result   = None
+    nws_result         = None
+    open_meteo_result  = None
 
     with ThreadPoolExecutor(max_workers=3) as pool:
         fu = {}
         fu["wu"] = pool.submit(fetch_wunderground_hourly, station, unit, lat, lon)
         if is_us:
-            fu["nws"]  = pool.submit(fetch_nws_forecast, lat, lon)
+            fu["nws"] = pool.submit(fetch_nws_forecast, lat, lon)
         else:
-            # Open-Meteo as cross-check for international cities (free, no key, reliable)
-            fu["wttr"] = pool.submit(fetch_open_meteo_forecast, lat, lon, unit)
+            fu["open_meteo"] = pool.submit(fetch_open_meteo_forecast, lat, lon, unit)
 
-        if "wu"   in fu: wu_hourly_result = fu["wu"].result()
-        if "nws"  in fu: nws_result       = fu["nws"].result()
-        if "wttr" in fu: wttr_result      = fu["wttr"].result()
+        if "wu"          in fu: wu_hourly_result  = fu["wu"].result()
+        if "nws"         in fu: nws_result        = fu["nws"].result()
+        if "open_meteo"  in fu: open_meteo_result = fu["open_meteo"].result()
 
     # Flatten hourly → daily max for consensus calculation
     wu_daily = _wu_daily_max(wu_hourly_result)
@@ -465,18 +465,20 @@ def fetch_city_forecast(city_name: str, days: int = 2) -> dict:
         peak_hr = wu_day["peak_hour"] if wu_day else None
         hours   = wu_day["hours"]     if wu_day else []
 
-        nws_t   = nws_result.get(d)  if nws_result  else None
-        wttr_t  = wttr_result.get(d) if wttr_result else None
+        nws_t = nws_result.get(d) if nws_result else None
+        om_t  = open_meteo_result.get(d) if open_meteo_result else None
 
-        all_vals = [v for v in [wu_t, nws_t, wttr_t] if v is not None]
+        all_vals = [v for v in [wu_t, nws_t, om_t] if v is not None]
         if not all_vals:
             continue
 
         # Weighted consensus — WU weights when key is set, fallback otherwise
         default_weights = FORECAST_WEIGHTS if wu_active else FORECAST_WEIGHTS_FALLBACK
-        unit_weights = load_source_weights().get(unit, default_weights.get(unit, {}))
+        unit_weights = dict(load_source_weights().get(unit, default_weights.get(unit, {})))
+        if "open_meteo" not in unit_weights and "wttr" in unit_weights:
+            unit_weights["open_meteo"] = unit_weights["wttr"]
         consensus = _weighted_consensus(
-            {"wunderground": wu_t, "nws": nws_t, "wttr": wttr_t},
+            {"wunderground": wu_t, "nws": nws_t, "open_meteo": om_t},
             unit_weights,
         )
 
@@ -486,8 +488,7 @@ def fetch_city_forecast(city_name: str, days: int = 2) -> dict:
             confidence = "high"   if spread <= high_threshold else (
                          "medium" if spread <= low_threshold  else "low")
         else:
-            # Single source: WU alone is "high" (IS the resolution source);
-            # wttr or NWS alone is "medium"
+            # Single source: WU alone is "high"; NWS or Open-Meteo alone is "medium"
             confidence = "high" if wu_t is not None else "medium"
 
         forecasts[d] = {
@@ -495,7 +496,7 @@ def fetch_city_forecast(city_name: str, days: int = 2) -> dict:
             "wu_peak_hour": peak_hr,
             "wu_hours":     hours,
             "nws":          nws_t,
-            "wttr":         wttr_t,
+            "open_meteo":   om_t,
             "consensus":    consensus,
             "confidence":   confidence,
         }
@@ -541,7 +542,7 @@ def fetch_all_forecasts(cities=None, days: int = 2) -> dict:
                         peak = f"@{f['wu_peak_hour']}" if f.get("wu_peak_hour") else ""
                         parts.append(f"wu={f['wunderground']:.1f}{peak}")
                     if f["nws"]  is not None: parts.append(f"nws={f['nws']:.1f}")
-                    if f["wttr"] is not None: parts.append(f"om={f['wttr']:.1f}")
+                    if f.get("open_meteo") is not None: parts.append(f"om={f['open_meteo']:.1f}")
                     print(f"  {city}: {f['consensus']:.1f}°{unit} conf={f['confidence']} ({', '.join(parts)})")
                 else:
                     print(f"  {city}: no tomorrow forecast")
