@@ -551,6 +551,45 @@ def learning():
         return jsonify({"error": str(e)})
 
 
+@app.route("/api/learn", methods=["POST"])
+def api_learn():
+    """
+    Run the full daily learn pipeline on demand:
+      resolve_outcomes() → learn_from_outcomes() → run_daily_optimizer() → save to Postgres
+
+    Returns the optimizer report (includes issues list).
+    Also available automatically via the daily 8am UTC cron job.
+    """
+    try:
+        from tracker import resolve_outcomes, _load
+        from learner import learn_from_outcomes
+        from optimizer import run_daily_optimizer
+
+        resolve_outcomes()
+        learn_result = learn_from_outcomes()
+        data = _load()
+        report = run_daily_optimizer(data)
+        _pg_kv_save("daily_report", report)
+
+        return jsonify({
+            "ok":        True,
+            "learn":     {k: v for k, v in learn_result.items() if k != "current_weights"},
+            "optimizer": report,
+        })
+    except Exception as e:
+        import traceback
+        return jsonify({"ok": False, "error": str(e), "trace": traceback.format_exc()}), 500
+
+
+@app.route("/api/report")
+def api_report():
+    """Return the latest daily optimization report from Postgres."""
+    report = _pg_kv_load("daily_report")
+    if report is None:
+        return jsonify({"error": "No report yet — call POST /api/learn first"}), 404
+    return jsonify(report)
+
+
 @app.route("/scan", methods=["POST"])
 def trigger_scan():
     global _scan_running
@@ -646,6 +685,32 @@ def _auto_scan_job():
     threading.Thread(target=run_scan_bg, daemon=True).start()
 
 
+def _daily_learn_job():
+    """
+    Daily pipeline (8am UTC): resolve → learn → optimize → save report.
+    Runs in background thread. Results saved to Postgres under 'daily_report'.
+    """
+    def _run():
+        try:
+            print("[daily-learn] starting resolve + learn + optimize pipeline")
+            from tracker import resolve_outcomes, _load
+            from learner import learn_from_outcomes
+            from optimizer import run_daily_optimizer
+
+            resolve_outcomes()
+            learn_result = learn_from_outcomes()
+            data = _load()
+            report = run_daily_optimizer(data)
+
+            _pg_kv_save("daily_report", report)
+            print(f"[daily-learn] done — {report.get('issue_count', 0)} issues, "
+                  f"{report.get('critical_count', 0)} critical")
+        except Exception as e:
+            print(f"[daily-learn] error: {e}")
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
 def _start_scheduler():
     """Start background auto-scan scheduler (Railway + local)."""
     global _scheduler
@@ -691,6 +756,18 @@ def _start_scheduler():
         run_date=run_at,
         id="startup_scan",
     )
+
+    # JOB 4: Daily learn + optimize pipeline (8am UTC = midnight Pacific)
+    # Runs after overnight markets have resolved; updates weights, calibration, city_adjustments
+    _scheduler.add_job(
+        _daily_learn_job,
+        "cron",
+        hour=8,
+        minute=0,
+        id="daily_learn",
+        timezone="UTC",
+    )
+    print("Daily learn+optimize scheduled at 08:00 UTC")
 
     _scheduler.start()
     print(f"Auto-scan scheduled every {SCAN_INTERVAL_HOURS}h (first run in 30s)")
