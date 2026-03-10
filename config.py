@@ -184,6 +184,8 @@ STRATEGY = {
     "no_require_high_confidence": True,
     # Default order size for YES bets (USDC) — used as Kelly cap
     "default_yes_size": 10,
+    # YES clusters: minimum total_price — below this means market has likely already resolved
+    "yes_min_total_price": 0.04,
     # YES clusters: forecast must be ≥ this many degrees inside the cluster edge
     "yes_min_margin_f": 2.0,   # °F  (filters edge cases where forecast is near cluster boundary)
     "yes_min_margin_c": 1.0,   # °C
