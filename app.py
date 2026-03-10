@@ -502,7 +502,11 @@ def outcomes_correct():
             opp["final_yes_price"] = 0.0 if outcome == "win" else 1.0
             opp["pnl_pct"]       = pnl_pct
             opp["paper_size_usd"] = stake
-            opp["paper_pnl_usd"] = round(stake * (pnl_pct / 100.0), 2)
+            # Equal-shares paper P&L: payout = shares×$1 when any bracket wins
+            if outcome == "win" and opp.get("shares") and opp["shares"] > 0:
+                opp["paper_pnl_usd"] = round(opp["shares"] - stake, 2)
+            else:
+                opp["paper_pnl_usd"] = round(stake * (pnl_pct / 100.0), 2)
             opp["corrected"]     = True
             if wu_pred is not None:
                 opp["wu_error"] = round(abs(wu_pred - actual_temp), 1)

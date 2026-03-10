@@ -8,9 +8,9 @@ in order: (1) Wunderground PWS history (same source Polymarket uses) if WU_PWS_K
 is set, (2) Polymarket Gamma API (which bracket won). Then we compare actual vs
 bracket to infer outcome.
 
-Paper trading is simulated at PAPER_SIZE_USD per position.
-  - Win  P&L = PAPER_SIZE_USD × (return_pct / 100)
-  - Loss P&L = −PAPER_SIZE_USD
+Paper trading: stake and P&L per position.
+  - YES clusters (equal shares): stake = total_cost, win P&L = shares − total_cost (payout = shares×$1).
+  - NO / single: stake = PAPER_SIZE_USD; win P&L = stake × (return_pct/100), loss = −stake.
 
 Storage: DATA_DIR/outcomes.json  (persists across Railway deploys when volume is mounted)
 """
@@ -658,15 +658,21 @@ def resolve_outcomes() -> int:
 
     backfill_actual = 0
     for opp in data["opportunities"]:
-        # Fix YES clusters that were recorded with single-bracket paper stake
+        # Fix YES clusters: paper stake = total cost; backfill shares for equal-shares model
         if (opp.get("type") == "yes"
-                and opp.get("cluster_size", 1) > 1
-                and opp.get("paper_size_usd", PAPER_SIZE_USD) == PAPER_SIZE_USD):
-            correct = round(PAPER_SIZE_USD * opp["cluster_size"], 2)
-            opp["paper_size_usd"] = correct
-            if opp.get("pnl_pct") is not None:
-                opp["paper_pnl_usd"] = round(correct * (opp["pnl_pct"] / 100.0), 2)
-            backfill_actual += 1  # reuse flag to trigger save
+                and opp.get("cluster_size", 1) > 1):
+            entry = float(opp.get("entry_price", 0) or 0)
+            if entry > 0 and opp.get("paper_size_usd", PAPER_SIZE_USD) == PAPER_SIZE_USD:
+                correct = round(PAPER_SIZE_USD * opp["cluster_size"], 2)
+                opp["paper_size_usd"] = correct
+                if opp.get("pnl_pct") is not None:
+                    opp["paper_pnl_usd"] = round(correct * (opp["pnl_pct"] / 100.0), 2)
+                backfill_actual += 1
+            # Backfill shares so paper P&L uses equal-shares payout (shares×$1) when resolving
+            if not opp.get("shares") and entry > 0:
+                stake = opp.get("paper_size_usd") or round(PAPER_SIZE_USD * opp["cluster_size"], 2)
+                opp["shares"] = round(stake / entry, 2)
+                backfill_actual += 1
 
         # Re-attempt actual_temp for already-resolved rows that are missing it
         if opp["outcome"] is not None and opp.get("actual_temp") is None:
@@ -766,7 +772,11 @@ def resolve_outcomes() -> int:
             if resolved:
                 stake = opp.get("paper_size_usd") or round(PAPER_SIZE_USD * opp.get("cluster_size", 1), 2)
                 opp["paper_size_usd"] = stake
-                opp["paper_pnl_usd"] = round(stake * (opp["pnl_pct"] / 100.0), 2)
+                # Paper P&L: equal-shares model — payout = shares×$1 when any bracket wins
+                if opp.get("outcome") == "win" and opp.get("shares") and opp["shares"] > 0:
+                    opp["paper_pnl_usd"] = round(opp["shares"] - stake, 2)
+                else:
+                    opp["paper_pnl_usd"] = round(stake * (opp["pnl_pct"] / 100.0), 2)
                 if opp.get("actual_temp") is None:
                     actual = _get_actual_temp_for_opp(opp)
                     if actual is not None:
