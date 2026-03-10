@@ -92,6 +92,8 @@ def save_results(clusters, no_opps, markets, forecasts, scan_time: str, target_d
             "size_each": c.size_each,
             "total_cost": c.total_cost,
             "liquidity_min": c.liquidity_min,
+            "ev_score": round(getattr(c, "ev_score", 0.0), 1),
+            "predicted_win_prob": round(getattr(c, "predicted_win_prob", 0.75), 4),
             "polymarket_url": f"https://polymarket.com/event/{c.event_slug}",
         }
 
@@ -121,6 +123,10 @@ def save_results(clusters, no_opps, markets, forecasts, scan_time: str, target_d
             "no_price": o.no_price,
             "yes_price": o.yes_price,
             "return_pct": round(o.return_pct, 2),
+            "ev_score": round(getattr(o, "ev_score", 0.0), 1),
+            "predicted_win_prob": round(getattr(o, "predicted_win_prob", 0.75), 4),
+            "effective_return_pct": round(getattr(o, "effective_return_pct", 0.0), 1),
+            "spread_pct": round(getattr(o, "spread_pct", 0.0), 1),
             "distance": o.distance_f,
             "temp_unit": o.temp_unit,
             "forecast_temp": o.forecast_temp,

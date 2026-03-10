@@ -196,7 +196,13 @@ TRADING = {
     "take_profit_pct":       float(os.environ.get("TAKE_PROFIT_PCT") or "0"),   # 0 = disabled
     "monitor_interval_secs": int(os.environ.get("MONITOR_INTERVAL_SECS") or "300"),
     "slippage_pct":          float(os.environ.get("SLIPPAGE_PCT") or "1"),      # price tolerance %
+    # Circuit breaker: pause auto-scan when today's paper P&L falls below this (0 = disabled)
+    "daily_loss_limit_usd":  float(os.environ.get("DAILY_LOSS_LIMIT_USD") or "0"),
 }
+
+# Daily market-open cron time (UTC). Polymarket adds next-day markets around midnight UTC.
+# Set MARKET_OPEN_UTC=00:30 to catch them as soon as they're live.
+MARKET_OPEN_UTC = os.environ.get("MARKET_OPEN_UTC", "00:30")
 
 # Notification settings (override via env vars)
 NOTIFY = {

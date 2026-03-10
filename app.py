@@ -8,15 +8,6 @@ Railway: deploys automatically, auto-scans every SCAN_INTERVAL_HOURS hours
 import json
 import os
 import sys
-
-# Load .env from project root so POLY_PRIVATE_KEY, LIVE_MODE, etc. work when running locally
-try:
-    from dotenv import load_dotenv
-    _env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
-    if os.path.isfile(_env_path):
-        load_dotenv(_env_path)
-except ImportError:
-    pass
 import subprocess
 import threading
 from datetime import datetime, timedelta
@@ -631,9 +622,25 @@ _scheduler      = None
 _last_auto_scan = None   # ISO string of last auto-scan start time
 
 
+def _is_circuit_breaker_tripped() -> bool:
+    """Return True if today's paper P&L loss exceeds the daily limit."""
+    from config import TRADING
+    limit = TRADING.get("daily_loss_limit_usd", 0)
+    if limit <= 0:
+        return False
+    try:
+        from tracker import get_today_pnl
+        return get_today_pnl() <= -limit
+    except Exception:
+        return False
+
+
 def _auto_scan_job():
     global _last_auto_scan
     if _scan_running:
+        return
+    if _is_circuit_breaker_tripped():
+        print("[auto-scan] circuit breaker: daily loss limit reached — scan skipped")
         return
     _last_auto_scan = datetime.now().isoformat()
     threading.Thread(target=run_scan_bg, daemon=True).start()
@@ -659,6 +666,22 @@ def _start_scheduler():
         hours=SCAN_INTERVAL_HOURS,
         id="auto_scan",
     )
+
+    # Market-open cron: scan at configurable UTC time when Polymarket adds next-day markets
+    try:
+        from config import MARKET_OPEN_UTC
+        h_str, m_str = MARKET_OPEN_UTC.split(":")
+        _scheduler.add_job(
+            _auto_scan_job,
+            "cron",
+            hour=int(h_str),
+            minute=int(m_str),
+            id="market_open_scan",
+            timezone="UTC",
+        )
+        print(f"Market-open scan scheduled at {MARKET_OPEN_UTC} UTC daily")
+    except Exception as e:
+        print(f"[WARN] Could not schedule market-open scan: {e}")
 
     # Run once at startup after a short delay
     run_at = datetime.now() + timedelta(seconds=30)
@@ -765,6 +788,25 @@ def trade_balance():
         })
     except Exception as e:
         return jsonify({"error": str(e), "balance_usdc": None})
+
+
+@app.route("/circuit-breaker/status")
+def circuit_breaker_status():
+    """Return circuit breaker state — whether daily loss limit has been reached."""
+    from config import TRADING
+    limit = TRADING.get("daily_loss_limit_usd", 0)
+    today_pnl = None
+    try:
+        from tracker import get_today_pnl
+        today_pnl = get_today_pnl()
+    except Exception:
+        pass
+    return jsonify({
+        "enabled": limit > 0,
+        "daily_loss_limit_usd": limit,
+        "today_pnl_usd": today_pnl,
+        "tripped": _is_circuit_breaker_tripped(),
+    })
 
 
 @app.route("/monitor/status")

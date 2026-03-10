@@ -877,6 +877,22 @@ def get_summary() -> dict:
     }
 
 
+def get_today_pnl() -> float:
+    """Return sum of paper_pnl_usd for all positions first_seen today (UTC)."""
+    data = _load()
+    today = datetime.utcnow().date().isoformat()
+    total = 0.0
+    for opp in data["opportunities"]:
+        if opp.get("outcome") is None:
+            continue
+        if not (opp.get("first_seen") or "").startswith(today):
+            continue
+        pnl = opp.get("paper_pnl_usd")
+        if pnl is not None:
+            total += pnl
+    return round(total, 2)
+
+
 def get_all() -> list:
     """Return all tracked opportunities (raw)."""
     return _load()["opportunities"]

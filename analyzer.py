@@ -35,7 +35,7 @@ import os
 from dataclasses import dataclass, field
 from math import erf, sqrt
 from typing import Optional, Literal
-from config import STRATEGY
+from config import STRATEGY, CITIES
 
 
 def _load_calibrated_sigma() -> dict:
@@ -53,6 +53,30 @@ def _load_calibrated_sigma() -> dict:
     except Exception:
         pass
     return defaults
+
+
+def _adjust_for_peak_passed(city: str, date_str: str, confidence: str) -> str:
+    """
+    Boost 'medium' to 'high' for same-day markets after 14:00 local city time.
+    At this point the daily high is essentially locked in, so medium confidence
+    (sources agree within 2-4°F) is as reliable as high confidence.
+    """
+    if confidence != "medium":
+        return confidence
+    try:
+        from zoneinfo import ZoneInfo
+        from datetime import datetime
+        tz_name = CITIES.get(city, {}).get("tz")
+        if not tz_name:
+            return confidence
+        now_local = datetime.now(ZoneInfo(tz_name))
+        if date_str != now_local.date().isoformat():
+            return confidence
+        if now_local.hour >= 14:
+            return "high"
+    except Exception:
+        pass
+    return confidence
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -86,6 +110,9 @@ class NoOpp:
     market_slug: str = ""
     resolution_time: str = ""
     resolution_date: str = ""  # settle date (YYYY-MM-DD) for resolve logic; date = forecast/weather day
+    ev_score: float = 0.0        # EV = win_prob × return_pct − (1−win_prob) × 100
+    effective_return_pct: float = 0.0  # return_pct adjusted for CLOB bid-ask spread
+    spread_pct: float = 0.0      # cost increase from spread (0 if no CLOB data)
 
 
 @dataclass
@@ -126,6 +153,7 @@ class YesCluster:
     temp_unit: str = "F"     # "F" or "C"
     resolution_time: str = ""  # ISO UTC timestamp from Gamma endDate
     resolution_date: str = ""   # settle date (YYYY-MM-DD) for resolve logic; date = forecast/weather day
+    ev_score: float = 0.0        # EV = win_prob × return_pct − (1−win_prob) × 100
 
     def bracket_labels(self) -> str:
         return " + ".join(b.group_title for b in self.brackets)
@@ -286,6 +314,17 @@ def find_no_opps(event: dict, forecast_temp: float, confidence: str,
         if dist >= min_dist and no_price >= cfg["no_min_price"]:
             ret_pct = (1.0 - no_price) / no_price * 100
             if ret_pct >= cfg["min_return_pct"]:
+                win_prob = estimate_no_win_prob(dist, confidence, unit)
+                ev = round(win_prob * ret_pct - (1 - win_prob) * 100, 1)
+                # Spread-adjusted effective return using CLOB bid
+                clob_bid = mkt.get("clob_best_bid")
+                if clob_bid and 0 < clob_bid < 1:
+                    eff_no = 1.0 - clob_bid   # cost to buy NO = sell YES at bid price
+                    eff_ret = round((1.0 - eff_no) / eff_no * 100, 1) if 0 < eff_no < 1 else ret_pct
+                    sprd = round((eff_no - no_price) / no_price * 100, 1) if no_price > 0 else 0.0
+                else:
+                    eff_ret = ret_pct
+                    sprd = 0.0
                 opps.append(NoOpp(
                     city=event["city"],
                     date=event["date"],
@@ -306,11 +345,14 @@ def find_no_opps(event: dict, forecast_temp: float, confidence: str,
                     liquidity=mkt["liquidity"],
                     accepting_orders=mkt["accepting_orders"],
                     recommended_size=no_size(ret_pct, confidence, capital, n_opps, dist, unit),
-                    predicted_win_prob=estimate_no_win_prob(dist, confidence, unit),
+                    predicted_win_prob=win_prob,
                     temp_unit=unit,
                     market_slug=mkt.get("market_slug", ""),
                     resolution_time=event.get("resolution_time", ""),
                     resolution_date=event.get("resolution_date", event.get("date", "")),
+                    ev_score=ev,
+                    effective_return_pct=eff_ret,
+                    spread_pct=sprd,
                 ))
     return opps
 
@@ -401,9 +443,11 @@ def find_yes_clusters(event: dict, forecast_temp: float, confidence: str,
         for s in slots:
             s.amount_usd = round(shares * s.yes_price, 2)  # amount_i = S·p_i
 
+        ev_s = round(win_prob * ret_pct - (1 - win_prob) * 100, 1)
         unit = event.get("temp_unit", "F")
         return YesCluster(
             predicted_win_prob=round(win_prob, 4),
+            ev_score=ev_s,
             city=event["city"],
             date=event["date"],
             event_slug=event["event_slug"],
@@ -458,6 +502,7 @@ def analyze_event(event: dict, forecast: dict, capital: float, n_opps: int = 20)
     if not day_fc:
         return [], []
     confidence = day_fc.get("confidence", "low")
+    confidence = _adjust_for_peak_passed(event["city"], date_str, confidence)
 
     # Skip entirely if sources strongly disagree
     if confidence == "low":
@@ -511,8 +556,8 @@ def analyze_all(all_markets: dict, all_forecasts: dict,
 
             all_no_opps.extend(no_opps)
 
-    all_clusters.sort(key=lambda c: (c.forecast_confidence == "high", c.return_pct), reverse=True)
-    all_no_opps.sort(key=lambda o: (o.forecast_confidence == "high", o.return_pct), reverse=True)
+    all_clusters.sort(key=lambda c: (c.forecast_confidence == "high", c.ev_score), reverse=True)
+    all_no_opps.sort(key=lambda o: (o.forecast_confidence == "high", o.ev_score), reverse=True)
     return all_clusters, all_no_opps
 
 
