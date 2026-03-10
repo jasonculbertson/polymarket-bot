@@ -685,6 +685,9 @@ tr.taken-row:hover td { opacity: 0.55; }
     Polymarket Weather Scanner
   </h1>
   <div class="header-right">
+    <div id="cb-indicator" style="display:none; align-items:center; gap:5px; font-size:.72rem; padding:3px 9px; border-radius:4px; background:rgba(248,113,113,.12); border:1px solid rgba(248,113,113,.4); color:var(--red)">
+      ⛔ Circuit Breaker
+    </div>
     <div class="header-meta" id="header-meta">No scan data</div>
   </div>
 </div>
@@ -769,6 +772,7 @@ tr.taken-row:hover td { opacity: 0.55; }
         <span class="section-count badge-green badge" id="yes-count">0</span>
         <div id="yes-day-pills" style="display:flex; gap:4px; margin-left:8px;"></div>
         <div class="section-right">
+          <button class="btn btn-secondary" onclick="sortTable('yes', 'ev_score', -1)" style="font-size:.7rem; padding:4px 10px;">↑ EV</button>
           <button class="btn btn-secondary" onclick="sortTable('yes', 'return_pct', -1)" style="font-size:.7rem; padding:4px 10px;">↑ Return</button>
           <button class="btn btn-secondary" onclick="sortTable('yes', 'date', 1)" style="font-size:.7rem; padding:4px 10px;">📅 Date</button>
         </div>
@@ -783,6 +787,7 @@ tr.taken-row:hover td { opacity: 0.55; }
               <th onclick="sortTable('yes','cluster_size',1)" style="text-align:center">n <span class="sort-arrow"></span></th>
               <th onclick="sortTable('yes','total_price',1)" title="Sum of 3 bracket prices. Must be &lt; $1 to profit (one bracket pays $1).">Cost <span class="sort-arrow"></span></th>
               <th onclick="sortTable('yes','return_pct',-1)">Return <span class="sort-arrow"></span></th>
+              <th onclick="sortTable('yes','ev_score',-1)" title="Expected Value = win_prob × return − (1−win_prob) × 100. Higher is better.">EV <span class="sort-arrow"></span></th>
               <th onclick="sortTable('yes','shares',1)" title="Equal shares in each bracket → same $1 payout whichever wins.">Shares <span class="sort-arrow"></span></th>
               <th>Win Range</th>
               <th onclick="sortTable('yes','forecast_temp',1)">Forecast <span class="sort-arrow"></span></th>
@@ -795,7 +800,7 @@ tr.taken-row:hover td { opacity: 0.55; }
             </tr>
           </thead>
           <tbody id="yes-body">
-            <tr><td colspan="15"><div class="empty"><div class="empty-icon">📡</div>Run a scan to see opportunities</div></td></tr>
+            <tr><td colspan="16"><div class="empty"><div class="empty-icon">📡</div>Run a scan to see opportunities</div></td></tr>
           </tbody>
         </table>
       </div>
@@ -808,6 +813,7 @@ tr.taken-row:hover td { opacity: 0.55; }
         <span class="section-count badge-red badge" id="no-count">0</span>
         <div id="no-day-pills" style="display:flex; gap:4px; margin-left:8px;"></div>
         <div class="section-right">
+          <button class="btn btn-secondary" onclick="sortTable('no', 'ev_score', -1)" style="font-size:.7rem; padding:4px 10px;">↑ EV</button>
           <button class="btn btn-secondary" onclick="sortTable('no', 'return_pct', -1)" style="font-size:.7rem; padding:4px 10px;">↑ Return</button>
           <button class="btn btn-secondary" onclick="sortTable('no', 'date', 1)" style="font-size:.7rem; padding:4px 10px;">📅 Date</button>
         </div>
@@ -821,6 +827,8 @@ tr.taken-row:hover td { opacity: 0.55; }
               <th>Bracket</th>
               <th onclick="sortTable('no','no_price',1)">NO Price <span class="sort-arrow"></span></th>
               <th onclick="sortTable('no','return_pct',-1)">Return <span class="sort-arrow"></span></th>
+              <th onclick="sortTable('no','ev_score',-1)" title="Expected Value = win_prob × return − (1−win_prob) × 100. Higher is better.">EV <span class="sort-arrow"></span></th>
+              <th onclick="sortTable('no','effective_return_pct',-1)" title="Spread-adjusted return using CLOB bid price. Lower than quoted return when spread is wide.">Eff Ret <span class="sort-arrow"></span></th>
               <th onclick="sortTable('no','distance',-1)">Distance <span class="sort-arrow"></span></th>
               <th onclick="sortTable('no','forecast_temp',1)">Forecast <span class="sort-arrow"></span></th>
               <th onclick="sortTable('no','forecast_confidence',1)">Conf <span class="sort-arrow"></span></th>
@@ -831,7 +839,7 @@ tr.taken-row:hover td { opacity: 0.55; }
             </tr>
           </thead>
           <tbody id="no-body">
-            <tr><td colspan="12"><div class="empty"><div class="empty-icon">📡</div>Run a scan to see opportunities</div></td></tr>
+            <tr><td colspan="14"><div class="empty"><div class="empty-icon">📡</div>Run a scan to see opportunities</div></td></tr>
           </tbody>
         </table>
       </div>
@@ -1283,7 +1291,7 @@ function renderYes(clusters) {
   $('yes-count').textContent = filtered.length;
 
   if (!filtered.length) {
-    tb.innerHTML = '<tr><td colspan="15"><div class="empty"><div class="empty-icon">🎯</div>No YES clusters pass current filters</div></td></tr>';
+    tb.innerHTML = '<tr><td colspan="16"><div class="empty"><div class="empty-icon">🎯</div>No YES clusters pass current filters</div></td></tr>';
     return;
   }
 
@@ -1325,6 +1333,7 @@ function renderYes(clusters) {
       <td style="text-align:center">${c.cluster_size}</td>
       <td class="price-cell">${fmt(c.total_price, 3)}</td>
       <td class="ret-cell ${retCls}">${fmt(c.return_pct)}%</td>
+      <td class="ret-cell ${(c.ev_score||0) >= 10 ? 'ret-high' : (c.ev_score||0) >= 0 ? 'ret-med' : 'ret-low'}" title="EV = win_prob × return − (1−win_prob) × 100">${fmt(c.ev_score||0, 1)}</td>
       <td class="size-cell" title="${(c.brackets||[]).map(b=>b.group_title+' $'+fmt(b.amount_usd||0,2)).join(', ')}">${fmt(c.shares||0, 0)}</td>
       <td class="winrange-cell">${winRange}</td>
       <td class="forecast-cell">${fmtTemp(c.forecast_temp, u)}</td>
@@ -1342,7 +1351,7 @@ function renderYes(clusters) {
       </td>
     </tr>
     <tr id="${detailId}" class="bracket-detail">
-      <td colspan="15" style="padding:0">
+      <td colspan="16" style="padding:0">
         <div style="padding:8px 16px;">${bktDetails}</div>
       </td>
     </tr>`;
@@ -1356,7 +1365,7 @@ function renderNo(opps) {
   $('no-count').textContent = filtered.length;
 
   if (!filtered.length) {
-    tb.innerHTML = '<tr><td colspan="12"><div class="empty"><div class="empty-icon">🎯</div>No NO bets pass current filters</div></td></tr>';
+    tb.innerHTML = '<tr><td colspan="14"><div class="empty"><div class="empty-icon">🎯</div>No NO bets pass current filters</div></td></tr>';
     return;
   }
 
@@ -1376,6 +1385,8 @@ function renderNo(opps) {
       <td class="brackets-cell">${o.bracket}</td>
       <td class="price-cell">${fmt(o.no_price, 3)}</td>
       <td class="ret-cell ${retCls}">${fmt(o.return_pct)}%</td>
+      <td class="ret-cell ${(o.ev_score||0) >= 10 ? 'ret-high' : (o.ev_score||0) >= 0 ? 'ret-med' : 'ret-low'}" title="EV = win_prob × return − (1−win_prob) × 100">${fmt(o.ev_score||0, 1)}</td>
+      <td class="ret-cell" title="${o.spread_pct ? 'Spread cost: ' + fmt(o.spread_pct, 1) + '%' : 'No CLOB spread data'}">${o.effective_return_pct ? fmt(o.effective_return_pct, 1) + '%' : '—'}</td>
       <td class="forecast-cell">${dist}</td>
       <td class="forecast-cell">${fmtTemp(o.forecast_temp, u)}</td>
       <td>${confBadge(o.forecast_confidence)}</td>
@@ -1492,9 +1503,9 @@ function render(d) {
   `;
 
   _yesSorted = [...(d.yes_clusters||[])].sort((a,b) =>
-    (b.forecast_confidence==='high'?1:0) - (a.forecast_confidence==='high'?1:0) || b.return_pct - a.return_pct);
+    (b.forecast_confidence==='high'?1:0) - (a.forecast_confidence==='high'?1:0) || (b.ev_score||0) - (a.ev_score||0));
   _noSorted  = [...(d.no_opportunities||[])].sort((a,b) =>
-    (b.forecast_confidence==='high'?1:0) - (a.forecast_confidence==='high'?1:0) || b.return_pct - a.return_pct);
+    (b.forecast_confidence==='high'?1:0) - (a.forecast_confidence==='high'?1:0) || (b.ev_score||0) - (a.ev_score||0));
   _fcSorted  = [...(d.forecasts||[])].sort((a,b) => a.city.localeCompare(b.city));
 
   // Reset day filters when new data loads
@@ -2234,14 +2245,34 @@ if (_modalBg) _modalBg.addEventListener('click', function(e) {
   if (e.target === this) closeTradeModal();
 });
 
+// ─── Circuit Breaker ─────────────────────────────────────────────────
+function loadCircuitBreaker() {
+  fetch('/circuit-breaker/status')
+    .then(r => r.ok ? r.json() : null)
+    .then(d => {
+      if (!d) return;
+      const el = $('cb-indicator');
+      if (!el) return;
+      if (d.tripped) {
+        el.style.display = 'flex';
+        el.title = `Daily loss limit $${d.daily_loss_limit_usd} reached. Today P&L: $${(d.today_pnl_usd||0).toFixed(2)}. Auto-scan paused.`;
+      } else {
+        el.style.display = 'none';
+      }
+    })
+    .catch(() => {});
+}
+
 // ─── Init ────────────────────────────────────────────────────────────
 loadTaken();
 loadData();
 loadDateTabs();
 loadSchedule();
+loadCircuitBreaker();
 setInterval(loadData, 90000);
 setInterval(loadDateTabs, 60000);   // refresh date tabs every 60s
 setInterval(loadSchedule, 15000);  // refresh countdown every 15s
+setInterval(loadCircuitBreaker, 60000); // check circuit breaker every 60s
 </script>
 </body>
 </html>
