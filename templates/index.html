@@ -541,6 +541,10 @@ tr.taken-row:hover td { opacity: 0.55; }
 .history-stats { font-size: .68rem; color: var(--text-muted); }
 .history-stats span { color: var(--text-dim); }
 
+/* ─── YES row clickable for bracket breakdown ────────────────────────── */
+.yes-row-clickable { cursor: pointer; }
+.yes-row-clickable:hover { background: rgba(99, 102, 241, 0.06); }
+
 /* ─── Bracket details expand ─────────────────────────────────────────── */
 .bracket-detail {
   display: none;
@@ -1300,19 +1304,21 @@ function renderYes(clusters) {
 
     const bktDetails = c.brackets.map(b => {
       const fc = b.is_forecast_bracket ? ' ⭐' : '';
+      const amt = (b.amount_usd != null && b.amount_usd > 0) ? ` · $${(+b.amount_usd).toFixed(2)}` : '';
       const bktLink = b.market_url
         ? `<a href="${b.market_url}" target="_blank" style="color:var(--purple-light);font-size:.65rem;text-decoration:none;opacity:.8" title="Open this bracket on Polymarket">↗ Bet</a>`
         : '';
       return `<div class="bracket-row">`
         + (b.is_forecast_bracket ? '<span class="forecast-dot"></span>' : '<span style="width:6px;display:inline-block"></span>')
         + `<span style="color:#c4b5fd">${b.group_title}${fc}</span>`
-        + `<span style="margin-left:auto; color:var(--text-dim)">YES: ${(+b.yes_price).toFixed(3)}</span>`
+        + `<span style="margin-left:auto; color:var(--text-dim)">YES: ${(+b.yes_price).toFixed(3)}${amt}</span>`
         + `${bktLink}`
         + `<button class="copy-btn" onclick="copyText('${b.yes_token_id}')">📋 token</button>`
         + `</div>`;
     }).join('');
 
-    return `<tr class="${taken ? 'taken-row' : ''}">
+    const detailId = `detail-yes-${i}`;
+    return `<tr class="yes-row-clickable ${taken ? 'taken-row' : ''}" data-detail-id="${detailId}" onclick="if (!event.target.closest('a, button')) toggleRow('${detailId}')">
       <td class="city-cell">${c.city}${cityBadge(c.city)}</td>
       <td class="date-cell">${c.date}</td>
       <td class="brackets-cell">${labels}</td>
@@ -1328,14 +1334,14 @@ function renderYes(clusters) {
       <td class="size-cell">$${fmt(c.total_cost, 0)}</td>
       <td class="link-cell">
         <a href="${link}" target="_blank">Open ↗</a>
-        <div style="font-size:.6rem;color:var(--text-muted);margin-top:2px;cursor:pointer" onclick="toggleRow('detail-yes-${i}')">▾ brackets</div>
+        <div style="font-size:.6rem;color:var(--text-muted);margin-top:2px;cursor:pointer" onclick="event.stopPropagation(); toggleRow('${detailId}')">▾ brackets</div>
       </td>
       <td style="white-space:nowrap">
         <button class="take-btn ${taken?'is-taken':''}" onclick="markTaken('${id}',this)">${taken?'✓ Taken':'Take'}</button>
         <button class="trade-btn" id="trade-btn-${id}" data-id="${id}" data-token="${(c.brackets[0]&&c.brackets[0].yes_token_id)||''}" data-price="${c.total_price}" data-bracket="${encodeURIComponent(labels)}" data-side="buy" onclick="openTradeModalFromBtn(this)">Trade</button>
       </td>
     </tr>
-    <tr id="detail-yes-${i}" class="bracket-detail">
+    <tr id="${detailId}" class="bracket-detail">
       <td colspan="15" style="padding:0">
         <div style="padding:8px 16px;">${bktDetails}</div>
       </td>
