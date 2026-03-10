@@ -176,10 +176,17 @@ STRATEGY = {
     "min_return_pct": 8.0,
     # Minimum order size (USDC) — Polymarket minimum is 5
     "min_order_size": 5,
-    # Default order size for NO bets (USDC) — used as Kelly cap
+    # Default order size for NO bets (USDC) — base size at min_distance; scales up with distance
     "default_no_size": 20,
+    # NO sizing: max scale multiplier for distant brackets (3× = up to $60, capped by max_single_bet)
+    "no_max_distance_scale": 3.0,
+    # NO bets: only place when forecast confidence is "high" (all sources agree)
+    "no_require_high_confidence": True,
     # Default order size for YES bets (USDC) — used as Kelly cap
     "default_yes_size": 10,
+    # YES clusters: forecast must be ≥ this many degrees inside the cluster edge
+    "yes_min_margin_f": 2.0,   # °F  (filters edge cases where forecast is near cluster boundary)
+    "yes_min_margin_c": 1.0,   # °C
     # YES lottery: clusters with total_price < threshold get smaller per-bracket sizing
     "yes_lottery_threshold": 0.25,   # total_price below this = lottery cluster
     "yes_lottery_size": 5,           # $ per bracket for lottery clusters (vs default_yes_size)

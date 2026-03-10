@@ -724,7 +724,8 @@ def resolve_outcomes() -> int:
             opp["outcome"] = outcome
             opp["actual_temp"] = actual
             opp["final_yes_price"] = 0.0 if outcome == "win" else 1.0
-            opp["pnl_pct"] = round((1.0 - opp["entry_price"]) / opp["entry_price"] * 100, 2) if outcome == "win" else -100.0
+            cost_basis = opp.get("execution_price") or opp["entry_price"]
+            opp["pnl_pct"] = round((1.0 - cost_basis) / cost_basis * 100, 2) if outcome == "win" else -100.0
             wu_pred = (opp.get("forecast_sources") or {}).get("wunderground")
             if wu_pred is not None:
                 opp["wu_error"] = round(abs(wu_pred - actual), 1)
@@ -738,7 +739,8 @@ def resolve_outcomes() -> int:
                 if final_yes is not None and (final_yes <= 0.05 or final_yes >= 0.95):
                     opp["outcome"] = "win" if final_yes <= 0.05 else "loss"
                     opp["final_yes_price"] = final_yes
-                    opp["pnl_pct"] = round((1.0 - opp["entry_price"]) / opp["entry_price"] * 100, 2) if final_yes <= 0.05 else -100.0
+                    cost_basis = opp.get("execution_price") or opp["entry_price"]
+                    opp["pnl_pct"] = round((1.0 - cost_basis) / cost_basis * 100, 2) if final_yes <= 0.05 else -100.0
                     resolved = True
             if resolved:
                 stake = opp.get("paper_size_usd", PAPER_SIZE_USD)
@@ -763,7 +765,8 @@ def resolve_outcomes() -> int:
                     if max_p >= 0.95:
                         opp["outcome"] = "win"
                         opp["final_yes_price"] = max_p
-                        opp["pnl_pct"] = round((1.0 - opp["entry_price"]) / opp["entry_price"] * 100, 2)
+                        cost_basis = opp.get("execution_price") or opp["entry_price"]
+                        opp["pnl_pct"] = round((1.0 - cost_basis) / cost_basis * 100, 2)
                         resolved = True
                     elif max_p <= 0.05:
                         opp["outcome"] = "loss"
@@ -901,6 +904,7 @@ def record_live_trade(
     size_usd: float,
     shares: float,
     token_id: str,
+    execution_price: Optional[float] = None,
 ) -> bool:
     """
     Mark an opportunity as live-traded. Call this right after buy() succeeds.
@@ -910,14 +914,15 @@ def record_live_trade(
         data = _load()
         for opp in data["opportunities"]:
             if opp["id"] == opp_id:
-                opp["is_live"]       = True
-                opp["live_order_id"] = order_id
-                opp["live_size_usd"] = size_usd
-                opp["shares"]        = shares
-                opp["token_id"]      = token_id
-                opp["exit_price"]    = None
-                opp["exit_reason"]   = None
-                opp["live_at"]       = datetime.utcnow().isoformat()
+                opp["is_live"]          = True
+                opp["live_order_id"]    = order_id
+                opp["live_size_usd"]    = size_usd
+                opp["shares"]           = shares
+                opp["token_id"]         = token_id
+                opp["execution_price"]  = execution_price  # actual fill price (None = paper/unknown)
+                opp["exit_price"]       = None
+                opp["exit_reason"]      = None
+                opp["live_at"]          = datetime.utcnow().isoformat()
                 _save(data)
                 return True
     return False

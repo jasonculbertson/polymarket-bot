@@ -758,6 +758,7 @@ def trade():
                 size_usd=size_usd,
                 shares=result["shares"],
                 token_id=token_id,
+                execution_price=result.get("execution_price"),
             )
         elif side == "sell":
             result = _trader.sell(token_id, float(body.get("shares", 0)), price)
