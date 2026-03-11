@@ -753,6 +753,11 @@ def resolve_outcomes() -> int:
                         wu_pred = (opp.get("forecast_sources") or {}).get("wunderground")
                         if wu_pred is not None:
                             opp["wu_error"] = round(abs(wu_pred - actual), 1)
+                # Compare simulated stop-loss to actual outcome
+                if opp.get("simulated_stop_loss_triggered") and opp.get("simulated_exit_pnl_usd") is not None:
+                    opp["stop_loss_saved_usd"] = round(
+                        opp["simulated_exit_pnl_usd"] - opp["paper_pnl_usd"], 2
+                    )  # positive = stop-loss would have helped
                 resolved_count += 1
 
         elif opp["type"] == "yes":
@@ -788,6 +793,11 @@ def resolve_outcomes() -> int:
                         wu_pred = (opp.get("forecast_sources") or {}).get("wunderground")
                         if wu_pred is not None:
                             opp["wu_error"] = round(abs(wu_pred - actual), 1)
+                # Compare simulated stop-loss to actual outcome
+                if opp.get("simulated_stop_loss_triggered") and opp.get("simulated_exit_pnl_usd") is not None:
+                    opp["stop_loss_saved_usd"] = round(
+                        opp["simulated_exit_pnl_usd"] - opp["paper_pnl_usd"], 2
+                    )
                 resolved_count += 1
 
     if resolved_count or backfill_actual:
@@ -926,6 +936,128 @@ def record_live_trade(
                 _save(data)
                 return True
     return False
+
+
+def update_open_position_prices() -> dict:
+    """
+    For all unresolved paper (and live) positions, fetch current market prices and update:
+      - current_price: current token value (NO = 1-YES price, YES = sum of bracket YES prices)
+      - unrealized_pnl_pct / unrealized_pnl_usd: mark-to-market vs entry
+      - price_updated_at: UTC timestamp of last price fetch
+
+    Also runs simulated stop-loss check:
+      - Triggers if loss >= stop_loss_pct AND hours_to_resolution >= stop_loss_min_hours
+      - Records simulated_stop_loss_price, simulated_exit_pnl_usd for later comparison vs actual
+      - At resolution, stop_loss_saved_usd = simulated_exit_pnl - actual_pnl (+ = SL helped)
+
+    Returns {updated, stop_loss_triggered, errors}.
+    Safe to call every scan cycle — skips resolved positions.
+    """
+    from config import TRADING
+    stop_loss_pct  = TRADING.get("stop_loss_pct", 50) / 100.0
+    min_hours      = TRADING.get("stop_loss_min_hours_to_resolution", 4)
+
+    try:
+        data = _load()
+    except RuntimeError as e:
+        return {"updated": 0, "stop_loss_triggered": 0, "errors": 1, "detail": str(e)}
+
+    updated = 0
+    stop_loss_triggered = 0
+    errors = 0
+    now = datetime.utcnow()
+    changed = False
+
+    open_opps = [o for o in data["opportunities"] if o.get("outcome") is None]
+
+    for opp in open_opps:
+        try:
+            if opp["type"] == "no":
+                market_id = opp.get("market_id")
+                if not market_id:
+                    continue
+                yes_price = _fetch_market_yes_price(market_id)
+                if yes_price is None:
+                    continue
+                current_price = round(1.0 - yes_price, 4)
+
+            elif opp["type"] == "yes":
+                market_ids = opp.get("market_ids") or []
+                if not market_ids:
+                    continue
+                prices = [_fetch_market_yes_price(mid) for mid in market_ids]
+                prices = [p for p in prices if p is not None]
+                if not prices:
+                    continue
+                # Sum of current YES prices = total current cost of the cluster
+                # (mirrors how entry_price = total_price = sum of bracket prices)
+                current_price = round(sum(prices), 4)
+            else:
+                continue
+
+            entry_price = float(opp["entry_price"])
+            opp["current_price"]    = current_price
+            opp["price_updated_at"] = now.isoformat()
+
+            if entry_price > 0:
+                pnl_pct = round((current_price - entry_price) / entry_price * 100, 2)
+                opp["unrealized_pnl_pct"] = pnl_pct
+                size = float(opp.get("paper_size_usd") or 0)
+                if size > 0:
+                    opp["unrealized_pnl_usd"] = round(size * pnl_pct / 100.0, 2)
+
+            updated += 1
+            changed = True
+
+            # ── Simulated stop-loss ───────────────────────────────────────────
+            if opp.get("simulated_stop_loss_triggered"):
+                continue  # already fired, don't re-trigger
+            if entry_price <= 0:
+                continue
+
+            loss_pct = (entry_price - current_price) / entry_price
+            if loss_pct < stop_loss_pct:
+                continue
+
+            # Check time gate: don't exit if too close to resolution
+            hours_left = float("inf")
+            res_time = opp.get("resolution_time") or ""
+            if res_time:
+                try:
+                    res_dt = datetime.fromisoformat(res_time.replace("Z", "+00:00"))
+                    res_dt_naive = res_dt.replace(tzinfo=None)
+                    hours_left = (res_dt_naive - now).total_seconds() / 3600
+                except Exception:
+                    pass
+
+            if hours_left < min_hours:
+                continue  # too close to resolution — let it ride
+
+            size = float(opp.get("paper_size_usd") or 0)
+            opp["simulated_stop_loss_triggered"]  = True
+            opp["simulated_stop_loss_price"]      = current_price
+            opp["simulated_stop_loss_time"]       = now.isoformat()
+            opp["simulated_stop_loss_hours_left"] = round(hours_left, 1)
+            if size > 0:
+                exit_proceeds = size * (current_price / entry_price)
+                opp["simulated_exit_pnl_usd"] = round(exit_proceeds - size, 2)
+                opp["simulated_exit_pnl_pct"] = round((exit_proceeds - size) / size * 100, 2)
+            stop_loss_triggered += 1
+            print(f"[stop-loss SIM] {opp['type'].upper()} {opp.get('city')} "
+                  f"entry={entry_price:.3f} now={current_price:.3f} "
+                  f"loss={loss_pct:.0%} hours_left={hours_left:.1f}h → would exit")
+
+        except Exception as e:
+            errors += 1
+            print(f"[WARN] update_open_position_prices {opp.get('id')}: {e}")
+
+    if changed:
+        with _tracker_lock:
+            _save(data)
+
+    print(f"[price-monitor] {updated} positions updated | "
+          f"{stop_loss_triggered} simulated stop-loss triggers | {errors} errors")
+    return {"updated": updated, "stop_loss_triggered": stop_loss_triggered, "errors": errors}
 
 
 def get_live_positions() -> list:
