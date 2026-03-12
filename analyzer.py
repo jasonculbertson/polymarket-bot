@@ -575,15 +575,47 @@ def analyze_event(event: dict, forecast: dict, capital: float, n_opps: int = 20,
     wu_temp = day_fc.get("wunderground")
     forecast_temp = wu_temp if wu_temp is not None else day_fc["consensus"]
 
-    yes_exclude = STRATEGY.get("yes_exclude_cities", [])
+    # ── Ensemble spread check — frontal instability / forecast uncertainty ────
+    # Even when WU and NWS agree, all deterministic models can share the same
+    # bias if they disagree on frontal timing. The ensemble spread (std dev of
+    # ~40 independent model runs) catches cases single-source spread misses.
+    unit = event.get("temp_unit", "F")
+    ensemble_spread = day_fc.get("ensemble_spread")   # None if fetch failed
     city = event.get("city", "")
+
+    yes_spread_skip = STRATEGY.get(
+        "ensemble_spread_yes_skip_f" if unit == "F" else "ensemble_spread_yes_skip_c",
+        4.0 if unit == "F" else 2.2,
+    )
+    no_spread_boost_threshold = STRATEGY.get(
+        "ensemble_spread_no_boost_f" if unit == "F" else "ensemble_spread_no_boost_c",
+        6.0 if unit == "F" else 3.3,
+    )
+
+    frontal_skip_yes = ensemble_spread is not None and ensemble_spread >= yes_spread_skip
+    frontal_boost_no = ensemble_spread is not None and ensemble_spread >= no_spread_boost_threshold
+
+    if frontal_skip_yes:
+        print(f"    [{city} {date_str}] ⚠ Ensemble spread {ensemble_spread:.1f}°{unit} "
+              f"≥ {yes_spread_skip:.1f} → skipping YES clusters (frontal instability)")
+    if frontal_boost_no:
+        boost_f = 2.0 if unit == "F" else 1.1
+        print(f"    [{city} {date_str}] ⚠ Ensemble spread {ensemble_spread:.1f}°{unit} "
+              f"≥ {no_spread_boost_threshold:.1f} → raising NO min-distance by {boost_f}°{unit}")
+
+    # Raise NO distance requirement during high-uncertainty frontal conditions
+    effective_city_bonus = city_bonus_f
+    if frontal_boost_no:
+        effective_city_bonus += 2.0 if unit == "F" else 1.1
+
+    yes_exclude = STRATEGY.get("yes_exclude_cities", [])
     yes_clusters = (
         find_yes_clusters(event, forecast_temp, confidence, capital)
-        if confidence == "high" and city not in yes_exclude
+        if confidence == "high" and city not in yes_exclude and not frontal_skip_yes
         else []
     )
     no_require_high = STRATEGY.get("no_require_high_confidence", True)
-    no_opps = find_no_opps(event, forecast_temp, confidence, capital, n_opps, city_bonus_f) if (
+    no_opps = find_no_opps(event, forecast_temp, confidence, capital, n_opps, effective_city_bonus) if (
         confidence == "high" or not no_require_high
     ) else []
     return yes_clusters, no_opps

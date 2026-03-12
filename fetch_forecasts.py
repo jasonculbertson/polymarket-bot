@@ -318,6 +318,89 @@ def fetch_open_meteo_forecast(lat: float, lon: float, unit: str = "C") -> Option
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Open-Meteo Ensemble API — frontal instability / forecast uncertainty detector
+# ─────────────────────────────────────────────────────────────────────────────
+
+def fetch_ensemble_spread(lat: float, lon: float, unit: str = "C") -> Optional[dict]:
+    """
+    Query Open-Meteo's free ensemble API (ICON Seamless, ~40 model members) to measure
+    forecast uncertainty for each day.
+
+    Method:
+      - Fetch hourly temperature_2m for all ensemble members
+      - Compute each member's daily high (same way WU computes it)
+      - Return std dev across members for each date
+
+    High spread = models disagree on timing/magnitude of temperature → likely frontal passage.
+    Low spread  = models agree → stable conditions, safer to bet.
+
+    Returns {date_str: spread_in_native_unit} or None on any failure.
+    spread_in_native_unit: °F if unit=="F", else °C
+    """
+    import statistics
+    from collections import defaultdict as _dd
+
+    try:
+        r = requests.get(
+            "https://ensemble-api.open-meteo.com/v1/ensemble",
+            params={
+                "latitude":         lat,
+                "longitude":        lon,
+                "hourly":           "temperature_2m",
+                "models":           "icon_seamless",
+                "forecast_days":    7,
+                "timezone":         "auto",
+                "temperature_unit": "celsius",   # always °C; convert delta if needed
+            },
+            timeout=15,
+        )
+        if r.status_code != 200:
+            return None
+
+        data    = r.json()
+        hourly  = data.get("hourly", {})
+        times   = hourly.get("time", [])
+        if not times:
+            return None
+
+        # Member columns named temperature_2m_member01, temperature_2m_member02, …
+        member_cols = {
+            k: v for k, v in hourly.items()
+            if k.startswith("temperature_2m_member") and isinstance(v, list)
+        }
+        if not member_cols:
+            return None
+
+        # Compute daily max per member
+        member_daily: dict = {}
+        for member_key, temps in member_cols.items():
+            daily_max: dict = _dd(list)
+            for time_str, temp in zip(times, temps):
+                if temp is not None and time_str:
+                    daily_max[time_str[:10]].append(float(temp))
+            member_daily[member_key] = {d: max(v) for d, v in daily_max.items() if v}
+
+        # Compute std dev across members for each date
+        all_dates: set = set()
+        for dm in member_daily.values():
+            all_dates.update(dm.keys())
+
+        result: dict = {}
+        for date_str in sorted(all_dates):
+            vals = [dm[date_str] for dm in member_daily.values() if date_str in dm]
+            if len(vals) >= 5:
+                spread_c = statistics.stdev(vals)   # std dev in °C
+                # Spread is a temperature *difference* — multiply by 9/5 to get °F, no offset
+                result[date_str] = round(spread_c * 9 / 5 if unit == "F" else spread_c, 2)
+
+        return result if result else None
+
+    except Exception as exc:
+        print(f"    [WARN] Ensemble spread failed for ({lat},{lon}): {exc}")
+        return None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # wttr.in — unused; international cross-check uses Open-Meteo (fetch_open_meteo_forecast).
 # fetch_wttr_forecast is dead code; kept for reference only.
 # ─────────────────────────────────────────────────────────────────────────────
@@ -412,13 +495,16 @@ def fetch_city_forecast(city_name: str, days: int = 2) -> dict:
         "wu_active": bool,
         "forecasts": {
             "YYYY-MM-DD": {
-                "wunderground": float | None,   # max from hourly (most accurate)
-                "wu_peak_hour": str | None,      # e.g. "14:00" — when high hits
-                "wu_hours":    list | None,      # [(hour, temp), ...] full curve
-                "nws":         float | None,
-                "open_meteo":  float | None,
-                "consensus":   float,
-                "confidence":  "high" | "medium" | "low",
+                "wunderground":  float | None,   # max from hourly (most accurate)
+                "wu_peak_hour":  str | None,      # e.g. "14:00" — when high hits
+                "wu_hours":      list | None,      # [(hour, temp), ...] full curve
+                "nws":           float | None,
+                "open_meteo":    float | None,
+                "consensus":     float,
+                "confidence":    "high" | "medium" | "low",
+                "ensemble_spread": float | None,  # std dev of ~40 ICON model members (°F or °C)
+                                                   # None if ensemble API unavailable
+                                                   # High (>4°F/>2.2°C) = frontal instability
             }
         }
     }
@@ -439,9 +525,10 @@ def fetch_city_forecast(city_name: str, days: int = 2) -> dict:
     nws_result         = None
     open_meteo_result  = None
 
-    with ThreadPoolExecutor(max_workers=3) as pool:
+    with ThreadPoolExecutor(max_workers=4) as pool:
         fu = {}
-        fu["wu"] = pool.submit(fetch_wunderground_hourly, station, unit, lat, lon)
+        fu["wu"]       = pool.submit(fetch_wunderground_hourly, station, unit, lat, lon)
+        fu["ensemble"] = pool.submit(fetch_ensemble_spread, lat, lon, unit)
         if is_us:
             fu["nws"] = pool.submit(fetch_nws_forecast, lat, lon)
         else:
@@ -450,6 +537,7 @@ def fetch_city_forecast(city_name: str, days: int = 2) -> dict:
         if "wu"          in fu: wu_hourly_result  = fu["wu"].result()
         if "nws"         in fu: nws_result        = fu["nws"].result()
         if "open_meteo"  in fu: open_meteo_result = fu["open_meteo"].result()
+        ensemble_result = fu["ensemble"].result()
 
     # Flatten hourly → daily max for consensus calculation
     wu_daily = _wu_daily_max(wu_hourly_result)
@@ -491,14 +579,17 @@ def fetch_city_forecast(city_name: str, days: int = 2) -> dict:
             # Single source: WU alone is "high"; NWS or Open-Meteo alone is "medium"
             confidence = "high" if wu_t is not None else "medium"
 
+        ensemble_spread_val = ensemble_result.get(d) if ensemble_result else None
+
         forecasts[d] = {
-            "wunderground": wu_t,
-            "wu_peak_hour": peak_hr,
-            "wu_hours":     hours,
-            "nws":          nws_t,
-            "open_meteo":   om_t,
-            "consensus":    consensus,
-            "confidence":   confidence,
+            "wunderground":   wu_t,
+            "wu_peak_hour":   peak_hr,
+            "wu_hours":       hours,
+            "nws":            nws_t,
+            "open_meteo":     om_t,
+            "consensus":      consensus,
+            "confidence":     confidence,
+            "ensemble_spread": ensemble_spread_val,  # °F or °C std dev across ~40 model members
         }
 
     return {
@@ -543,6 +634,10 @@ def fetch_all_forecasts(cities=None, days: int = 2) -> dict:
                         parts.append(f"wu={f['wunderground']:.1f}{peak}")
                     if f["nws"]  is not None: parts.append(f"nws={f['nws']:.1f}")
                     if f.get("open_meteo") is not None: parts.append(f"om={f['open_meteo']:.1f}")
+                    ens = f["ensemble_spread"]
+                    if ens is not None:
+                        frontal_flag = " ⚠ FRONTAL?" if ens >= (4.0 if unit == "F" else 2.2) else ""
+                        parts.append(f"ens_spread={ens:.1f}°{unit}{frontal_flag}")
                     print(f"  {city}: {f['consensus']:.1f}°{unit} conf={f['confidence']} ({', '.join(parts)})")
                 else:
                     print(f"  {city}: no tomorrow forecast")

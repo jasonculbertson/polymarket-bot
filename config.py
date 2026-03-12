@@ -196,6 +196,16 @@ STRATEGY = {
     # Chicago MAE=6.27°F, Dallas MAE=5.18°F (bi-modal: 1°F when stable, 11-16°F during fronts)
     # Paris MAE=3.69°C — cluster window is ~3°F/1.5°C wide, can't reliably cover the error
     "yes_exclude_cities": ["Chicago", "Dallas", "Paris"],
+    # Ensemble model spread thresholds — proxy for frontal instability / forecast uncertainty
+    # Source: Open-Meteo ensemble API (ICON Seamless, ~40 members); spread = std dev of daily highs
+    # Even when WU and NWS agree, all sources can be wrong if they share the same biased model run.
+    # (e.g., Dallas 3/12: WU=65°F, NWS=66°F — both wrong, actual=76°F when warm front came early)
+    # yes_skip: abort YES clusters when spread ≥ threshold (too risky to pin exact bracket)
+    # no_boost: raise NO min-distance by ~2°F when spread ≥ threshold (extra margin for error)
+    "ensemble_spread_yes_skip_f": 4.0,    # °F std dev across ~40 members → skip YES clusters
+    "ensemble_spread_yes_skip_c": 2.2,    # °C equivalent (~4°F)
+    "ensemble_spread_no_boost_f": 6.0,    # °F std dev → raise NO distance requirement by 2°F
+    "ensemble_spread_no_boost_c": 3.3,    # °C equivalent
     # YES lottery: clusters with total_price < threshold get smaller per-bracket sizing
     "yes_lottery_threshold": 0.25,   # total_price below this = lottery cluster
     "yes_lottery_size": 5,           # $ per bracket for lottery clusters (vs default_yes_size)
