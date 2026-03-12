@@ -274,11 +274,24 @@ def record_scan(yes_clusters, no_opps, all_forecasts: dict = None) -> int:
         existing_ids.add(oid)
         added += 1
 
+    # Build a set of (city, date) pairs already tracked as unresolved YES clusters
+    # so we never accumulate multiple YES clusters for the same city on the same day.
+    # Different scans can produce different bracket windows for the same city — we keep only the first.
+    existing_yes_city_dates = {
+        (o["city"], o.get("date", ""))
+        for o in data["opportunities"]
+        if o.get("type") == "yes" and o.get("outcome") is None
+    }
+
     for c in yes_clusters:
         mids = [b.market_id for b in c.brackets]
         oid = _yes_id(c.event_slug, mids)
         if oid in existing_ids:
             continue
+        city_date_key = (c.city, c.date)
+        if city_date_key in existing_yes_city_dates:
+            continue  # already have an open YES cluster for this city+date
+        existing_yes_city_dates.add(city_date_key)
         data["opportunities"].append({
             "id": oid,
             "type": "yes",

@@ -189,6 +189,12 @@ STRATEGY = {
     # YES clusters: forecast must be ≥ this many degrees inside the cluster edge
     "yes_min_margin_f": 2.0,   # °F  (filters edge cases where forecast is near cluster boundary)
     "yes_min_margin_c": 1.0,   # °C
+    # YES clusters: maximum entry price per token — no buying expensive consensus bets
+    # At 0.85, a win pays only 15¢; at 50% win rate that's a guaranteed loser
+    "yes_max_entry_price": 0.75,
+    # YES clusters: cities excluded due to high forecast error (MAE too large for 3-bracket window)
+    # Chicago MAE=6.27°F, Paris MAE=3.69°C — cluster window is ~3°F/1.5°C, can't cover the error
+    "yes_exclude_cities": ["Chicago", "Paris"],
     # YES lottery: clusters with total_price < threshold get smaller per-bracket sizing
     "yes_lottery_threshold": 0.25,   # total_price below this = lottery cluster
     "yes_lottery_size": 5,           # $ per bracket for lottery clusters (vs default_yes_size)
