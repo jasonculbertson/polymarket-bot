@@ -95,6 +95,13 @@ def run_scan_bg(cities=None, capital=None, days=1, target_date=None):
         for line in proc.stdout:
             _scan_log.append(line.rstrip())
         proc.wait()
+        # After each scan, refresh open position prices and check simulated stop-losses
+        try:
+            from tracker import update_open_position_prices
+            price_result = update_open_position_prices()
+            _scan_log.append(f"[price-monitor] {price_result}")
+        except Exception as e:
+            _scan_log.append(f"[price-monitor] ERROR: {e}")
     except Exception as e:
         _scan_log.append(f"ERROR: {e}")
     finally:
@@ -588,6 +595,37 @@ def api_report():
     if report is None:
         return jsonify({"error": "No report yet — call POST /api/learn first"}), 404
     return jsonify(report)
+
+
+@app.route("/api/positions")
+def api_positions():
+    """
+    Return all open (unresolved) positions with current mark-to-market prices,
+    unrealized P&L, and simulated stop-loss status.
+
+    Query params:
+      ?refresh=1  — re-fetch current prices before returning (slower but fresh)
+    """
+    try:
+        from tracker import _load, update_open_position_prices
+        if request.args.get("refresh") == "1":
+            update_open_position_prices()
+        data = _load()
+        open_opps = [o for o in data["opportunities"] if o.get("outcome") is None]
+        # Sort by unrealized P&L (worst first so problem bets surface at top)
+        open_opps.sort(key=lambda o: o.get("unrealized_pnl_usd") or 0)
+        total_unrealized = round(
+            sum(o.get("unrealized_pnl_usd") or 0 for o in open_opps), 2
+        )
+        stop_loss_count = sum(1 for o in open_opps if o.get("simulated_stop_loss_triggered"))
+        return jsonify({
+            "open_positions": len(open_opps),
+            "total_unrealized_pnl_usd": total_unrealized,
+            "simulated_stop_losses_triggered": stop_loss_count,
+            "positions": open_opps,
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/scan", methods=["POST"])

@@ -205,6 +205,8 @@ STRATEGY = {
 TRADING = {
     "live_mode":             os.environ.get("LIVE_MODE", "false").lower() == "true",
     "stop_loss_pct":         float(os.environ.get("STOP_LOSS_PCT") or "50"),    # exit if down X%
+    # Don't trigger stop-loss within this many hours of resolution (price may just be stale)
+    "stop_loss_min_hours_to_resolution": float(os.environ.get("STOP_LOSS_MIN_HOURS") or "4"),
     "take_profit_pct":       float(os.environ.get("TAKE_PROFIT_PCT") or "0"),   # 0 = disabled
     "monitor_interval_secs": int(os.environ.get("MONITOR_INTERVAL_SECS") or "300"),
     "slippage_pct":          float(os.environ.get("SLIPPAGE_PCT") or "1"),      # price tolerance %
