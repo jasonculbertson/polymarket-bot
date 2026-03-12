@@ -459,6 +459,13 @@ def find_yes_clusters(event: dict, forecast_temp: float, confidence: str,
         if total_price >= 1.0:   # would lose even when "right" (temp in range)
             return None
 
+        # Reject clusters where any individual bracket is priced too high.
+        # High-priced brackets = market consensus bets with tiny upside if they win.
+        # At 0.75 max: a win pays 25¢ per dollar. Need >75% win rate to break even.
+        yes_max_entry = cfg.get("yes_max_entry_price", 0.75)
+        if any(s.yes_price > yes_max_entry for s in slots):
+            return None
+
         ret_pct = round((1.0 - total_price) / total_price * 100, 1)
         if ret_pct < cfg["min_return_pct"]:
             return None
@@ -568,7 +575,13 @@ def analyze_event(event: dict, forecast: dict, capital: float, n_opps: int = 20,
     wu_temp = day_fc.get("wunderground")
     forecast_temp = wu_temp if wu_temp is not None else day_fc["consensus"]
 
-    yes_clusters = find_yes_clusters(event, forecast_temp, confidence, capital) if confidence == "high" else []
+    yes_exclude = STRATEGY.get("yes_exclude_cities", [])
+    city = event.get("city", "")
+    yes_clusters = (
+        find_yes_clusters(event, forecast_temp, confidence, capital)
+        if confidence == "high" and city not in yes_exclude
+        else []
+    )
     no_require_high = STRATEGY.get("no_require_high_confidence", True)
     no_opps = find_no_opps(event, forecast_temp, confidence, capital, n_opps, city_bonus_f) if (
         confidence == "high" or not no_require_high
