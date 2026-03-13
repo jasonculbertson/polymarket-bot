@@ -164,8 +164,10 @@ CLOB_API = "https://clob.polymarket.com"
 # Strategy parameters
 STRATEGY = {
     # BUY NO: bracket must be at least this far from forecast (°F for F cities, °C for C cities)
-    "no_min_distance_f": 6,    # °F  (raised from 4 — adjacent-bracket losses too frequent)
-    "no_min_distance_c": 3.5,  # °C  (raised from 2.5 — ~6.3°F equivalent)
+    # These markets have 2°F / 1°C brackets spanning only ~10°F total, so max possible
+    # distance is ~5°F. 4°F keeps a safe 2-bracket buffer while still finding valid NO bets.
+    "no_min_distance_f": 4,    # °F  — safe buffer from forecast; 1-2°F brackets always excluded
+    "no_min_distance_c": 2.2,  # °C  — ~4°F equivalent; proportional to C bracket widths
     # BUY NO: minimum NO price
     "no_min_price": 0.65,
     # BUY YES: maximum YES price to consider (looking for underpriced YES)
@@ -218,8 +220,8 @@ STRATEGY = {
     # ── Live-trading quality gate (A-tier) ─────────────────────────────────────
     # In LIVE_MODE, only A-tier opportunities are executed. B-tier still paper-tracks.
     # Raise these from paper minimums to require a clear edge before spending real money.
-    "live_no_min_distance_f": 9.0,   # °F — vs paper threshold of 6°F
-    "live_no_min_distance_c": 5.0,   # °C — vs paper threshold of 3.5°C
+    "live_no_min_distance_f": 6.0,   # °F — A-tier live gate (vs paper threshold of 4°F)
+    "live_no_min_distance_c": 3.5,   # °C — A-tier live gate (vs paper threshold of 2.2°C)
     "live_yes_min_margin_f":  3.0,   # °F inside bracket — vs paper threshold of 2°F
     "live_yes_min_margin_c":  1.7,   # °C — vs paper threshold of 1°C
     "live_min_ev_score":     12.0,   # minimum EV score for any live trade
