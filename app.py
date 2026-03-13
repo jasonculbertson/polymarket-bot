@@ -112,6 +112,21 @@ def run_scan_bg(cities=None, capital=None, days=1, target_date=None):
                 _scan_log.append(f"[forecast-drift] {drift_result}")
         except Exception as e:
             _scan_log.append(f"[forecast-drift] ERROR: {e}")
+        # Micro-learn: update per-city drift stats, source divergence, volume trend
+        try:
+            from micro_learner import post_scan_learn
+            ml_result = post_scan_learn()
+            volatile  = ml_result.get("volatile_cities", [])
+            divergent = ml_result.get("divergent_cities", [])
+            trend     = ml_result.get("volume_trend", "?")
+            msg = f"[micro-learn] scan #{ml_result.get('scans_recorded')} | vol={trend}"
+            if volatile:
+                msg += f" | volatile: {volatile}"
+            if divergent:
+                msg += f" | WU≠meteo: {divergent}"
+            _scan_log.append(msg)
+        except Exception as e:
+            _scan_log.append(f"[micro-learn] ERROR: {e}")
     except Exception as e:
         _scan_log.append(f"ERROR: {e}")
     finally:
@@ -749,10 +764,17 @@ def _daily_learn_job():
             learn_result = learn_from_outcomes()
             data = _load()
             report = run_daily_optimizer(data)
-
             _pg_kv_save("daily_report", report)
             print(f"[daily-learn] done — {report.get('issue_count', 0)} issues, "
                   f"{report.get('critical_count', 0)} critical")
+
+            # Backtest optimizer: test per-city thresholds on resolved history
+            try:
+                from backtest_optimizer import optimize_city_thresholds
+                bt_rec = optimize_city_thresholds(data)
+                print(f"[daily-learn] backtest: {bt_rec.get('n_recommendations', 0)} recommendations")
+            except Exception as bt_e:
+                print(f"[daily-learn] backtest error: {bt_e}")
         except Exception as e:
             print(f"[daily-learn] error: {e}")
 
