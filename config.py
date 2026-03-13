@@ -192,6 +192,12 @@ STRATEGY = {
     # YES clusters: maximum entry price per token — no buying expensive consensus bets
     # At 0.85, a win pays only 15¢; at 50% win rate that's a guaranteed loser
     "yes_max_entry_price": 0.75,
+    # NO bets: hard YES-price ceiling — skip brackets the market already prices at ≥92% YES.
+    # These are almost always within 1-2°F of the forecast (risky NO bet).
+    "no_max_yes_price": float(os.environ.get("NO_MAX_YES_PRICE") or "0.92"),
+    # NO bets: minimum return % — looser than global min_return_pct because a
+    # high-confidence "guarantee" at 5% return is still a worthwhile compounding play.
+    "no_min_return_pct": float(os.environ.get("NO_MIN_RETURN_PCT") or "5.0"),
     # YES clusters: cities excluded due to high/bi-modal forecast error
     # Chicago MAE=6.27°F, Dallas MAE=5.18°F (bi-modal: 1°F when stable, 11-16°F during fronts)
     # Paris MAE=3.69°C — cluster window is ~3°F/1.5°C wide, can't reliably cover the error

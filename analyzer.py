@@ -495,9 +495,14 @@ def find_no_opps(event: dict, forecast_temp: float, confidence: str,
     bonus = (city_bonus_f / 1.8) if unit == "C" else city_bonus_f
     min_dist = base_min_dist + bonus
 
-    # Minimum edge threshold for inclusion (even paper): catches mispriced brackets
-    # that distance alone misses.  Use half the A-tier threshold as the paper floor.
-    paper_min_edge = float(cfg.get("live_no_min_edge", 0.15)) / 2.0  # e.g. 0.075
+    # YES price ceiling for NO bets: don't bet NO against the market's 92%+ consensus.
+    # A bracket priced at YES ≥ 0.92 is already near-certain in the market's view —
+    # these are almost always within 1-2°F of the forecast. Hard pass.
+    no_max_yes_price = float(cfg.get("no_max_yes_price", 0.92))
+
+    # Minimum return for NO bets — can be looser than the global min_return_pct
+    # because a high-confidence "guarantee" at 5% return is still worthwhile.
+    no_min_return = float(cfg.get("no_min_return_pct", cfg["min_return_pct"]))
 
     opps = []
     for mkt in event["markets"]:
@@ -508,21 +513,26 @@ def find_no_opps(event: dict, forecast_temp: float, confidence: str,
         no_price = 1.0 - yes_price
         dist = bracket_distance(forecast_temp, lo, hi)
 
-        # ── Probability edge ──────────────────────────────────────────────
+        # ── Hard distance gate — ALWAYS required, no edge bypass ──────────
+        # Never bet NO on a bracket within min_dist of the forecast.
+        # The edge model can flag quality tier but cannot override this floor.
+        if dist < min_dist:
+            continue
+
+        # ── YES price ceiling — skip brackets the market is 92%+ sure about ──
+        if yes_price >= no_max_yes_price:
+            continue
+
+        if no_price < cfg["no_min_price"]:
+            continue
+
+        # ── Probability edge (for quality-tier assignment only) ────────────
         model_p = _bracket_prob(forecast_temp, sigma, lo, hi)
         market_p = float(yes_price)          # market's implied prob = YES price
         edge = round(model_p - market_p, 4)  # negative = bracket overpriced → NO edge
 
-        # Include if EITHER distance criterion OR edge criterion is met
-        dist_ok  = dist >= min_dist
-        edge_ok  = edge <= -paper_min_edge   # bracket significantly overpriced
-        if not (dist_ok or edge_ok):
-            continue
-        if no_price < cfg["no_min_price"]:
-            continue
-
         ret_pct = (1.0 - no_price) / no_price * 100
-        if ret_pct < cfg["min_return_pct"]:
+        if ret_pct < no_min_return:
             continue
 
         win_prob = estimate_no_win_prob(dist, confidence, unit)
