@@ -30,6 +30,10 @@ _scan_lock    = threading.Lock()
 _scan_running = False
 _scan_log     = []
 
+# Quick monitor state — runs every 15 min independent of full scan
+_monitor_log:  list     = []
+_last_monitor: str      = None   # ISO timestamp of last successful quick monitor
+
 _last_resolve_time: datetime = None
 _RESOLVE_COOLDOWN_SECS = 300  # re-run resolve at most once every 5 min
 _resolve_lock = threading.Lock()
@@ -69,6 +73,73 @@ def list_scans():
     return files[:20]
 
 
+def _run_quick_monitor(log: list = None):
+    """
+    Lightweight position monitor — no full market scan needed.
+    Runs every 15 min (and also at the end of every full scan).
+
+    Steps:
+      1. Refresh open position prices + simulated stop-loss tracking
+      2. Forecast drift check — flag positions whose edge has evaporated
+      3. Micro-learn — update city volatility, source divergence, volume trend
+
+    log: optional list to append status lines to (pass _scan_log during full scan,
+         or _monitor_log during the standalone 15-min job).
+    """
+    global _last_monitor
+    if log is None:
+        log = _monitor_log
+
+    # 1. Price monitor
+    try:
+        from tracker import update_open_position_prices
+        price_result = update_open_position_prices()
+        log.append(f"[price-monitor] {price_result}")
+    except Exception as e:
+        log.append(f"[price-monitor] ERROR: {e}")
+
+    # 2. Forecast drift
+    try:
+        from tracker import check_forecast_drift
+        drift_result = check_forecast_drift()
+        if drift_result.get("flagged", 0):
+            log.append(f"[forecast-drift] ⚠ {drift_result['flagged']} position(s) edge-gone — {drift_result}")
+        else:
+            log.append(f"[forecast-drift] {drift_result}")
+    except Exception as e:
+        log.append(f"[forecast-drift] ERROR: {e}")
+
+    # 3. Micro-learn
+    try:
+        from micro_learner import post_scan_learn
+        ml = post_scan_learn()
+        msg = f"[micro-learn] #{ml.get('scans_recorded')} | vol={ml.get('volume_trend','?')}"
+        if ml.get("volatile_cities"):
+            msg += f" | volatile: {ml['volatile_cities']}"
+        if ml.get("divergent_cities"):
+            msg += f" | WU≠meteo: {ml['divergent_cities']}"
+        log.append(msg)
+    except Exception as e:
+        log.append(f"[micro-learn] ERROR: {e}")
+
+    _last_monitor = datetime.now().isoformat()
+
+
+def _quick_monitor_job():
+    """
+    APScheduler wrapper for _run_quick_monitor().
+    Skips silently if a full scan is already running (it will cover monitoring at the end).
+    Keeps the last 200 monitor log lines for the dashboard.
+    """
+    global _monitor_log
+    if _scan_running:
+        return   # full scan already running — it handles monitoring at completion
+    if len(_monitor_log) > 200:
+        _monitor_log = _monitor_log[-200:]
+    _monitor_log.append(f"--- monitor {datetime.now().strftime('%H:%M:%S')} ---")
+    threading.Thread(target=_run_quick_monitor, daemon=True).start()
+
+
 def run_scan_bg(cities=None, capital=None, days=1, target_date=None):
     global _scan_running, _scan_log
     if not _scan_lock.acquire(blocking=False):
@@ -95,38 +166,7 @@ def run_scan_bg(cities=None, capital=None, days=1, target_date=None):
         for line in proc.stdout:
             _scan_log.append(line.rstrip())
         proc.wait()
-        # After each scan, refresh open position prices and check simulated stop-losses
-        try:
-            from tracker import update_open_position_prices
-            price_result = update_open_position_prices()
-            _scan_log.append(f"[price-monitor] {price_result}")
-        except Exception as e:
-            _scan_log.append(f"[price-monitor] ERROR: {e}")
-        # Check whether the current forecast has drifted enough to kill our edge
-        try:
-            from tracker import check_forecast_drift
-            drift_result = check_forecast_drift()
-            if drift_result.get("flagged", 0):
-                _scan_log.append(f"[forecast-drift] ⚠ {drift_result['flagged']} position(s) edge-gone — {drift_result}")
-            else:
-                _scan_log.append(f"[forecast-drift] {drift_result}")
-        except Exception as e:
-            _scan_log.append(f"[forecast-drift] ERROR: {e}")
-        # Micro-learn: update per-city drift stats, source divergence, volume trend
-        try:
-            from micro_learner import post_scan_learn
-            ml_result = post_scan_learn()
-            volatile  = ml_result.get("volatile_cities", [])
-            divergent = ml_result.get("divergent_cities", [])
-            trend     = ml_result.get("volume_trend", "?")
-            msg = f"[micro-learn] scan #{ml_result.get('scans_recorded')} | vol={trend}"
-            if volatile:
-                msg += f" | volatile: {volatile}"
-            if divergent:
-                msg += f" | WU≠meteo: {divergent}"
-            _scan_log.append(msg)
-        except Exception as e:
-            _scan_log.append(f"[micro-learn] ERROR: {e}")
+        _run_quick_monitor(log=_scan_log)
     except Exception as e:
         _scan_log.append(f"ERROR: {e}")
     finally:
@@ -839,6 +879,17 @@ def _start_scheduler():
     )
     print("Daily learn+optimize scheduled at 08:00 UTC")
 
+    # JOB 5: Quick position monitor every 15 min
+    # Lightweight: price refresh + drift check + micro-learn — no full market scan.
+    # Skips if a full scan is already running (full scan runs monitoring at completion).
+    _scheduler.add_job(
+        _quick_monitor_job,
+        "interval",
+        minutes=15,
+        id="quick_monitor",
+    )
+    print("Quick position monitor scheduled every 15 min")
+
     _scheduler.start()
     print(f"Auto-scan scheduled every {SCAN_INTERVAL_HOURS}h (first run in 30s)")
 
@@ -848,18 +899,23 @@ def schedule_status():
     """Return scheduler state for the dashboard."""
     if _scheduler is None or not _scheduler.running:
         return jsonify({
-            "enabled":      False,
-            "interval_hrs": SCAN_INTERVAL_HOURS,
-            "next_run":     None,
-            "last_run":     _last_auto_scan,
+            "enabled":           False,
+            "interval_hrs":      SCAN_INTERVAL_HOURS,
+            "next_scan":         None,
+            "last_scan":         _last_auto_scan,
+            "next_monitor":      None,
+            "last_monitor":      _last_monitor,
         })
-    job = _scheduler.get_job("auto_scan")
-    next_run = job.next_run_time.isoformat() if job and job.next_run_time else None
+    scan_job    = _scheduler.get_job("auto_scan")
+    monitor_job = _scheduler.get_job("quick_monitor")
     return jsonify({
-        "enabled":      True,
-        "interval_hrs": SCAN_INTERVAL_HOURS,
-        "next_run":     next_run,
-        "last_run":     _last_auto_scan,
+        "enabled":           True,
+        "interval_hrs":      SCAN_INTERVAL_HOURS,
+        "next_scan":         scan_job.next_run_time.isoformat()    if scan_job    and scan_job.next_run_time    else None,
+        "last_scan":         _last_auto_scan,
+        "next_monitor":      monitor_job.next_run_time.isoformat() if monitor_job and monitor_job.next_run_time else None,
+        "last_monitor":      _last_monitor,
+        "monitor_log":       _monitor_log[-50:],
     })
 
 
