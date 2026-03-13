@@ -209,6 +209,14 @@ STRATEGY = {
     # YES lottery: clusters with total_price < threshold get smaller per-bracket sizing
     "yes_lottery_threshold": 0.25,   # total_price below this = lottery cluster
     "yes_lottery_size": 5,           # $ per bracket for lottery clusters (vs default_yes_size)
+    # ── Live-trading quality gate (A-tier) ─────────────────────────────────────
+    # In LIVE_MODE, only A-tier opportunities are executed. B-tier still paper-tracks.
+    # Raise these from paper minimums to require a clear edge before spending real money.
+    "live_no_min_distance_f": 9.0,   # °F — vs paper threshold of 6°F
+    "live_no_min_distance_c": 5.0,   # °C — vs paper threshold of 3.5°C
+    "live_yes_min_margin_f":  3.0,   # °F inside bracket — vs paper threshold of 2°F
+    "live_yes_min_margin_c":  1.7,   # °C — vs paper threshold of 1°C
+    "live_min_ev_score":     12.0,   # minimum EV score for any live trade
     # Max total capital to deploy per run (USDC)
     "max_capital": 400,
     # Kelly criterion fraction — 0.33 minimizes max drawdown while retaining

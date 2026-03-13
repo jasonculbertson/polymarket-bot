@@ -265,6 +265,7 @@ def record_scan(yes_clusters, no_opps, all_forecasts: dict = None) -> int:
             "resolution_time": getattr(o, "resolution_time", ""),
             "first_seen": now,
             "paper_size_usd": PAPER_SIZE_USD,
+            "quality_tier": getattr(o, "quality_tier", "B"),  # A = clear winner, B = paper-only
             "outcome": None,
             "final_yes_price": None,
             "pnl_pct": None,
@@ -314,6 +315,7 @@ def record_scan(yes_clusters, no_opps, all_forecasts: dict = None) -> int:
             "resolution_time": getattr(c, "resolution_time", ""),
             "first_seen": now,
             "paper_size_usd": round(c.total_cost, 2),  # actual cost (shares × total_price)
+            "quality_tier": getattr(c, "quality_tier", "B"),  # A = clear winner, B = paper-only
             "outcome": None,
             "final_yes_price": None,
             "pnl_pct": None,

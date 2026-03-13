@@ -23,7 +23,7 @@ LATEST   = os.path.join(DATA_DIR, "latest_scan.json")
 os.makedirs(DATA_DIR, exist_ok=True)
 
 # Auto-scan config (set SCAN_INTERVAL_HOURS=0 to disable)
-SCAN_INTERVAL_HOURS = int(os.environ.get("SCAN_INTERVAL_HOURS", "1"))
+SCAN_INTERVAL_HOURS = int(os.environ.get("SCAN_INTERVAL_HOURS", "2"))  # 2h default — scans 3 days ahead
 SCAN_CAPITAL        = int(os.environ.get("SCAN_CAPITAL", "400"))
 
 _scan_lock    = threading.Lock()
@@ -955,6 +955,20 @@ def trade():
         if price is None:
             return jsonify({"error": "price is required"}), 400
         price = float(price)
+
+        # Live-mode quality gate: only A-tier opportunities allowed in live trading.
+        # B-tier = above minimum threshold but not a slam-dunk → paper only.
+        if side == "buy" and TRADING.get("live_mode"):
+            from tracker import _load as _tload
+            _tdata = _tload()
+            _opp = next((o for o in _tdata.get("opportunities", []) if o.get("id") == opp_id), None)
+            if _opp and _opp.get("quality_tier", "B") != "A":
+                return jsonify({
+                    "error": "live_mode quality gate: only A-tier opportunities may be traded live",
+                    "quality_tier": _opp.get("quality_tier"),
+                    "tip": "This bet is above the paper-trade minimum but below the live-trade threshold. "
+                           "Use /api/trade in paper mode or wait for a higher-confidence opportunity."
+                }), 400
 
         if side == "buy":
             result = _trader.buy(token_id, size_usd, price, neg_risk=neg_risk)

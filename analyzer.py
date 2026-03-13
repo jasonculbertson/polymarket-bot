@@ -131,6 +131,7 @@ class NoOpp:
     ev_score: float = 0.0        # EV = win_prob × return_pct − (1−win_prob) × 100
     effective_return_pct: float = 0.0  # return_pct adjusted for CLOB bid-ask spread
     spread_pct: float = 0.0      # cost increase from spread (0 if no CLOB data)
+    quality_tier: str = "B"      # "A" = clear winner (live-tradeable), "B" = paper-only
 
 
 @dataclass
@@ -172,6 +173,7 @@ class YesCluster:
     resolution_time: str = ""  # ISO UTC timestamp from Gamma endDate
     resolution_date: str = ""   # settle date (YYYY-MM-DD) for resolve logic; date = forecast/weather day
     ev_score: float = 0.0        # EV = win_prob × return_pct − (1−win_prob) × 100
+    quality_tier: str = "B"      # "A" = clear winner (live-tradeable), "B" = paper-only
 
     def bracket_labels(self) -> str:
         return " + ".join(b.group_title for b in self.brackets)
@@ -180,6 +182,41 @@ class YesCluster:
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
+
+def _no_quality_tier(distance_f: float, unit: str, confidence: str, ev_score: float) -> str:
+    """
+    A = clear winner: bet in live mode.
+      NO:  distance ≥ live_no_min_distance threshold AND high confidence AND ev ≥ live_min_ev
+    B = borderline: paper-trade only (above minimum, but not a slam-dunk).
+
+    Thresholds from STRATEGY['live_no_min_distance_f'] / ['live_no_min_distance_c'].
+    All distances already in native unit (°F or °C).
+    """
+    live_dist_f = float(STRATEGY.get("live_no_min_distance_f", 9.0))
+    live_dist_c = float(STRATEGY.get("live_no_min_distance_c", 5.0))
+    live_ev     = float(STRATEGY.get("live_min_ev_score", 12.0))
+    min_dist = live_dist_c if unit == "C" else live_dist_f
+    if distance_f >= min_dist and confidence == "high" and ev_score >= live_ev:
+        return "A"
+    return "B"
+
+
+def _yes_quality_tier(margin_f: float, unit: str, confidence: str,
+                      total_price: float, ev_score: float) -> str:
+    """
+    A = clear winner: forecast comfortably inside bracket, low cluster cost, good EV.
+      YES: margin ≥ live_yes_min_margin AND high confidence AND total_price ≤ 0.72 AND ev ≥ live_min_ev
+    B = borderline: paper-trade only.
+    """
+    live_margin_f = float(STRATEGY.get("live_yes_min_margin_f", 3.0))
+    live_margin_c = float(STRATEGY.get("live_yes_min_margin_c", 1.7))
+    live_ev       = float(STRATEGY.get("live_min_ev_score", 12.0))
+    min_margin = live_margin_c if unit == "C" else live_margin_f
+    if (margin_f >= min_margin and confidence == "high"
+            and total_price <= 0.72 and ev_score >= live_ev):
+        return "A"
+    return "B"
+
 
 def bracket_distance(forecast_temp: float, lo: Optional[float], hi: Optional[float]) -> float:
     """Distance in °F from forecast to nearest bracket edge. 0 = inside bracket."""
@@ -381,6 +418,7 @@ def find_no_opps(event: dict, forecast_temp: float, confidence: str,
                     ev_score=ev,
                     effective_return_pct=eff_ret,
                     spread_pct=sprd,
+                    quality_tier=_no_quality_tier(dist, unit, confidence, ev),
                 ))
     return opps
 
@@ -508,9 +546,12 @@ def find_yes_clusters(event: dict, forecast_temp: float, confidence: str,
 
         ev_s = round(win_prob * ret_pct - (1 - win_prob) * 100, 1)
         unit = event.get("temp_unit", "F")
+        actual_margin = min(lo_margin, hi_margin)  # tightest margin in native unit
+        tier = _yes_quality_tier(actual_margin, unit, confidence, total_price, ev_s)
         return YesCluster(
             predicted_win_prob=round(win_prob, 4),
             ev_score=ev_s,
+            quality_tier=tier,
             city=event["city"],
             date=event["date"],
             event_slug=event["event_slug"],
