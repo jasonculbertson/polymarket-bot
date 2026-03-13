@@ -366,11 +366,17 @@ def main():
     yesterday = today - timedelta(days=1)
     tomorrow = today + timedelta(days=1)
 
-    # Always scan yesterday + today + tomorrow (date = forecast/weather day; yesterday's resolve this morning)
+    # Scan window: yesterday (resolving now) + today + tomorrow + up to args.days ahead.
+    # The real NO-bet edge lives at 24-72h out — forecasts are genuine predictions there,
+    # not observations. Scanning further ahead exposes more brackets ≥6°F from the forecast.
+    # Default --days 3 = yesterday + today + tomorrow + day-after-tomorrow (3 future days).
     if args.date in (None, "both"):
-        scan_dates = [yesterday.isoformat(), today.isoformat(), tomorrow.isoformat()]
-        date_label = "yesterday + today + tomorrow"
-        fetch_days = 4
+        future_days = args.days  # how many future dates beyond today to include
+        scan_dates = [yesterday.isoformat()] + [
+            (today + timedelta(days=i)).isoformat() for i in range(future_days + 1)
+        ]
+        date_label = f"yesterday + {future_days + 1} forward days (today → {(today + timedelta(days=future_days)).isoformat()})"
+        fetch_days = future_days + 3   # extra buffer for forecast API
     elif args.date == "today":
         scan_dates = [today.isoformat()]
         date_label = "today"

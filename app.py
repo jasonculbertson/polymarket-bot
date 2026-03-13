@@ -148,11 +148,11 @@ def run_scan_bg(cities=None, capital=None, days=1, target_date=None):
     _scan_log     = []
     capital = capital or SCAN_CAPITAL
     # Use sys.executable so Railway uses the correct venv Python
-    # Default: scan both today + tomorrow (target_date=None means "both")
-    cmd = [sys.executable, "scan.py", "--capital", str(capital)]
+    # Scan yesterday + today + next `days` forward dates (default 3).
+    # The NO-bet edge lives at 24-72h out where WU is genuinely predicting.
+    cmd = [sys.executable, "scan.py", "--capital", str(capital), "--days", str(days)]
     if target_date:
         cmd += ["--date", target_date]
-    # no --days needed — scan.py now defaults to today+tomorrow automatically
     if cities:
         cmd += ["--cities"] + cities
     try:
@@ -700,9 +700,10 @@ def trigger_scan():
         return jsonify({"status": "already running"})
     body = request.get_json(silent=True) or {}
     capital     = body.get("capital", 400)
-    target_date = body.get("date") or None  # None = scan both today+tomorrow
+    target_date = body.get("date") or None  # None = scan full window
+    days        = int(body.get("days", 3))  # how many forward days (default 3)
     t = threading.Thread(target=run_scan_bg,
-                         kwargs=dict(capital=capital, target_date=target_date),
+                         kwargs=dict(capital=capital, target_date=target_date, days=days),
                          daemon=True)
     t.start()
     return jsonify({"status": "started"})
@@ -785,7 +786,9 @@ def _auto_scan_job():
         print("[auto-scan] circuit breaker: daily loss limit reached — scan skipped")
         return
     _last_auto_scan = datetime.now().isoformat()
-    threading.Thread(target=run_scan_bg, daemon=True).start()
+    # days=3: scan yesterday + today + tomorrow + day-after-tomorrow
+    # Genuine NO-bet edges exist at 24-72h out where forecasts are predictions, not observations.
+    threading.Thread(target=run_scan_bg, kwargs={"days": 3}, daemon=True).start()
 
 
 def _daily_learn_job():
