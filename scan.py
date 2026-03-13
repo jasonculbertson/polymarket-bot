@@ -349,16 +349,14 @@ def main():
                         help="Days ahead to scan (default: 1 = tomorrow only)")
     parser.add_argument("--date", type=str, default=None,
                         help="Target resolution date to focus on: YYYY-MM-DD, 'today', or 'tomorrow'")
-    parser.add_argument("--capital", type=float, default=STRATEGY["max_capital"],
-                        help="Capital budget in USDC")
+    parser.add_argument("--capital", type=float, default=STRATEGY.get("max_capital", 400),
+                        help="Capital budget in USDC (defaults to full bankroll when called from app)")
     parser.add_argument("--no-clob", action="store_true",
                         help="Skip CLOB live price enrichment (faster, less accurate)")
     parser.add_argument("--limit", type=int, default=20,
                         help="Max opportunities to display per section")
     parser.add_argument("--min-return", type=float, default=STRATEGY["min_return_pct"],
                         help="Minimum return %% to show (default: 8)")
-    parser.add_argument("--size-mult", type=float, default=1.0,
-                        help="Bet size multiplier (0.5 = half-size after daily target hit)")
     args = parser.parse_args()
 
     cities = args.cities or list(CITIES.keys())
@@ -414,10 +412,8 @@ def main():
     original_min = STRATEGY["min_return_pct"]
     STRATEGY["min_return_pct"] = args.min_return
 
-    size_mult_str = f" | Bet size: {int(args.size_mult*100)}%" if args.size_mult != 1.0 else ""
-    print(f"── Analyzing opportunities ──{size_mult_str}")
-    clusters, no_opps = analyze_all(markets, forecasts, max_capital=args.capital,
-                                    size_mult=args.size_mult)
+    print(f"── Analyzing opportunities ──")
+    clusters, no_opps = analyze_all(markets, forecasts, max_capital=args.capital)
 
     STRATEGY["min_return_pct"] = original_min
 

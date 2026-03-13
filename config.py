@@ -225,19 +225,19 @@ STRATEGY = {
     "live_yes_min_edge": 0.12,   # positive edge threshold for YES A-tier
     # ── Bankroll & compounding ────────────────────────────────────────────────
     # Goal: 5-10% daily return, doubling every 7-10 days.
+    # Strategy: bet the full bankroll every scan — compound wins into next day.
     # Bet sizes scale automatically as the bankroll grows — never fixed $ amounts.
     "initial_bankroll":    float(os.environ.get("INITIAL_BANKROLL") or "200"),
-    # Daily return target — once hit, reduce all new bet sizes to 50% (lock in gains)
+    # Daily return target — informational only, does NOT reduce bet sizes when hit
     "daily_target_pct":    float(os.environ.get("DAILY_TARGET_PCT") or "7"),
     # Hard stop: halt new scans if today's loss exceeds X% of opening bankroll
     "daily_loss_cap_pct":  float(os.environ.get("DAILY_LOSS_CAP_PCT") or "10"),
-    # Per-bet cap: max single bet = X% of current bankroll (prevents any one bet from being outsized)
-    # At $200: 5% = $10 max/bet. At $400: 5% = $20 max/bet. Auto-scales with compounding.
-    "max_bet_pct":         float(os.environ.get("MAX_BET_PCT") or "5"),
+    # Per-bet cap: max single bet = X% of current bankroll (Kelly-compatible deployment)
+    # At $200: 20% = $40 max/bet. Across 5 bets: up to $200 deployed = full bankroll.
+    # Auto-scales up as bankroll compounds.
+    "max_bet_pct":         float(os.environ.get("MAX_BET_PCT") or "20"),
     # Outsized-edge bonus: if prob_edge magnitude ≥ threshold, allow up to 2× max_bet_pct
-    "outsized_edge_threshold": 0.25,   # |edge| ≥ 25% → allow up to 10% of bankroll
-    # Max total capital to deploy per run (hard ceiling, overridden by bankroll % cap)
-    "max_capital": float(os.environ.get("MAX_CAPITAL") or "400"),
+    "outsized_edge_threshold": 0.25,   # |edge| ≥ 25% → allow up to 40% of bankroll/bet
     # Kelly criterion fraction — 0.33 minimizes max drawdown while retaining
     # 78% of full-Kelly geometric growth rate (vs 0.5 which is more aggressive).
     # Per the quant doc: gamma=0.33 is optimal for reducing drawdown on correlated positions.

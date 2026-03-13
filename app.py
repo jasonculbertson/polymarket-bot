@@ -140,7 +140,7 @@ def _quick_monitor_job():
     threading.Thread(target=_run_quick_monitor, daemon=True).start()
 
 
-def run_scan_bg(cities=None, capital=None, days=1, target_date=None, size_mult=1.0):
+def run_scan_bg(cities=None, capital=None, days=1, target_date=None):
     global _scan_running, _scan_log
     if not _scan_lock.acquire(blocking=False):
         return
@@ -152,8 +152,7 @@ def run_scan_bg(cities=None, capital=None, days=1, target_date=None, size_mult=1
     # Use sys.executable so Railway uses the correct venv Python
     # Scan yesterday + today + next `days` forward dates (default 3).
     # The NO-bet edge lives at 24-72h out where WU is genuinely predicting.
-    cmd = [sys.executable, "scan.py", "--capital", str(capital), "--days", str(days),
-           "--size-mult", str(size_mult)]
+    cmd = [sys.executable, "scan.py", "--capital", str(capital), "--days", str(days)]
     if target_date:
         cmd += ["--date", target_date]
     if cities:
@@ -706,13 +705,12 @@ def trigger_scan():
     capital     = body.get("capital") or _scan_capital()
     target_date = body.get("date") or None  # None = scan full window
     days        = int(body.get("days", 3))  # how many forward days (default 3)
-    size_mult   = float(body.get("size_mult", _daily_size_multiplier()))
     t = threading.Thread(target=run_scan_bg,
                          kwargs=dict(capital=capital, target_date=target_date,
-                                     days=days, size_mult=size_mult),
+                                     days=days),
                          daemon=True)
     t.start()
-    return jsonify({"status": "started", "capital": capital, "size_mult": size_mult})
+    return jsonify({"status": "started", "capital": capital})
 
 
 @app.route("/scan/status")
@@ -798,32 +796,14 @@ def _is_circuit_breaker_tripped() -> bool:
         return False
 
 
-def _daily_size_multiplier() -> float:
-    """
-    Return 0.5 if the daily profit target has already been hit today (protect gains).
-    Normal = 1.0.  Reduces all new bet sizes to half once we've banked the day's goal.
-    """
-    from config import STRATEGY
-    try:
-        from tracker import get_daily_bankroll_stats
-        stats = get_daily_bankroll_stats()
-        if stats.get("target_hit"):
-            return 0.5
-    except Exception:
-        pass
-    return 1.0
-
-
 def _scan_capital() -> float:
     """
-    Return current bankroll as scan capital, capped at STRATEGY['max_capital'].
+    Return full current bankroll as scan capital — deploy everything.
     Falls back to SCAN_CAPITAL env-var on any error.
     """
-    from config import STRATEGY
     try:
         from tracker import get_bankroll
-        bankroll = get_bankroll()
-        return min(bankroll, float(STRATEGY.get("max_capital", 400)))
+        return get_bankroll()
     except Exception:
         return float(SCAN_CAPITAL)
 
@@ -843,15 +823,12 @@ def _auto_scan_job():
             print("[auto-scan] ⛔ daily loss cap hit — scan skipped")
         return
     _last_auto_scan = datetime.now().isoformat()
-    capital   = _scan_capital()
-    size_mult = _daily_size_multiplier()
-    if size_mult < 1.0:
-        print(f"[auto-scan] 🎯 daily target hit — scanning at {int(size_mult*100)}% bet size (locking gains)")
+    capital = _scan_capital()
     # days=3: scan yesterday + today + tomorrow + day-after-tomorrow
     # Genuine NO-bet edges exist at 24-72h out where forecasts are predictions, not observations.
     threading.Thread(
         target=run_scan_bg,
-        kwargs={"days": 3, "capital": capital, "size_mult": size_mult},
+        kwargs={"days": 3, "capital": capital},
         daemon=True,
     ).start()
 
@@ -1091,21 +1068,19 @@ def circuit_breaker_status():
             "today_pnl_usd":       stats["today_pnl_usd"],
             "today_pnl_pct":       stats["today_pnl_pct"],
             "pct_of_daily_target": stats["pct_of_target"],
-            # Targets
+            # Targets (informational only — no longer affects bet sizing)
             "daily_target_pct":    stats["daily_target_pct"],
             "daily_target_usd":    stats["daily_target_usd"],
             "target_hit":          stats["target_hit"],
-            "size_mult":           _daily_size_multiplier(),
             # Loss cap
             "loss_cap_pct":        stats["loss_cap_pct"],
             "loss_cap_usd":        stats["loss_cap_usd"],
             "loss_cap_hit":        stats["loss_cap_hit"],
             "fixed_loss_limit_usd": fixed_limit,
             "tripped":             _is_circuit_breaker_tripped(),
-            # Scan capital
+            # Scan capital (= full bankroll, no cap)
             "scan_capital":        _scan_capital(),
-            "max_capital":         float(STRATEGY.get("max_capital", 400)),
-            "max_bet_pct":         float(STRATEGY.get("max_bet_pct", 5)),
+            "max_bet_pct":         float(STRATEGY.get("max_bet_pct", 20)),
         })
     except Exception as e:
         return jsonify({"error": str(e), "tripped": _is_circuit_breaker_tripped()})

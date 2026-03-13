@@ -432,7 +432,6 @@ def no_size(
     distance: float = 4.0,
     unit: str = "F",
     prob_edge: float = 0.0,
-    size_mult: float = 1.0,     # 0.5 when daily target hit (protect gains)
 ) -> float:
     cfg = STRATEGY
     win_prob = estimate_no_win_prob(distance, confidence, unit)
@@ -451,7 +450,7 @@ def no_size(
         min_size=cfg["min_order_size"],
         max_size=min(bankroll_cap, scaled_max, cap_per_opp),
     )
-    return max(cfg["min_order_size"], round(raw * size_mult, 1))
+    return max(cfg["min_order_size"], round(raw, 1))
 
 
 def yes_cluster_size_each(
@@ -461,7 +460,6 @@ def yes_cluster_size_each(
     total_price: float = 0.75,
     capital: float = 400.0,
     prob_edge: float = 0.0,
-    size_mult: float = 1.0,     # 0.5 when daily target hit (protect gains)
 ) -> float:
     cfg = STRATEGY
     bankroll_cap = _bankroll_max_bet(capital, prob_edge) * cluster_size
@@ -473,7 +471,7 @@ def yes_cluster_size_each(
         min_size=cfg["min_order_size"] * cluster_size,
         max_size=min(bankroll_cap, total_cost_target * 1.5),
     )
-    per = total_kelly / cluster_size * size_mult
+    per = total_kelly / cluster_size
     return max(round(per, 1), cfg["min_order_size"])
 
 
@@ -483,7 +481,7 @@ def yes_cluster_size_each(
 
 def find_no_opps(event: dict, forecast_temp: float, confidence: str,
                  capital: float, n_opps: int, city_bonus_f: float = 0.0,
-                 sigma: float = 3.0, size_mult: float = 1.0) -> list:
+                 sigma: float = 3.0) -> list:
     """Find NO opportunities: brackets far enough from forecast.
 
     city_bonus_f — extra distance requirement (°F) for cities with historically poor forecast accuracy.
@@ -558,7 +556,7 @@ def find_no_opps(event: dict, forecast_temp: float, confidence: str,
             liquidity=mkt["liquidity"],
             accepting_orders=mkt["accepting_orders"],
             recommended_size=no_size(ret_pct, confidence, capital, n_opps, dist, unit,
-                                    prob_edge=edge, size_mult=size_mult),
+                                    prob_edge=edge),
             predicted_win_prob=win_prob,
             temp_unit=unit,
             market_slug=mkt.get("market_slug", ""),
@@ -577,13 +575,12 @@ def find_no_opps(event: dict, forecast_temp: float, confidence: str,
 
 
 def find_yes_clusters(event: dict, forecast_temp: float, confidence: str,
-                      capital: float, sigma: float = 3.0,
-                      size_mult: float = 1.0) -> list:
+                      capital: float, sigma: float = 3.0) -> list:
     """
     Build YES clusters of 2-3 adjacent brackets surrounding the forecast.
 
-    sigma     — forecast uncertainty std dev (native unit) from _estimate_sigma().
-    size_mult — 0.5 when daily target already hit (protect gains); 1.0 normal.
+    sigma — forecast uncertainty std dev (native unit) from _estimate_sigma().
+            Used to compute model_P vs market_P probability edge.
 
     Returns up to 2 clusters per event:
       - 2-bracket cluster (higher return, narrower window)
@@ -702,7 +699,7 @@ def find_yes_clusters(event: dict, forecast_temp: float, confidence: str,
         else:
             total_target = min(cfg["default_yes_size"] * len(slots), capital * 0.05)
         size_each_legacy = yes_cluster_size_each(total_target, len(slots), win_prob, total_price, capital,
-                                                  prob_edge=cluster_edge, size_mult=size_mult)
+                                                  prob_edge=cluster_edge)
         total_cost = round(size_each_legacy * len(slots), 2)
         shares = round(total_cost / total_price, 2)  # S = T/P — shares per bracket
         total_cost = round(shares * total_price, 2)  # recalc to match
@@ -761,7 +758,7 @@ def find_yes_clusters(event: dict, forecast_temp: float, confidence: str,
 
 
 def analyze_event(event: dict, forecast: dict, capital: float, n_opps: int = 20,
-                  city_bonus_f: float = 0.0, size_mult: float = 1.0) -> tuple:
+                  city_bonus_f: float = 0.0) -> tuple:
     """Returns (yes_clusters, no_opps) for a single event."""
     import datetime as _dt
     date_str = event["date"]
@@ -832,21 +829,20 @@ def analyze_event(event: dict, forecast: dict, capital: float, n_opps: int = 20,
 
     yes_exclude = STRATEGY.get("yes_exclude_cities", [])
     yes_clusters = (
-        find_yes_clusters(event, forecast_temp, confidence, capital, sigma, size_mult)
+        find_yes_clusters(event, forecast_temp, confidence, capital, sigma)
         if confidence == "high" and city not in yes_exclude and not frontal_skip_yes
         else []
     )
     no_require_high = STRATEGY.get("no_require_high_confidence", True)
     no_opps = find_no_opps(event, forecast_temp, confidence, capital, n_opps,
-                           effective_city_bonus, sigma, size_mult) if (
+                           effective_city_bonus, sigma) if (
         confidence == "high" or not no_require_high
     ) else []
     return yes_clusters, no_opps
 
 
 def analyze_all(all_markets: dict, all_forecasts: dict,
-                max_capital: Optional[float] = None,
-                size_mult: float = 1.0) -> tuple:
+                max_capital: Optional[float] = None) -> tuple:
     """
     Run full analysis.
     Returns (yes_clusters, no_opps) sorted by ev_score descending.
@@ -856,7 +852,7 @@ def analyze_all(all_markets: dict, all_forecasts: dict,
     preventing correlated over-concentration on the same temperature.
     """
     if max_capital is None:
-        max_capital = STRATEGY["max_capital"]
+        max_capital = STRATEGY.get("max_capital", 400)
 
     # Reload city adjustments from learner output (fresh each run)
     city_adjustments = _load_city_adjustments()
@@ -872,8 +868,7 @@ def analyze_all(all_markets: dict, all_forecasts: dict,
         city_bonus_f = city_adj.get("bonus_f", 0.0) if isinstance(city_adj, dict) else 0.0
         for event in events:
             clusters, no_opps = analyze_event(event, city_forecast, max_capital,
-                                              city_bonus_f=city_bonus_f,
-                                              size_mult=size_mult)
+                                              city_bonus_f=city_bonus_f)
 
             if clusters:
                 clusters[0].alt = None
