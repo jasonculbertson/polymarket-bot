@@ -132,6 +132,11 @@ class NoOpp:
     effective_return_pct: float = 0.0  # return_pct adjusted for CLOB bid-ask spread
     spread_pct: float = 0.0      # cost increase from spread (0 if no CLOB data)
     quality_tier: str = "B"      # "A" = clear winner (live-tradeable), "B" = paper-only
+    # Probability-edge fields (model_P − market_implied_P)
+    model_prob: float = 0.0      # our Gaussian estimate of bracket probability
+    market_prob: float = 0.0     # market's implied probability (= yes_price)
+    prob_edge: float = 0.0       # model_prob − market_prob (negative = NO edge)
+    forecast_sigma: float = 0.0  # sigma used for this estimate (native unit)
 
 
 @dataclass
@@ -174,6 +179,11 @@ class YesCluster:
     resolution_date: str = ""   # settle date (YYYY-MM-DD) for resolve logic; date = forecast/weather day
     ev_score: float = 0.0        # EV = win_prob × return_pct − (1−win_prob) × 100
     quality_tier: str = "B"      # "A" = clear winner (live-tradeable), "B" = paper-only
+    # Probability-edge fields (model_P − market_implied_P for the cluster window)
+    model_prob: float = 0.0      # P(temp in cluster window) under our Gaussian
+    market_prob: float = 0.0     # total_price (market's implied probability)
+    prob_edge: float = 0.0       # model_prob − total_price (positive = YES edge)
+    forecast_sigma: float = 0.0  # sigma used for this estimate (native unit)
 
     def bracket_labels(self) -> str:
         return " + ".join(b.group_title for b in self.brackets)
@@ -183,37 +193,62 @@ class YesCluster:
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _no_quality_tier(distance_f: float, unit: str, confidence: str, ev_score: float) -> str:
+def _no_quality_tier(distance_f: float, unit: str, confidence: str,
+                     ev_score: float, prob_edge: float = 0.0) -> str:
     """
     A = clear winner: bet in live mode.
-      NO:  distance ≥ live_no_min_distance threshold AND high confidence AND ev ≥ live_min_ev
-    B = borderline: paper-trade only (above minimum, but not a slam-dunk).
 
-    Thresholds from STRATEGY['live_no_min_distance_f'] / ['live_no_min_distance_c'].
-    All distances already in native unit (°F or °C).
+    Two paths to A-tier:
+      1. Strong probability edge: prob_edge ≤ −live_no_min_edge (market overprices ≥ threshold)
+         AND confidence=="high" AND ev ≥ live_min_ev
+      2. Large raw distance (legacy): distance_f ≥ live_no_min_distance threshold
+         AND confidence=="high" AND ev ≥ live_min_ev
+
+    B = borderline: paper-trade only.
     """
-    live_dist_f = float(STRATEGY.get("live_no_min_distance_f", 9.0))
-    live_dist_c = float(STRATEGY.get("live_no_min_distance_c", 5.0))
-    live_ev     = float(STRATEGY.get("live_min_ev_score", 12.0))
+    live_dist_f   = float(STRATEGY.get("live_no_min_distance_f", 9.0))
+    live_dist_c   = float(STRATEGY.get("live_no_min_distance_c", 5.0))
+    live_ev       = float(STRATEGY.get("live_min_ev_score", 12.0))
+    live_min_edge = float(STRATEGY.get("live_no_min_edge", 0.15))  # |edge| threshold for A-tier
     min_dist = live_dist_c if unit == "C" else live_dist_f
-    if distance_f >= min_dist and confidence == "high" and ev_score >= live_ev:
+
+    if confidence != "high" or ev_score < live_ev:
+        return "B"
+    # Path 1: edge-based (primary — finds opportunities raw distance misses)
+    if prob_edge <= -live_min_edge:
+        return "A"
+    # Path 2: distance-based (legacy fallback)
+    if distance_f >= min_dist:
         return "A"
     return "B"
 
 
 def _yes_quality_tier(margin_f: float, unit: str, confidence: str,
-                      total_price: float, ev_score: float) -> str:
+                      total_price: float, ev_score: float,
+                      prob_edge: float = 0.0) -> str:
     """
     A = clear winner: forecast comfortably inside bracket, low cluster cost, good EV.
-      YES: margin ≥ live_yes_min_margin AND high confidence AND total_price ≤ 0.72 AND ev ≥ live_min_ev
+
+    Two paths to A-tier:
+      1. Strong probability edge: prob_edge ≥ live_yes_min_edge (we see > threshold more
+         probability than the market charges)
+      2. Large raw margin (legacy): margin_f ≥ live_yes_min_margin AND total_price ≤ 0.72
+
     B = borderline: paper-trade only.
     """
     live_margin_f = float(STRATEGY.get("live_yes_min_margin_f", 3.0))
     live_margin_c = float(STRATEGY.get("live_yes_min_margin_c", 1.7))
     live_ev       = float(STRATEGY.get("live_min_ev_score", 12.0))
+    live_min_edge = float(STRATEGY.get("live_yes_min_edge", 0.12))
     min_margin = live_margin_c if unit == "C" else live_margin_f
-    if (margin_f >= min_margin and confidence == "high"
-            and total_price <= 0.72 and ev_score >= live_ev):
+
+    if confidence != "high" or ev_score < live_ev:
+        return "B"
+    # Path 1: edge-based
+    if prob_edge >= live_min_edge:
+        return "A"
+    # Path 2: margin-based (legacy fallback)
+    if margin_f >= min_margin and total_price <= 0.72:
         return "A"
     return "B"
 
@@ -229,6 +264,69 @@ def bracket_distance(forecast_temp: float, lo: Optional[float], hi: Optional[flo
             return 0.0
         return (lo - forecast_temp) if forecast_temp < lo else (forecast_temp - hi)
     return float("inf")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Probability-edge model  (edge = model_P − market_implied_P)
+# We're playing against other human bettors who suffer from anchoring, recency
+# bias, and low attention to international cities — NOT against the actual temp.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _norm_cdf(x: float, mu: float, sigma: float) -> float:
+    """Normal CDF using math.erf — no scipy required."""
+    if sigma <= 0:
+        return 1.0 if x >= mu else 0.0
+    z = (x - mu) / (sigma * sqrt(2))
+    return 0.5 * (1.0 + erf(z))
+
+
+def _bracket_prob(mu: float, sigma: float,
+                  lo: Optional[float], hi: Optional[float]) -> float:
+    """P(lo ≤ temp ≤ hi) under N(mu, sigma). None lo = −∞, None hi = +∞."""
+    lo_p = 0.0 if lo is None else _norm_cdf(lo, mu, sigma)
+    hi_p = 1.0 if hi is None else _norm_cdf(hi, mu, sigma)
+    return max(0.0, hi_p - lo_p)
+
+
+def _estimate_sigma(city: str, day_fc: dict, unit: str, days_out: int) -> float:
+    """
+    Estimate forecast uncertainty (std dev in native unit) from three signals:
+
+    1. Source disagreement  — half-range across WU / NWS / Open-Meteo
+    2. Ensemble spread      — std dev of ~40 ICON model members (already native unit)
+    3. Historical city MAE  — from city_adjustments.json bonus_f (converted if needed)
+
+    Conservative strategy: take the MAX of the three estimates, then scale up
+    with days_out (uncertainty grows ~15 % per extra day beyond day 0).
+    """
+    wu  = day_fc.get("wunderground")
+    nws = day_fc.get("nws")
+    om  = day_fc.get("open_meteo")
+
+    # ── Source disagreement ──────────────────────────────────────────────────
+    vals = [v for v in [wu, nws, om] if v is not None]
+    source_disagree = (max(vals) - min(vals)) / 2.0 if len(vals) >= 2 else (4.0 if unit == "F" else 2.2)
+
+    # ── Ensemble spread ──────────────────────────────────────────────────────
+    ensemble = day_fc.get("ensemble_spread")  # already in native unit
+
+    # ── Historical city MAE (from learner-produced city_adjustments.json) ───
+    city_adj = _CITY_ADJUSTMENTS.get(city, {})
+    mae_f = city_adj.get("historical_mae_f") if isinstance(city_adj, dict) else None
+    if mae_f is None:
+        mae = 3.0 if unit == "F" else 1.7   # global fallback
+    else:
+        mae = mae_f if unit == "F" else mae_f / 1.8
+
+    # Conservative: max of all signals
+    candidates = [source_disagree, mae]
+    if ensemble is not None:
+        candidates.append(ensemble * 0.85)   # ensemble std dev is a bit wider than point error
+    sigma_base = max(candidates)
+
+    # Uncertainty grows with lookahead distance (+15 % per day beyond today)
+    growth = 1.0 + 0.15 * max(0, days_out - 1)
+    return round(sigma_base * growth, 3)
 
 
 def sort_brackets(markets: list) -> list:
@@ -356,10 +454,13 @@ def yes_cluster_size_each(
 # ─────────────────────────────────────────────────────────────────────────────
 
 def find_no_opps(event: dict, forecast_temp: float, confidence: str,
-                 capital: float, n_opps: int, city_bonus_f: float = 0.0) -> list:
+                 capital: float, n_opps: int, city_bonus_f: float = 0.0,
+                 sigma: float = 3.0) -> list:
     """Find NO opportunities: brackets far enough from forecast.
 
     city_bonus_f — extra distance requirement (°F) for cities with historically poor forecast accuracy.
+    sigma        — forecast uncertainty std dev (native unit) from _estimate_sigma().
+                   Used to compute model_P vs market_P probability edge.
     """
     cfg = STRATEGY
     unit = event.get("temp_unit", "F")
@@ -367,6 +468,11 @@ def find_no_opps(event: dict, forecast_temp: float, confidence: str,
     # Convert bonus to correct unit if needed
     bonus = (city_bonus_f / 1.8) if unit == "C" else city_bonus_f
     min_dist = base_min_dist + bonus
+
+    # Minimum edge threshold for inclusion (even paper): catches mispriced brackets
+    # that distance alone misses.  Use half the A-tier threshold as the paper floor.
+    paper_min_edge = float(cfg.get("live_no_min_edge", 0.15)) / 2.0  # e.g. 0.075
+
     opps = []
     for mkt in event["markets"]:
         if not mkt["accepting_orders"]:
@@ -376,57 +482,77 @@ def find_no_opps(event: dict, forecast_temp: float, confidence: str,
         no_price = 1.0 - yes_price
         dist = bracket_distance(forecast_temp, lo, hi)
 
-        if dist >= min_dist and no_price >= cfg["no_min_price"]:
-            ret_pct = (1.0 - no_price) / no_price * 100
-            if ret_pct >= cfg["min_return_pct"]:
-                win_prob = estimate_no_win_prob(dist, confidence, unit)
-                ev = round(win_prob * ret_pct - (1 - win_prob) * 100, 1)
-                # Spread-adjusted effective return using CLOB bid
-                clob_bid = mkt.get("clob_best_bid")
-                if clob_bid and 0 < clob_bid < 1:
-                    eff_no = 1.0 - clob_bid   # cost to buy NO = sell YES at bid price
-                    eff_ret = round((1.0 - eff_no) / eff_no * 100, 1) if 0 < eff_no < 1 else ret_pct
-                    sprd = round((eff_no - no_price) / no_price * 100, 1) if no_price > 0 else 0.0
-                else:
-                    eff_ret = ret_pct
-                    sprd = 0.0
-                opps.append(NoOpp(
-                    city=event["city"],
-                    date=event["date"],
-                    event_slug=event["event_slug"],
-                    station=event["station"],
-                    market_id=mkt["market_id"],
-                    group_title=mkt["group_title"],
-                    bracket_lo=lo,
-                    bracket_hi=hi,
-                    no_price=no_price,
-                    yes_price=yes_price,
-                    return_pct=ret_pct,
-                    distance_f=dist,
-                    forecast_temp=forecast_temp,
-                    forecast_confidence=confidence,
-                    yes_token_id=mkt["yes_token_id"],
-                    no_token_id=mkt["no_token_id"],
-                    liquidity=mkt["liquidity"],
-                    accepting_orders=mkt["accepting_orders"],
-                    recommended_size=no_size(ret_pct, confidence, capital, n_opps, dist, unit),
-                    predicted_win_prob=win_prob,
-                    temp_unit=unit,
-                    market_slug=mkt.get("market_slug", ""),
-                    resolution_time=event.get("resolution_time", ""),
-                    resolution_date=event.get("resolution_date", event.get("date", "")),
-                    ev_score=ev,
-                    effective_return_pct=eff_ret,
-                    spread_pct=sprd,
-                    quality_tier=_no_quality_tier(dist, unit, confidence, ev),
-                ))
+        # ── Probability edge ──────────────────────────────────────────────
+        model_p = _bracket_prob(forecast_temp, sigma, lo, hi)
+        market_p = float(yes_price)          # market's implied prob = YES price
+        edge = round(model_p - market_p, 4)  # negative = bracket overpriced → NO edge
+
+        # Include if EITHER distance criterion OR edge criterion is met
+        dist_ok  = dist >= min_dist
+        edge_ok  = edge <= -paper_min_edge   # bracket significantly overpriced
+        if not (dist_ok or edge_ok):
+            continue
+        if no_price < cfg["no_min_price"]:
+            continue
+
+        ret_pct = (1.0 - no_price) / no_price * 100
+        if ret_pct < cfg["min_return_pct"]:
+            continue
+
+        win_prob = estimate_no_win_prob(dist, confidence, unit)
+        ev = round(win_prob * ret_pct - (1 - win_prob) * 100, 1)
+        # Spread-adjusted effective return using CLOB bid
+        clob_bid = mkt.get("clob_best_bid")
+        if clob_bid and 0 < clob_bid < 1:
+            eff_no = 1.0 - clob_bid   # cost to buy NO = sell YES at bid price
+            eff_ret = round((1.0 - eff_no) / eff_no * 100, 1) if 0 < eff_no < 1 else ret_pct
+            sprd = round((eff_no - no_price) / no_price * 100, 1) if no_price > 0 else 0.0
+        else:
+            eff_ret = ret_pct
+            sprd = 0.0
+        opps.append(NoOpp(
+            city=event["city"],
+            date=event["date"],
+            event_slug=event["event_slug"],
+            station=event["station"],
+            market_id=mkt["market_id"],
+            group_title=mkt["group_title"],
+            bracket_lo=lo,
+            bracket_hi=hi,
+            no_price=no_price,
+            yes_price=yes_price,
+            return_pct=ret_pct,
+            distance_f=dist,
+            forecast_temp=forecast_temp,
+            forecast_confidence=confidence,
+            yes_token_id=mkt["yes_token_id"],
+            no_token_id=mkt["no_token_id"],
+            liquidity=mkt["liquidity"],
+            accepting_orders=mkt["accepting_orders"],
+            recommended_size=no_size(ret_pct, confidence, capital, n_opps, dist, unit),
+            predicted_win_prob=win_prob,
+            temp_unit=unit,
+            market_slug=mkt.get("market_slug", ""),
+            resolution_time=event.get("resolution_time", ""),
+            resolution_date=event.get("resolution_date", event.get("date", "")),
+            ev_score=ev,
+            effective_return_pct=eff_ret,
+            spread_pct=sprd,
+            quality_tier=_no_quality_tier(dist, unit, confidence, ev, edge),
+            model_prob=round(model_p, 4),
+            market_prob=round(market_p, 4),
+            prob_edge=edge,
+            forecast_sigma=round(sigma, 3),
+        ))
     return opps
 
 
 def find_yes_clusters(event: dict, forecast_temp: float, confidence: str,
-                      capital: float) -> list:
+                      capital: float, sigma: float = 3.0) -> list:
     """
     Build YES clusters of 2-3 adjacent brackets surrounding the forecast.
+
+    sigma — forecast uncertainty std dev (native unit) from _estimate_sigma().
 
     Returns up to 2 clusters per event:
       - 2-bracket cluster (higher return, narrower window)
@@ -547,7 +673,15 @@ def find_yes_clusters(event: dict, forecast_temp: float, confidence: str,
         ev_s = round(win_prob * ret_pct - (1 - win_prob) * 100, 1)
         unit = event.get("temp_unit", "F")
         actual_margin = min(lo_margin, hi_margin)  # tightest margin in native unit
-        tier = _yes_quality_tier(actual_margin, unit, confidence, total_price, ev_s)
+
+        # ── Probability edge for the full cluster window ───────────────────
+        cluster_lo = slots[0].bracket_lo   # None = open low
+        cluster_hi = slots[-1].bracket_hi  # None = open high
+        cluster_model_p = _bracket_prob(forecast_temp, sigma, cluster_lo, cluster_hi)
+        cluster_market_p = float(total_price)  # market's implied prob = sum of YES prices
+        cluster_edge = round(cluster_model_p - cluster_market_p, 4)  # positive = YES edge
+
+        tier = _yes_quality_tier(actual_margin, unit, confidence, total_price, ev_s, cluster_edge)
         return YesCluster(
             predicted_win_prob=round(win_prob, 4),
             ev_score=ev_s,
@@ -571,6 +705,10 @@ def find_yes_clusters(event: dict, forecast_temp: float, confidence: str,
             liquidity_min=min(s.liquidity for s in slots),
             temp_unit=unit,
             resolution_date=event.get("resolution_date", event.get("date", "")),
+            model_prob=round(cluster_model_p, 4),
+            market_prob=round(cluster_market_p, 4),
+            prob_edge=cluster_edge,
+            forecast_sigma=round(sigma, 3),
         )
 
     # Prefer 3-bracket cluster (center ± 1). If forecast is at an edge, shift inward.
@@ -649,14 +787,25 @@ def analyze_event(event: dict, forecast: dict, capital: float, n_opps: int = 20,
     if frontal_boost_no:
         effective_city_bonus += 2.0 if unit == "F" else 1.1
 
+    # ── Probability-edge sigma estimation ─────────────────────────────────────
+    # Compute days_out: how many days from today to the forecast date (0 = same day).
+    try:
+        from datetime import date as _date
+        event_date = _date.fromisoformat(date_str)
+        days_out = max(0, (event_date - _date.today()).days)
+    except Exception:
+        days_out = 1
+    sigma = _estimate_sigma(city, day_fc, unit, days_out)
+
     yes_exclude = STRATEGY.get("yes_exclude_cities", [])
     yes_clusters = (
-        find_yes_clusters(event, forecast_temp, confidence, capital)
+        find_yes_clusters(event, forecast_temp, confidence, capital, sigma)
         if confidence == "high" and city not in yes_exclude and not frontal_skip_yes
         else []
     )
     no_require_high = STRATEGY.get("no_require_high_confidence", True)
-    no_opps = find_no_opps(event, forecast_temp, confidence, capital, n_opps, effective_city_bonus) if (
+    no_opps = find_no_opps(event, forecast_temp, confidence, capital, n_opps,
+                           effective_city_bonus, sigma) if (
         confidence == "high" or not no_require_high
     ) else []
     return yes_clusters, no_opps
@@ -719,15 +868,15 @@ def print_yes_clusters(clusters: list, limit: int = 20):
         print("No YES cluster opportunities.")
         return
 
-    print(f"\n{'='*110}")
-    print(f"{'YES CLUSTERS  (buy 2-3 adjacent brackets — guaranteed 1 winner)':^110}")
-    print(f"{'='*110}")
+    print(f"\n{'='*122}")
+    print(f"{'YES CLUSTERS  (buy 3 adjacent brackets — guaranteed 1 winner)':^122}")
+    print(f"{'='*122}")
     print(
         f"{'City':<14} {'Date':<12} {'Brackets':^36} {'n':>2} "
-        f"{'TotalP':>7} {'Return':>7} {'WinRange':>16} "
-        f"{'Forecast':>10} {'Conf':>5} {'Liq':>7} {'$/bkt':>6} {'Total$':>7}"
+        f"{'TotalP':>7} {'Return':>7} {'Edge':>6} {'WinRange':>16} "
+        f"{'Forecast':>10} {'σ':>5} {'Conf':>4} {'Tier':>4} {'Liq':>7} {'Total$':>7}"
     )
-    print("-" * 110)
+    print("-" * 122)
 
     total_deployed = 0.0
     for c in clusters[:limit]:
@@ -737,18 +886,20 @@ def print_yes_clusters(clusters: list, limit: int = 20):
         win_hi_str = f"{c.win_hi:.0f}" if c.win_hi is not None else "→∞"
         win_range = f"{win_lo_str}-{win_hi_str}°{u}"
         conf_icon = "✓✓" if c.forecast_confidence == "high" else "✓"
+        edge_str = f"+{c.prob_edge:.2f}" if c.prob_edge >= 0 else f"{c.prob_edge:.2f}"
+        tier_icon = "★A" if c.quality_tier == "A" else " B"
 
         print(
             f"{c.city:<14} {c.date:<12} {labels:<36} {c.cluster_size:>2} "
-            f"{c.total_price:>7.3f} {c.return_pct:>6.1f}%  {win_range:>16} "
-            f"{c.forecast_temp:>6.1f}°{u}  {conf_icon:>3}  "
-            f"${c.liquidity_min:>5.0f}  ${c.size_each:>4.0f}  ${c.total_cost:>5.0f}"
+            f"{c.total_price:>7.3f} {c.return_pct:>6.1f}%  {edge_str:>6} {win_range:>16} "
+            f"{c.forecast_temp:>6.1f}°{u} {c.forecast_sigma:>4.1f}°  {conf_icon:>3}  {tier_icon}  "
+            f"${c.liquidity_min:>5.0f}  ${c.total_cost:>5.0f}"
         )
         total_deployed += c.total_cost
 
-    print("-" * 110)
+    print("-" * 122)
     print(f"Total: {len(clusters[:limit])} clusters | Estimated deploy: ${total_deployed:.0f}")
-    print(f"{'='*110}\n")
+    print(f"{'='*122}\n")
 
 
 def print_no_opps(opps: list, limit: int = 30):
@@ -756,28 +907,32 @@ def print_no_opps(opps: list, limit: int = 30):
         print("No NO opportunities.")
         return
 
-    print(f"\n{'='*105}")
-    print(f"{'NO BETS  (bracket clearly far from forecast — low risk)':^105}")
-    print(f"{'='*105}")
+    print(f"\n{'='*118}")
+    print(f"{'NO BETS  (bracket clearly far from forecast — market overpricing)':^118}")
+    print(f"{'='*118}")
     print(
         f"{'City':<14} {'Date':<12} {'Bracket':<13} {'NO price':>8} "
-        f"{'Return':>7} {'Dist':>6} {'Forecast':>10} {'Conf':>5} {'Liq':>7} {'Size':>6}"
+        f"{'Return':>7} {'Dist':>6} {'Edge':>7} {'Forecast':>10} {'σ':>5} "
+        f"{'Conf':>4} {'Tier':>4} {'Liq':>7} {'Size':>6}"
     )
-    print("-" * 105)
+    print("-" * 118)
 
     total_deployed = 0.0
     for o in opps[:limit]:
         u = o.temp_unit
         dist_str = f"{o.distance_f:.0f}°{u}" if o.distance_f != float("inf") else "far"
         conf_icon = "✓✓" if o.forecast_confidence == "high" else "✓"
+        # Edge is negative for NO bets (market overprices bracket relative to our model)
+        edge_str = f"{o.prob_edge:+.2f}" if o.prob_edge != 0.0 else "  n/a"
+        tier_icon = "★A" if o.quality_tier == "A" else " B"
         print(
             f"{o.city:<14} {o.date:<12} {o.group_title:<13} "
-            f"{o.no_price:>8.3f} {o.return_pct:>6.1f}%  {dist_str:>6} "
-            f"{o.forecast_temp:>6.1f}°{u}  {conf_icon:>3}  "
+            f"{o.no_price:>8.3f} {o.return_pct:>6.1f}%  {dist_str:>6} {edge_str:>7} "
+            f"{o.forecast_temp:>6.1f}°{u} {o.forecast_sigma:>4.1f}°  {conf_icon:>3}  {tier_icon}  "
             f"${o.liquidity:>5.0f}  ${o.recommended_size:>4.0f}"
         )
         total_deployed += o.recommended_size
 
-    print("-" * 105)
+    print("-" * 118)
     print(f"Total: {len(opps[:limit])} NO bets | Estimated deploy: ${total_deployed:.0f}")
-    print(f"{'='*105}\n")
+    print(f"{'='*118}\n")

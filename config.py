@@ -217,6 +217,12 @@ STRATEGY = {
     "live_yes_min_margin_f":  3.0,   # °F inside bracket — vs paper threshold of 2°F
     "live_yes_min_margin_c":  1.7,   # °C — vs paper threshold of 1°C
     "live_min_ev_score":     12.0,   # minimum EV score for any live trade
+    # Probability-edge thresholds for A-tier qualification
+    # edge = model_P(bracket) − market_implied_P (= YES price)
+    # NO A-tier: edge ≤ −0.15  (market charges 15%+ more than our Gaussian says bracket is worth)
+    # YES A-tier: edge ≥ 0.12  (our Gaussian says bracket is 12%+ more likely than market implies)
+    "live_no_min_edge":  0.15,   # |negative edge| threshold for NO A-tier
+    "live_yes_min_edge": 0.12,   # positive edge threshold for YES A-tier
     # Max total capital to deploy per run (USDC)
     "max_capital": 400,
     # Kelly criterion fraction — 0.33 minimizes max drawdown while retaining

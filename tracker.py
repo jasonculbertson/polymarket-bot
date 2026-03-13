@@ -266,6 +266,11 @@ def record_scan(yes_clusters, no_opps, all_forecasts: dict = None) -> int:
             "first_seen": now,
             "paper_size_usd": PAPER_SIZE_USD,
             "quality_tier": getattr(o, "quality_tier", "B"),  # A = clear winner, B = paper-only
+            # Probability-edge model fields
+            "model_prob":     getattr(o, "model_prob", None),
+            "market_prob":    getattr(o, "market_prob", None),
+            "prob_edge":      getattr(o, "prob_edge", None),
+            "forecast_sigma": getattr(o, "forecast_sigma", None),
             "outcome": None,
             "final_yes_price": None,
             "pnl_pct": None,
@@ -316,6 +321,11 @@ def record_scan(yes_clusters, no_opps, all_forecasts: dict = None) -> int:
             "first_seen": now,
             "paper_size_usd": round(c.total_cost, 2),  # actual cost (shares × total_price)
             "quality_tier": getattr(c, "quality_tier", "B"),  # A = clear winner, B = paper-only
+            # Probability-edge model fields
+            "model_prob":     getattr(c, "model_prob", None),
+            "market_prob":    getattr(c, "market_prob", None),
+            "prob_edge":      getattr(c, "prob_edge", None),
+            "forecast_sigma": getattr(c, "forecast_sigma", None),
             "outcome": None,
             "final_yes_price": None,
             "pnl_pct": None,
