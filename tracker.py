@@ -1086,6 +1086,37 @@ def _bracket_dist(forecast: float, lo, hi) -> float:
     return float("inf")
 
 
+def _hours_to_resolution(opp: dict) -> float:
+    """
+    Compute hours between now (UTC) and the position's resolution time.
+    Falls back to end-of-day on resolution_date if resolution_time is absent.
+    Returns float('inf') if neither field is present.
+    """
+    now = datetime.utcnow()
+
+    # Try exact resolution_time first
+    rt = opp.get("resolution_time")
+    if rt:
+        try:
+            # Strip trailing Z and parse
+            rt_clean = rt.rstrip("Z").split("+")[0]
+            res_dt = datetime.fromisoformat(rt_clean)
+            return max(0.0, (res_dt - now).total_seconds() / 3600)
+        except Exception:
+            pass
+
+    # Fall back to end-of-day on resolution_date
+    rd = opp.get("resolution_date") or opp.get("date")
+    if rd:
+        try:
+            res_dt = datetime.fromisoformat(rd) + timedelta(hours=23, minutes=59)
+            return max(0.0, (res_dt - now).total_seconds() / 3600)
+        except Exception:
+            pass
+
+    return float("inf")
+
+
 def check_forecast_drift(all_forecasts: dict = None) -> dict:
     """
     For all open positions, compare the CURRENT forecast vs the forecast at entry time.
@@ -1097,6 +1128,14 @@ def check_forecast_drift(all_forecasts: dict = None) -> dict:
       YES cluster: current forecast is outside the cluster's win range
                    (forecast moved beyond the brackets we bought)
 
+    Time-aware thresholds — as resolution approaches, the "forecast" converges
+    to the observed temperature rather than a genuine prediction, so we apply
+    progressively higher bars to avoid false positives:
+
+      > 24h to resolution : standard thresholds (genuine forecast uncertainty)
+      12–24h              : thresholds raised ~65% (forecast less predictive)
+      < 12h               : no edge_gone flags — let it ride to resolution
+
     Flags positions with:
       edge_gone               : True
       edge_gone_at            : UTC timestamp
@@ -1107,7 +1146,7 @@ def check_forecast_drift(all_forecasts: dict = None) -> dict:
     all_forecasts: optional pre-fetched {city: forecast_dict}. If None, fetches
                    fresh data for each city that has open positions.
 
-    Returns {checked, flagged, errors}.
+    Returns {checked, flagged, skipped_near_resolution, errors}.
     Safe to call every scan cycle — skips already-flagged and resolved positions.
     """
     from config import STRATEGY
@@ -1139,8 +1178,15 @@ def check_forecast_drift(all_forecasts: dict = None) -> dict:
     no_min_dist_f = float(STRATEGY.get("no_min_distance_f", 6.0))
     no_min_dist_c = float(STRATEGY.get("no_min_distance_c", 3.5))
 
+    # Time-aware multipliers: as resolution nears, "forecast" → observed temp.
+    # Raise bar proportionally so intraday convergence doesn't trigger false flags.
+    # < 12h: skip entirely  |  12-24h: 1.65× harder to flag  |  >24h: standard
+    _NEAR_HOURS   = 12.0   # below this → skip drift check entirely
+    _MEDIUM_HOURS = 24.0   # below this → raise threshold by multiplier
+    _MEDIUM_MULT  = 1.65   # threshold multiplier for 12-24h window
+
     now_str = datetime.utcnow().isoformat()
-    checked = flagged = errors = 0
+    checked = flagged = skipped_near = errors = 0
     changed = False
 
     for opp in open_opps:
@@ -1148,6 +1194,17 @@ def check_forecast_drift(all_forecasts: dict = None) -> dict:
             city     = opp.get("city", "")
             date_str = opp.get("date", "")
             unit     = opp.get("temp_unit", "F")
+
+            # ── Time gate ────────────────────────────────────────────────────
+            hrs_left = _hours_to_resolution(opp)
+            if hrs_left < _NEAR_HOURS:
+                # Market resolves soon — "forecast" is basically observed temp.
+                # No point flagging; let it ride to resolution.
+                skipped_near += 1
+                continue
+
+            # Threshold multiplier for the 12–24h window
+            threshold_mult = _MEDIUM_MULT if hrs_left < _MEDIUM_HOURS else 1.0
 
             city_fc = (all_forecasts or {}).get(city, {})
             day_fc  = city_fc.get("forecasts", {}).get(date_str)
@@ -1174,31 +1231,37 @@ def check_forecast_drift(all_forecasts: dict = None) -> dict:
                 lo = None if lo == float("-inf") else lo
                 hi = None if hi == float("inf") else hi
                 current_dist = _bracket_dist(current_fc, lo, hi)
-                min_dist     = no_min_dist_f if unit == "F" else no_min_dist_c
+                min_dist     = (no_min_dist_f if unit == "F" else no_min_dist_c) * threshold_mult
                 entry_dist   = float(opp.get("distance") or min_dist + 1)
                 if current_dist < min_dist:
                     edge_gone = True
                     reason = (f"Forecast drifted {fc_shift}°{unit}: distance "
                               f"{entry_dist:.1f}°→{current_dist:.1f}°{unit} "
-                              f"(min {min_dist:.0f}° required)")
+                              f"(min {min_dist:.1f}° required, {hrs_left:.0f}h to resolution)")
 
             elif opp["type"] == "yes":
                 lows  = [lo for lo, hi in ranges if lo != float("-inf")]
                 highs = [hi for lo, hi in ranges if hi != float("inf")]
                 win_lo = min(lows)  if lows  else float("-inf")
                 win_hi = max(highs) if highs else float("inf")
-                if not (win_lo <= current_fc <= win_hi):
+                # In the 12-24h window, only flag if drift is large enough
+                # (threshold_mult applied as required minimum shift)
+                base_drift_threshold = 1.5 if unit == "C" else 2.7   # °C / °F
+                required_shift = base_drift_threshold * threshold_mult
+                if not (win_lo <= current_fc <= win_hi) and fc_shift >= required_shift:
                     edge_gone = True
                     reason = (f"Forecast drifted {fc_shift}°{unit}: "
                               f"{current_fc:.1f}°{unit} outside win range "
-                              f"[{win_lo:.0f}–{win_hi:.0f}°{unit}]")
+                              f"[{win_lo:.0f}–{win_hi:.0f}°{unit}] "
+                              f"({hrs_left:.0f}h to resolution)")
 
             if edge_gone:
-                opp["edge_gone"]              = True
-                opp["edge_gone_at"]           = now_str
-                opp["edge_gone_reason"]       = reason
+                opp["edge_gone"]                = True
+                opp["edge_gone_at"]             = now_str
+                opp["edge_gone_reason"]         = reason
                 opp["edge_gone_forecast_temp"]  = current_fc
                 opp["edge_gone_entry_forecast"] = entry_fc
+                opp["edge_gone_hrs_left"]       = round(hrs_left, 1)
                 print(f"  [drift] ⚠ Edge gone: {city} {date_str} "
                       f"{opp['type'].upper()} {bracket_str} — {reason}")
                 flagged += 1
@@ -1212,9 +1275,10 @@ def check_forecast_drift(all_forecasts: dict = None) -> dict:
         with _tracker_lock:
             _save(data)
 
-    print(f"[forecast-drift] {checked} positions checked | "
-          f"{flagged} edge-gone flags | {errors} errors")
-    return {"checked": checked, "flagged": flagged, "errors": errors}
+    print(f"[forecast-drift] {checked} checked | {flagged} edge-gone | "
+          f"{skipped_near} skipped (<{_NEAR_HOURS:.0f}h) | {errors} errors")
+    return {"checked": checked, "flagged": flagged,
+            "skipped_near_resolution": skipped_near, "errors": errors}
 
 
 def get_live_positions() -> list:
