@@ -1073,6 +1073,150 @@ def update_open_position_prices() -> dict:
     return {"updated": updated, "stop_loss_triggered": stop_loss_triggered, "errors": errors}
 
 
+def _bracket_dist(forecast: float, lo, hi) -> float:
+    """Distance from forecast to nearest bracket edge. 0.0 = inside bracket."""
+    if lo is None and hi is not None:
+        return 0.0 if forecast <= hi else forecast - hi
+    if hi is None and lo is not None:
+        return 0.0 if forecast >= lo else lo - forecast
+    if lo is not None and hi is not None:
+        if lo <= forecast <= hi:
+            return 0.0
+        return (lo - forecast) if forecast < lo else (forecast - hi)
+    return float("inf")
+
+
+def check_forecast_drift(all_forecasts: dict = None) -> dict:
+    """
+    For all open positions, compare the CURRENT forecast vs the forecast at entry time.
+    If the forecast has drifted enough to eliminate our edge, flag the position.
+
+    Edge-gone criteria:
+      NO bet  : current distance to bracket < no_min_distance threshold
+                (forecast moved close enough that the bracket could resolve YES)
+      YES cluster: current forecast is outside the cluster's win range
+                   (forecast moved beyond the brackets we bought)
+
+    Flags positions with:
+      edge_gone               : True
+      edge_gone_at            : UTC timestamp
+      edge_gone_reason        : human-readable explanation
+      edge_gone_forecast_temp : what the forecast shifted to
+      edge_gone_entry_forecast: what we entered at
+
+    all_forecasts: optional pre-fetched {city: forecast_dict}. If None, fetches
+                   fresh data for each city that has open positions.
+
+    Returns {checked, flagged, errors}.
+    Safe to call every scan cycle — skips already-flagged and resolved positions.
+    """
+    from config import STRATEGY
+
+    try:
+        data = _load()
+    except RuntimeError as e:
+        return {"checked": 0, "flagged": 0, "errors": 1, "detail": str(e)}
+
+    open_opps = [o for o in data["opportunities"]
+                 if o.get("outcome") is None and not o.get("edge_gone")]
+    if not open_opps:
+        return {"checked": 0, "flagged": 0, "errors": 0}
+
+    # Fetch current forecasts for affected cities if not supplied
+    if all_forecasts is None:
+        try:
+            from fetch_forecasts import fetch_city_forecast
+            cities_needed = list({o["city"] for o in open_opps if o.get("city")})
+            all_forecasts = {}
+            for city in cities_needed:
+                try:
+                    all_forecasts[city] = fetch_city_forecast(city, days=2)
+                except Exception as exc:
+                    print(f"  [drift] forecast fetch failed for {city}: {exc}")
+        except Exception as exc:
+            return {"checked": 0, "flagged": 0, "errors": 1, "detail": str(exc)}
+
+    no_min_dist_f = float(STRATEGY.get("no_min_distance_f", 6.0))
+    no_min_dist_c = float(STRATEGY.get("no_min_distance_c", 3.5))
+
+    now_str = datetime.utcnow().isoformat()
+    checked = flagged = errors = 0
+    changed = False
+
+    for opp in open_opps:
+        try:
+            city     = opp.get("city", "")
+            date_str = opp.get("date", "")
+            unit     = opp.get("temp_unit", "F")
+
+            city_fc = (all_forecasts or {}).get(city, {})
+            day_fc  = city_fc.get("forecasts", {}).get(date_str)
+            if not day_fc:
+                continue
+
+            current_fc = day_fc.get("wunderground") or day_fc.get("consensus")
+            if current_fc is None:
+                continue
+
+            entry_fc     = float(opp.get("forecast_temp") or current_fc)
+            fc_shift     = round(abs(current_fc - entry_fc), 1)
+            bracket_str  = opp.get("bracket", "")
+            ranges       = _parse_bracket_ranges(bracket_str)
+            if not ranges:
+                continue
+
+            checked += 1
+            edge_gone = False
+            reason = ""
+
+            if opp["type"] == "no":
+                lo, hi = ranges[0]
+                lo = None if lo == float("-inf") else lo
+                hi = None if hi == float("inf") else hi
+                current_dist = _bracket_dist(current_fc, lo, hi)
+                min_dist     = no_min_dist_f if unit == "F" else no_min_dist_c
+                entry_dist   = float(opp.get("distance") or min_dist + 1)
+                if current_dist < min_dist:
+                    edge_gone = True
+                    reason = (f"Forecast drifted {fc_shift}°{unit}: distance "
+                              f"{entry_dist:.1f}°→{current_dist:.1f}°{unit} "
+                              f"(min {min_dist:.0f}° required)")
+
+            elif opp["type"] == "yes":
+                lows  = [lo for lo, hi in ranges if lo != float("-inf")]
+                highs = [hi for lo, hi in ranges if hi != float("inf")]
+                win_lo = min(lows)  if lows  else float("-inf")
+                win_hi = max(highs) if highs else float("inf")
+                if not (win_lo <= current_fc <= win_hi):
+                    edge_gone = True
+                    reason = (f"Forecast drifted {fc_shift}°{unit}: "
+                              f"{current_fc:.1f}°{unit} outside win range "
+                              f"[{win_lo:.0f}–{win_hi:.0f}°{unit}]")
+
+            if edge_gone:
+                opp["edge_gone"]              = True
+                opp["edge_gone_at"]           = now_str
+                opp["edge_gone_reason"]       = reason
+                opp["edge_gone_forecast_temp"]  = current_fc
+                opp["edge_gone_entry_forecast"] = entry_fc
+                print(f"  [drift] ⚠ Edge gone: {city} {date_str} "
+                      f"{opp['type'].upper()} {bracket_str} — {reason}")
+                flagged += 1
+                changed = True
+
+        except Exception as exc:
+            errors += 1
+            print(f"[WARN] check_forecast_drift {opp.get('id')}: {exc}")
+
+    if changed:
+        with _tracker_lock:
+            _save(data)
+
+    print(f"[forecast-drift] {checked} positions checked | "
+          f"{flagged} edge-gone flags | {errors} errors")
+    return {"checked": checked, "flagged": flagged, "errors": errors}
+
+
 def get_live_positions() -> list:
     """Return all positions that have real money in them and are not yet exited."""
     data = _load()

@@ -102,6 +102,16 @@ def run_scan_bg(cities=None, capital=None, days=1, target_date=None):
             _scan_log.append(f"[price-monitor] {price_result}")
         except Exception as e:
             _scan_log.append(f"[price-monitor] ERROR: {e}")
+        # Check whether the current forecast has drifted enough to kill our edge
+        try:
+            from tracker import check_forecast_drift
+            drift_result = check_forecast_drift()
+            if drift_result.get("flagged", 0):
+                _scan_log.append(f"[forecast-drift] ⚠ {drift_result['flagged']} position(s) edge-gone — {drift_result}")
+            else:
+                _scan_log.append(f"[forecast-drift] {drift_result}")
+        except Exception as e:
+            _scan_log.append(f"[forecast-drift] ERROR: {e}")
     except Exception as e:
         _scan_log.append(f"ERROR: {e}")
     finally:

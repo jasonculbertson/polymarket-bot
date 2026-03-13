@@ -211,8 +211,10 @@ STRATEGY = {
     "yes_lottery_size": 5,           # $ per bracket for lottery clusters (vs default_yes_size)
     # Max total capital to deploy per run (USDC)
     "max_capital": 400,
-    # Kelly criterion fraction (0.5 = half-Kelly for safety)
-    "kelly_fraction": 0.5,
+    # Kelly criterion fraction — 0.33 minimizes max drawdown while retaining
+    # 78% of full-Kelly geometric growth rate (vs 0.5 which is more aggressive).
+    # Per the quant doc: gamma=0.33 is optimal for reducing drawdown on correlated positions.
+    "kelly_fraction": 0.33,
     # Hard cap per single bet (USDC) — overrides Kelly if larger
     "max_single_bet": 50,
 }
