@@ -894,6 +894,51 @@ def analyze_all(all_markets: dict, all_forecasts: dict,
             seen_city_date[key] = c
     all_clusters = list(seen_city_date.values())
 
+    # ── De-duplicate NO bets: same city/date, same side of forecast ───────────
+    # When brackets on the same side both qualify (e.g., 10°C and 11°C+ when
+    # forecast is 7.8°C), prefer the FURTHER (safer) bracket — unless it costs
+    # significantly more (return drop > SAFER_RETURN_DROP_THRESHOLD).
+    # e.g., Seoul: 11°C+ costs 4¢ more for 2.3× less risk → take the safer one.
+    #       Munich: 14°C costs 16.5¢ more, return drops 22% → keep the closer one.
+    SAFER_RETURN_DROP_THRESHOLD = 15.0   # percentage points — if further bracket
+                                          # drops return by more than this, keep closer
+
+    def _no_side(opp) -> str:
+        """Return 'above' if bracket is entirely above forecast, 'below' if below."""
+        ft = opp.forecast_temp
+        lo, hi = opp.bracket_lo, opp.bracket_hi
+        if lo is not None and lo >= ft:
+            return "above"
+        if hi is not None and hi <= ft:
+            return "below"
+        return "straddle"   # bracket contains forecast — shouldn't appear for NO bets
+
+    # First pass: collect all (city, date, side) groups
+    side_groups: dict = {}
+    for o in all_no_opps:
+        key = (o.city, o.date, _no_side(o))
+        side_groups.setdefault(key, []).append(o)
+
+    # Second pass: for each group pick the best bracket
+    best_no = []
+    for opps_in_group in side_groups.values():
+        if len(opps_in_group) == 1:
+            best_no.append(opps_in_group[0])
+            continue
+        # Sort by distance descending (furthest first)
+        opps_in_group.sort(key=lambda o: o.distance_f, reverse=True)
+        furthest = opps_in_group[0]
+        # Find the one with highest return (usually the closest)
+        best_return = max(opps_in_group, key=lambda o: o.return_pct)
+        return_drop = best_return.return_pct - furthest.return_pct
+        if return_drop <= SAFER_RETURN_DROP_THRESHOLD:
+            # Small price difference — take the safer, further bracket
+            best_no.append(furthest)
+        else:
+            # Large price penalty — keep the higher-return (closer) bracket
+            best_no.append(best_return)
+    all_no_opps = best_no
+
     all_clusters.sort(key=lambda c: (c.forecast_confidence == "high", c.ev_score), reverse=True)
     all_no_opps.sort(key=lambda o: (o.forecast_confidence == "high", o.ev_score), reverse=True)
     return all_clusters, all_no_opps
