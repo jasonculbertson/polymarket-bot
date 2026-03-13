@@ -403,6 +403,27 @@ def kelly_size(
     return max(min_size, min(round(size, 1), max_size))
 
 
+def _bankroll_max_bet(capital: float, prob_edge: float = 0.0) -> float:
+    """
+    Dynamic per-bet ceiling based on current bankroll (capital).
+
+    Normal:   max = max_bet_pct% of capital  (default 5% → $10 on $200)
+    Outsized: if |prob_edge| ≥ outsized_edge_threshold, allow up to 2× max_bet_pct
+              (default 10% → $20 on $200) — but never exceed max_single_bet.
+
+    Goal: bet sizes scale automatically as the bankroll compounds:
+      $200 bankroll → $10 max/bet
+      $400 bankroll → $20 max/bet
+      $1 000 bankroll → $50 max/bet (then hard cap kicks in)
+    """
+    cfg = STRATEGY
+    pct     = float(cfg.get("max_bet_pct", 5.0)) / 100.0
+    hard    = float(cfg.get("max_single_bet", 50.0))
+    outsized_thresh = float(cfg.get("outsized_edge_threshold", 0.25))
+    mult = 2.0 if abs(prob_edge) >= outsized_thresh else 1.0
+    return min(capital * pct * mult, hard)
+
+
 def no_size(
     return_pct: float,
     confidence: str,
@@ -410,6 +431,8 @@ def no_size(
     n_opps: int,
     distance: float = 4.0,
     unit: str = "F",
+    prob_edge: float = 0.0,
+    size_mult: float = 1.0,     # 0.5 when daily target hit (protect gains)
 ) -> float:
     cfg = STRATEGY
     win_prob = estimate_no_win_prob(distance, confidence, unit)
@@ -419,14 +442,16 @@ def no_size(
     base_distance = cfg.get("no_min_distance_f", 6) if unit == "F" else cfg.get("no_min_distance_c", 3.5)
     distance_scale = min(distance / max(base_distance, 0.1), cfg.get("no_max_distance_scale", 3.0))
     scaled_max = cfg["default_no_size"] * distance_scale
-    return kelly_size(
+    bankroll_cap = _bankroll_max_bet(capital, prob_edge)
+    raw = kelly_size(
         win_prob,
         no_price,
         capital,
         kelly_fraction=cfg.get("kelly_fraction", 0.5),
         min_size=cfg["min_order_size"],
-        max_size=min(cfg.get("max_single_bet", 50), scaled_max, cap_per_opp),
+        max_size=min(bankroll_cap, scaled_max, cap_per_opp),
     )
+    return max(cfg["min_order_size"], round(raw * size_mult, 1))
 
 
 def yes_cluster_size_each(
@@ -435,17 +460,20 @@ def yes_cluster_size_each(
     win_prob: float = 0.75,
     total_price: float = 0.75,
     capital: float = 400.0,
+    prob_edge: float = 0.0,
+    size_mult: float = 1.0,     # 0.5 when daily target hit (protect gains)
 ) -> float:
     cfg = STRATEGY
+    bankroll_cap = _bankroll_max_bet(capital, prob_edge) * cluster_size
     total_kelly = kelly_size(
         win_prob,
         total_price,
         capital,
         kelly_fraction=cfg.get("kelly_fraction", 0.5),
         min_size=cfg["min_order_size"] * cluster_size,
-        max_size=min(cfg.get("max_single_bet", 50) * cluster_size, total_cost_target * 1.5),
+        max_size=min(bankroll_cap, total_cost_target * 1.5),
     )
-    per = total_kelly / cluster_size
+    per = total_kelly / cluster_size * size_mult
     return max(round(per, 1), cfg["min_order_size"])
 
 
@@ -455,7 +483,7 @@ def yes_cluster_size_each(
 
 def find_no_opps(event: dict, forecast_temp: float, confidence: str,
                  capital: float, n_opps: int, city_bonus_f: float = 0.0,
-                 sigma: float = 3.0) -> list:
+                 sigma: float = 3.0, size_mult: float = 1.0) -> list:
     """Find NO opportunities: brackets far enough from forecast.
 
     city_bonus_f — extra distance requirement (°F) for cities with historically poor forecast accuracy.
@@ -529,7 +557,8 @@ def find_no_opps(event: dict, forecast_temp: float, confidence: str,
             no_token_id=mkt["no_token_id"],
             liquidity=mkt["liquidity"],
             accepting_orders=mkt["accepting_orders"],
-            recommended_size=no_size(ret_pct, confidence, capital, n_opps, dist, unit),
+            recommended_size=no_size(ret_pct, confidence, capital, n_opps, dist, unit,
+                                    prob_edge=edge, size_mult=size_mult),
             predicted_win_prob=win_prob,
             temp_unit=unit,
             market_slug=mkt.get("market_slug", ""),
@@ -548,11 +577,13 @@ def find_no_opps(event: dict, forecast_temp: float, confidence: str,
 
 
 def find_yes_clusters(event: dict, forecast_temp: float, confidence: str,
-                      capital: float, sigma: float = 3.0) -> list:
+                      capital: float, sigma: float = 3.0,
+                      size_mult: float = 1.0) -> list:
     """
     Build YES clusters of 2-3 adjacent brackets surrounding the forecast.
 
-    sigma — forecast uncertainty std dev (native unit) from _estimate_sigma().
+    sigma     — forecast uncertainty std dev (native unit) from _estimate_sigma().
+    size_mult — 0.5 when daily target already hit (protect gains); 1.0 normal.
 
     Returns up to 2 clusters per event:
       - 2-bracket cluster (higher return, narrower window)
@@ -647,6 +678,14 @@ def find_yes_clusters(event: dict, forecast_temp: float, confidence: str,
         if min(lo_margin, hi_margin) < margin_threshold:
             return None
 
+        # ── Probability edge for the full cluster window ───────────────────
+        # Compute BEFORE sizing so outsized-edge bonus can scale up bet size.
+        cluster_lo_b = slots[0].bracket_lo   # None = open low
+        cluster_hi_b = slots[-1].bracket_hi  # None = open high
+        cluster_model_p = _bracket_prob(forecast_temp, sigma, cluster_lo_b, cluster_hi_b)
+        cluster_market_p = float(total_price)  # market's implied prob = sum of YES prices
+        cluster_edge = round(cluster_model_p - cluster_market_p, 4)  # positive = YES edge
+
         # Size by equal SHARES so payout = S×$1 whichever bracket wins (math above).
         # T = target total cost from Kelly; S = T/P → cost = S·P, payout = S.
         # S is shares PER BRACKET. Payout when any one bracket wins = S×$1.
@@ -662,7 +701,8 @@ def find_yes_clusters(event: dict, forecast_temp: float, confidence: str,
             total_target = lottery_size * len(slots)
         else:
             total_target = min(cfg["default_yes_size"] * len(slots), capital * 0.05)
-        size_each_legacy = yes_cluster_size_each(total_target, len(slots), win_prob, total_price, capital)
+        size_each_legacy = yes_cluster_size_each(total_target, len(slots), win_prob, total_price, capital,
+                                                  prob_edge=cluster_edge, size_mult=size_mult)
         total_cost = round(size_each_legacy * len(slots), 2)
         shares = round(total_cost / total_price, 2)  # S = T/P — shares per bracket
         total_cost = round(shares * total_price, 2)  # recalc to match
@@ -673,13 +713,6 @@ def find_yes_clusters(event: dict, forecast_temp: float, confidence: str,
         ev_s = round(win_prob * ret_pct - (1 - win_prob) * 100, 1)
         unit = event.get("temp_unit", "F")
         actual_margin = min(lo_margin, hi_margin)  # tightest margin in native unit
-
-        # ── Probability edge for the full cluster window ───────────────────
-        cluster_lo = slots[0].bracket_lo   # None = open low
-        cluster_hi = slots[-1].bracket_hi  # None = open high
-        cluster_model_p = _bracket_prob(forecast_temp, sigma, cluster_lo, cluster_hi)
-        cluster_market_p = float(total_price)  # market's implied prob = sum of YES prices
-        cluster_edge = round(cluster_model_p - cluster_market_p, 4)  # positive = YES edge
 
         tier = _yes_quality_tier(actual_margin, unit, confidence, total_price, ev_s, cluster_edge)
         return YesCluster(
@@ -728,7 +761,7 @@ def find_yes_clusters(event: dict, forecast_temp: float, confidence: str,
 
 
 def analyze_event(event: dict, forecast: dict, capital: float, n_opps: int = 20,
-                  city_bonus_f: float = 0.0) -> tuple:
+                  city_bonus_f: float = 0.0, size_mult: float = 1.0) -> tuple:
     """Returns (yes_clusters, no_opps) for a single event."""
     import datetime as _dt
     date_str = event["date"]
@@ -799,20 +832,21 @@ def analyze_event(event: dict, forecast: dict, capital: float, n_opps: int = 20,
 
     yes_exclude = STRATEGY.get("yes_exclude_cities", [])
     yes_clusters = (
-        find_yes_clusters(event, forecast_temp, confidence, capital, sigma)
+        find_yes_clusters(event, forecast_temp, confidence, capital, sigma, size_mult)
         if confidence == "high" and city not in yes_exclude and not frontal_skip_yes
         else []
     )
     no_require_high = STRATEGY.get("no_require_high_confidence", True)
     no_opps = find_no_opps(event, forecast_temp, confidence, capital, n_opps,
-                           effective_city_bonus, sigma) if (
+                           effective_city_bonus, sigma, size_mult) if (
         confidence == "high" or not no_require_high
     ) else []
     return yes_clusters, no_opps
 
 
 def analyze_all(all_markets: dict, all_forecasts: dict,
-                max_capital: Optional[float] = None) -> tuple:
+                max_capital: Optional[float] = None,
+                size_mult: float = 1.0) -> tuple:
     """
     Run full analysis.
     Returns (yes_clusters, no_opps) sorted by ev_score descending.
@@ -838,7 +872,8 @@ def analyze_all(all_markets: dict, all_forecasts: dict,
         city_bonus_f = city_adj.get("bonus_f", 0.0) if isinstance(city_adj, dict) else 0.0
         for event in events:
             clusters, no_opps = analyze_event(event, city_forecast, max_capital,
-                                              city_bonus_f=city_bonus_f)
+                                              city_bonus_f=city_bonus_f,
+                                              size_mult=size_mult)
 
             if clusters:
                 clusters[0].alt = None

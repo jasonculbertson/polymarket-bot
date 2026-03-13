@@ -357,6 +357,8 @@ def main():
                         help="Max opportunities to display per section")
     parser.add_argument("--min-return", type=float, default=STRATEGY["min_return_pct"],
                         help="Minimum return %% to show (default: 8)")
+    parser.add_argument("--size-mult", type=float, default=1.0,
+                        help="Bet size multiplier (0.5 = half-size after daily target hit)")
     args = parser.parse_args()
 
     cities = args.cities or list(CITIES.keys())
@@ -412,8 +414,10 @@ def main():
     original_min = STRATEGY["min_return_pct"]
     STRATEGY["min_return_pct"] = args.min_return
 
-    print("── Analyzing opportunities ──")
-    clusters, no_opps = analyze_all(markets, forecasts, max_capital=args.capital)
+    size_mult_str = f" | Bet size: {int(args.size_mult*100)}%" if args.size_mult != 1.0 else ""
+    print(f"── Analyzing opportunities ──{size_mult_str}")
+    clusters, no_opps = analyze_all(markets, forecasts, max_capital=args.capital,
+                                    size_mult=args.size_mult)
 
     STRATEGY["min_return_pct"] = original_min
 

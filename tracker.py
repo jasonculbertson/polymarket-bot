@@ -118,6 +118,78 @@ def _pg_save(key: str, data: dict):
         print(f"[WARN] PG save({key}) failed: {e}")
 
 
+# ─── Bankroll ─────────────────────────────────────────────────────────────────
+
+_BANKROLL_KEY = "bankroll"
+
+
+def get_bankroll() -> float:
+    """
+    Return current bankroll (USDC). Reads from KV store; falls back to
+    STRATEGY['initial_bankroll'] (default $200) on first run.
+    """
+    from config import STRATEGY
+    initial = float(STRATEGY.get("initial_bankroll", 200.0))
+    try:
+        val = _pg_load(_BANKROLL_KEY)
+        if val is not None:
+            # Stored as {"amount": float, "updated_at": str}
+            amt = val.get("amount") if isinstance(val, dict) else val
+            if amt and float(amt) > 0:
+                return float(amt)
+    except Exception:
+        pass
+    return initial
+
+
+def set_bankroll(amount: float) -> float:
+    """Persist bankroll to KV store. Returns the stored amount."""
+    amount = round(max(0.01, amount), 2)
+    _pg_save(_BANKROLL_KEY, {
+        "amount":     amount,
+        "updated_at": datetime.utcnow().isoformat(),
+    })
+    return amount
+
+
+def add_to_bankroll(delta: float) -> float:
+    """
+    Add delta (profit) or subtract (loss) from bankroll.
+    Returns new bankroll.  Thread-safe via optimistic read-modify-write.
+    """
+    current = get_bankroll()
+    return set_bankroll(current + delta)
+
+
+def get_daily_bankroll_stats() -> dict:
+    """
+    Return today's P&L vs bankroll, progress toward daily target, and
+    whether the daily loss cap or win target has been triggered.
+
+    Uses today's RESOLVED paper P&L (first_seen = today UTC).
+    """
+    from config import STRATEGY
+    bankroll    = get_bankroll()
+    today_pnl   = get_today_pnl()           # already defined below
+    target_pct  = float(STRATEGY.get("daily_target_pct",   7.0))
+    loss_cap_pct = float(STRATEGY.get("daily_loss_cap_pct", 10.0))
+    target_usd  = round(bankroll * target_pct   / 100, 2)
+    loss_cap_usd = round(bankroll * loss_cap_pct / 100, 2)
+    today_pct   = round(today_pnl / bankroll * 100, 2) if bankroll else 0.0
+    return {
+        "bankroll":         bankroll,
+        "today_pnl_usd":    today_pnl,
+        "today_pnl_pct":    today_pct,
+        "daily_target_usd": target_usd,
+        "daily_target_pct": target_pct,
+        "loss_cap_usd":     loss_cap_usd,
+        "loss_cap_pct":     loss_cap_pct,
+        "target_hit":       today_pct >= target_pct,
+        "loss_cap_hit":     today_pct <= -loss_cap_pct,
+        "pct_of_target":    round(today_pct / target_pct * 100, 1) if target_pct else 0.0,
+    }
+
+
 # ─── Storage ──────────────────────────────────────────────────────────────────
 
 _OUTCOMES_KEY = "outcomes"
@@ -783,6 +855,12 @@ def resolve_outcomes() -> int:
                     opp["stop_loss_saved_usd"] = round(
                         opp["simulated_exit_pnl_usd"] - opp["paper_pnl_usd"], 2
                     )  # positive = stop-loss would have helped
+                # Compound bankroll: add resolved P&L so next bet sizes scale up with wins
+                if opp.get("paper_pnl_usd") is not None:
+                    try:
+                        add_to_bankroll(opp["paper_pnl_usd"])
+                    except Exception:
+                        pass
                 resolved_count += 1
 
         elif opp["type"] == "yes":
@@ -823,6 +901,12 @@ def resolve_outcomes() -> int:
                     opp["stop_loss_saved_usd"] = round(
                         opp["simulated_exit_pnl_usd"] - opp["paper_pnl_usd"], 2
                     )
+                # Compound bankroll: add resolved P&L so next bet sizes scale up with wins
+                if opp.get("paper_pnl_usd") is not None:
+                    try:
+                        add_to_bankroll(opp["paper_pnl_usd"])
+                    except Exception:
+                        pass
                 resolved_count += 1
 
     if resolved_count or backfill_actual:

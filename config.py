@@ -223,14 +223,27 @@ STRATEGY = {
     # YES A-tier: edge ≥ 0.12  (our Gaussian says bracket is 12%+ more likely than market implies)
     "live_no_min_edge":  0.15,   # |negative edge| threshold for NO A-tier
     "live_yes_min_edge": 0.12,   # positive edge threshold for YES A-tier
-    # Max total capital to deploy per run (USDC)
-    "max_capital": 400,
+    # ── Bankroll & compounding ────────────────────────────────────────────────
+    # Goal: 5-10% daily return, doubling every 7-10 days.
+    # Bet sizes scale automatically as the bankroll grows — never fixed $ amounts.
+    "initial_bankroll":    float(os.environ.get("INITIAL_BANKROLL") or "200"),
+    # Daily return target — once hit, reduce all new bet sizes to 50% (lock in gains)
+    "daily_target_pct":    float(os.environ.get("DAILY_TARGET_PCT") or "7"),
+    # Hard stop: halt new scans if today's loss exceeds X% of opening bankroll
+    "daily_loss_cap_pct":  float(os.environ.get("DAILY_LOSS_CAP_PCT") or "10"),
+    # Per-bet cap: max single bet = X% of current bankroll (prevents any one bet from being outsized)
+    # At $200: 5% = $10 max/bet. At $400: 5% = $20 max/bet. Auto-scales with compounding.
+    "max_bet_pct":         float(os.environ.get("MAX_BET_PCT") or "5"),
+    # Outsized-edge bonus: if prob_edge magnitude ≥ threshold, allow up to 2× max_bet_pct
+    "outsized_edge_threshold": 0.25,   # |edge| ≥ 25% → allow up to 10% of bankroll
+    # Max total capital to deploy per run (hard ceiling, overridden by bankroll % cap)
+    "max_capital": float(os.environ.get("MAX_CAPITAL") or "400"),
     # Kelly criterion fraction — 0.33 minimizes max drawdown while retaining
     # 78% of full-Kelly geometric growth rate (vs 0.5 which is more aggressive).
     # Per the quant doc: gamma=0.33 is optimal for reducing drawdown on correlated positions.
     "kelly_fraction": 0.33,
-    # Hard cap per single bet (USDC) — overrides Kelly if larger
-    "max_single_bet": 50,
+    # Hard cap per single bet (USDC) — absolute ceiling regardless of bankroll size
+    "max_single_bet": float(os.environ.get("MAX_SINGLE_BET") or "50"),
 }
 
 # Live trading settings (all overridable via Railway env vars)
@@ -243,7 +256,9 @@ TRADING = {
     "take_profit_pct":       float(os.environ.get("TAKE_PROFIT_PCT") or "0"),   # 0 = disabled
     "monitor_interval_secs": int(os.environ.get("MONITOR_INTERVAL_SECS") or "300"),
     "slippage_pct":          float(os.environ.get("SLIPPAGE_PCT") or "1"),      # price tolerance %
-    # Circuit breaker: pause auto-scan when today's paper P&L falls below this (0 = disabled)
+    # Circuit breaker: pause auto-scan when today's paper P&L falls below this
+    # If 0, falls back to STRATEGY["daily_loss_cap_pct"] × current bankroll (recommended).
+    # Set a fixed $ value via DAILY_LOSS_LIMIT_USD env var to override percentage-based cap.
     "daily_loss_limit_usd":  float(os.environ.get("DAILY_LOSS_LIMIT_USD") or "0"),
 }
 

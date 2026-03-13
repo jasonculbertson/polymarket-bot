@@ -140,17 +140,20 @@ def _quick_monitor_job():
     threading.Thread(target=_run_quick_monitor, daemon=True).start()
 
 
-def run_scan_bg(cities=None, capital=None, days=1, target_date=None):
+def run_scan_bg(cities=None, capital=None, days=1, target_date=None, size_mult=1.0):
     global _scan_running, _scan_log
     if not _scan_lock.acquire(blocking=False):
         return
     _scan_running = True
     _scan_log     = []
-    capital = capital or SCAN_CAPITAL
+    # Use bankroll-aware capital by default; fall back to SCAN_CAPITAL env var
+    if capital is None:
+        capital = _scan_capital()
     # Use sys.executable so Railway uses the correct venv Python
     # Scan yesterday + today + next `days` forward dates (default 3).
     # The NO-bet edge lives at 24-72h out where WU is genuinely predicting.
-    cmd = [sys.executable, "scan.py", "--capital", str(capital), "--days", str(days)]
+    cmd = [sys.executable, "scan.py", "--capital", str(capital), "--days", str(days),
+           "--size-mult", str(size_mult)]
     if target_date:
         cmd += ["--date", target_date]
     if cities:
@@ -699,14 +702,17 @@ def trigger_scan():
     if _scan_running:
         return jsonify({"status": "already running"})
     body = request.get_json(silent=True) or {}
-    capital     = body.get("capital", 400)
+    # Default to bankroll-aware capital; allow manual override
+    capital     = body.get("capital") or _scan_capital()
     target_date = body.get("date") or None  # None = scan full window
     days        = int(body.get("days", 3))  # how many forward days (default 3)
+    size_mult   = float(body.get("size_mult", _daily_size_multiplier()))
     t = threading.Thread(target=run_scan_bg,
-                         kwargs=dict(capital=capital, target_date=target_date, days=days),
+                         kwargs=dict(capital=capital, target_date=target_date,
+                                     days=days, size_mult=size_mult),
                          daemon=True)
     t.start()
-    return jsonify({"status": "started"})
+    return jsonify({"status": "started", "capital": capital, "size_mult": size_mult})
 
 
 @app.route("/scan/status")
@@ -766,16 +772,60 @@ _last_auto_scan = None   # ISO string of last auto-scan start time
 
 
 def _is_circuit_breaker_tripped() -> bool:
-    """Return True if today's paper P&L loss exceeds the daily limit."""
-    from config import TRADING
-    limit = TRADING.get("daily_loss_limit_usd", 0)
-    if limit <= 0:
-        return False
+    """
+    Return True if today's loss exceeds the daily cap.
+
+    Priority:
+      1. DAILY_LOSS_LIMIT_USD env var / TRADING config (fixed $ amount, backward compat)
+      2. STRATEGY['daily_loss_cap_pct'] % of current bankroll (default 10%)
+    """
+    from config import TRADING, STRATEGY
     try:
-        from tracker import get_today_pnl
-        return get_today_pnl() <= -limit
+        from tracker import get_today_pnl, get_bankroll
+        today_pnl = get_today_pnl()
+
+        # Fixed-$ override (env var)
+        fixed_limit = TRADING.get("daily_loss_limit_usd", 0)
+        if fixed_limit > 0:
+            return today_pnl <= -fixed_limit
+
+        # Percentage cap (default path)
+        cap_pct = float(STRATEGY.get("daily_loss_cap_pct", 10.0))
+        bankroll = get_bankroll()
+        cap_usd  = bankroll * cap_pct / 100.0
+        return today_pnl <= -cap_usd
     except Exception:
         return False
+
+
+def _daily_size_multiplier() -> float:
+    """
+    Return 0.5 if the daily profit target has already been hit today (protect gains).
+    Normal = 1.0.  Reduces all new bet sizes to half once we've banked the day's goal.
+    """
+    from config import STRATEGY
+    try:
+        from tracker import get_daily_bankroll_stats
+        stats = get_daily_bankroll_stats()
+        if stats.get("target_hit"):
+            return 0.5
+    except Exception:
+        pass
+    return 1.0
+
+
+def _scan_capital() -> float:
+    """
+    Return current bankroll as scan capital, capped at STRATEGY['max_capital'].
+    Falls back to SCAN_CAPITAL env-var on any error.
+    """
+    from config import STRATEGY
+    try:
+        from tracker import get_bankroll
+        bankroll = get_bankroll()
+        return min(bankroll, float(STRATEGY.get("max_capital", 400)))
+    except Exception:
+        return float(SCAN_CAPITAL)
 
 
 def _auto_scan_job():
@@ -783,12 +833,27 @@ def _auto_scan_job():
     if _scan_running:
         return
     if _is_circuit_breaker_tripped():
-        print("[auto-scan] circuit breaker: daily loss limit reached — scan skipped")
+        from tracker import get_daily_bankroll_stats
+        try:
+            s = get_daily_bankroll_stats()
+            print(f"[auto-scan] ⛔ daily loss cap hit "
+                  f"(today: ${s['today_pnl_usd']:+.2f} = {s['today_pnl_pct']:+.1f}% "
+                  f"of ${s['bankroll']:.0f} bankroll) — scan skipped")
+        except Exception:
+            print("[auto-scan] ⛔ daily loss cap hit — scan skipped")
         return
     _last_auto_scan = datetime.now().isoformat()
+    capital   = _scan_capital()
+    size_mult = _daily_size_multiplier()
+    if size_mult < 1.0:
+        print(f"[auto-scan] 🎯 daily target hit — scanning at {int(size_mult*100)}% bet size (locking gains)")
     # days=3: scan yesterday + today + tomorrow + day-after-tomorrow
     # Genuine NO-bet edges exist at 24-72h out where forecasts are predictions, not observations.
-    threading.Thread(target=run_scan_bg, kwargs={"days": 3}, daemon=True).start()
+    threading.Thread(
+        target=run_scan_bg,
+        kwargs={"days": 3, "capital": capital, "size_mult": size_mult},
+        daemon=True,
+    ).start()
 
 
 def _daily_learn_job():
@@ -1013,21 +1078,37 @@ def trade_balance():
 
 @app.route("/circuit-breaker/status")
 def circuit_breaker_status():
-    """Return circuit breaker state — whether daily loss limit has been reached."""
-    from config import TRADING
-    limit = TRADING.get("daily_loss_limit_usd", 0)
-    today_pnl = None
+    """Return bankroll + circuit breaker state (daily P&L, targets, loss cap)."""
+    from config import TRADING, STRATEGY
     try:
-        from tracker import get_today_pnl
-        today_pnl = get_today_pnl()
-    except Exception:
-        pass
-    return jsonify({
-        "enabled": limit > 0,
-        "daily_loss_limit_usd": limit,
-        "today_pnl_usd": today_pnl,
-        "tripped": _is_circuit_breaker_tripped(),
-    })
+        from tracker import get_daily_bankroll_stats, get_bankroll
+        stats = get_daily_bankroll_stats()
+        fixed_limit = TRADING.get("daily_loss_limit_usd", 0)
+        return jsonify({
+            # Bankroll progress
+            "bankroll_usd":        stats["bankroll"],
+            "initial_bankroll_usd": float(STRATEGY.get("initial_bankroll", 200)),
+            "today_pnl_usd":       stats["today_pnl_usd"],
+            "today_pnl_pct":       stats["today_pnl_pct"],
+            "pct_of_daily_target": stats["pct_of_target"],
+            # Targets
+            "daily_target_pct":    stats["daily_target_pct"],
+            "daily_target_usd":    stats["daily_target_usd"],
+            "target_hit":          stats["target_hit"],
+            "size_mult":           _daily_size_multiplier(),
+            # Loss cap
+            "loss_cap_pct":        stats["loss_cap_pct"],
+            "loss_cap_usd":        stats["loss_cap_usd"],
+            "loss_cap_hit":        stats["loss_cap_hit"],
+            "fixed_loss_limit_usd": fixed_limit,
+            "tripped":             _is_circuit_breaker_tripped(),
+            # Scan capital
+            "scan_capital":        _scan_capital(),
+            "max_capital":         float(STRATEGY.get("max_capital", 400)),
+            "max_bet_pct":         float(STRATEGY.get("max_bet_pct", 5)),
+        })
+    except Exception as e:
+        return jsonify({"error": str(e), "tripped": _is_circuit_breaker_tripped()})
 
 
 @app.route("/monitor/status")
@@ -1038,6 +1119,34 @@ def monitor_status():
         return jsonify(get_status())
     except Exception as e:
         return jsonify({"error": str(e), "running": False})
+
+
+@app.route("/bankroll", methods=["GET"])
+def bankroll_get():
+    """Return current bankroll and today's daily stats."""
+    try:
+        from tracker import get_daily_bankroll_stats
+        return jsonify(get_daily_bankroll_stats())
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/bankroll/set", methods=["POST"])
+def bankroll_set():
+    """
+    Manually set the bankroll (e.g. after depositing / withdrawing USDC).
+    Body: {"amount": 200.0}
+    """
+    body   = request.get_json(silent=True) or {}
+    amount = body.get("amount")
+    if amount is None or float(amount) <= 0:
+        return jsonify({"error": "amount must be a positive number"}), 400
+    try:
+        from tracker import set_bankroll
+        new_amount = set_bankroll(float(amount))
+        return jsonify({"bankroll_usd": new_amount, "status": "ok"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 if __name__ == "__main__":
