@@ -808,6 +808,54 @@ def _scan_capital() -> float:
         return float(SCAN_CAPITAL)
 
 
+def _auto_execute_trades():
+    """
+    After a scan completes, auto-execute all A-tier opportunities not yet taken.
+    Fetches live price at order time — no stale scan prices.
+    """
+    from config import TRADING
+    if not TRADING.get("live_mode"):
+        return
+    try:
+        import trader as _trader
+        from tracker import record_live_trade, _load as _tload
+        data = _tload()
+        taken = set(data.get("taken", []))
+        opps  = data.get("opportunities", [])
+        a_tier = [o for o in opps
+                  if o.get("quality_tier") == "A"
+                  and o.get("id") not in taken
+                  and o.get("no_token_id") or o.get("token_id")]
+        if not a_tier:
+            print("[auto-trade] no new A-tier opportunities to execute")
+            return
+        for opp in a_tier:
+            try:
+                token_id = opp.get("no_token_id") or opp.get("token_id", "")
+                size_usd = float(opp.get("recommended_size") or opp.get("size_usd") or 20)
+                scan_price = float(opp.get("no_price") or opp.get("price") or 0.80)
+                opp_id   = opp.get("id", "")
+                if not token_id or not opp_id:
+                    continue
+                # buy() fetches live price + 1¢ slippage internally — always fills
+                result = _trader.buy(token_id, size_usd, scan_price, neg_risk=False)
+                record_live_trade(
+                    opp_id=opp_id,
+                    order_id=result["order_id"],
+                    size_usd=size_usd,
+                    shares=result["shares"],
+                    token_id=token_id,
+                    execution_price=result.get("execution_price"),
+                )
+                print(f"[auto-trade] ✅ {opp.get('city')} {opp.get('type','?').upper()} "
+                      f"${size_usd:.0f} @ {result.get('price', scan_price):.2f} "
+                      f"order={result.get('order_id','')[:16]}")
+            except Exception as e:
+                print(f"[auto-trade] ❌ {opp.get('city')} {opp.get('id')}: {e}")
+    except Exception as e:
+        print(f"[auto-trade] ERROR: {e}")
+
+
 def _auto_scan_job():
     global _last_auto_scan
     if _scan_running:
@@ -824,13 +872,13 @@ def _auto_scan_job():
         return
     _last_auto_scan = datetime.now().isoformat()
     capital = _scan_capital()
+
+    def _scan_then_trade():
+        run_scan_bg(days=3, capital=capital)
+        _auto_execute_trades()
+
     # days=3: scan yesterday + today + tomorrow + day-after-tomorrow
-    # Genuine NO-bet edges exist at 24-72h out where forecasts are predictions, not observations.
-    threading.Thread(
-        target=run_scan_bg,
-        kwargs={"days": 3, "capital": capital},
-        daemon=True,
-    ).start()
+    threading.Thread(target=_scan_then_trade, daemon=True).start()
 
 
 def _daily_learn_job():

@@ -88,12 +88,19 @@ def buy(token_id: str, size_usd: float, price: float,
 
     Returns: {"order_id": str, "shares": float, "price": float, "live": bool}
     """
-    price = _round_price(price)
+    # Always fetch live price at order time — scan prices go stale in seconds.
+    # Add 1¢ slippage so the order fills immediately against current liquidity.
+    live_price = _fetch_live_price(token_id)
+    if live_price is not None:
+        if abs(live_price - price) > 0.05:
+            log.warning("[trader] Price drift: scan=%.2f live=%.2f for %s", price, live_price, token_id[:16])
+        price = live_price + _DEFAULT_TICK  # +1¢ slippage guarantees immediate fill
+    price = _round_price(min(price, 0.99))  # cap at 99¢
     if price <= 0:
         raise ValueError(f"Invalid price {price!r} for token {token_id[:16]}")
     shares = round(size_usd / price, 4)
 
-    log.info(
+    log.warning(
         "[trader] BUY %s  shares=%.4f  price=%.4f  size_usd=%.2f  live=%s",
         token_id[:16], shares, price, size_usd, LIVE_MODE
     )
@@ -220,6 +227,46 @@ def get_balance() -> Optional[float]:
     except Exception as e:
         log.warning("[trader] get_balance failed: %s", e)
         return None
+
+
+def _fetch_live_price(token_id: str) -> Optional[float]:
+    """
+    Fetch the current market price for a token from Polymarket's midpoint API.
+    Falls back to CLOB spread midpoint if midpoint API unavailable.
+    """
+    import requests
+    try:
+        # Polymarket midpoint price endpoint (most accurate)
+        r = requests.get(
+            f"{CLOB_API}/midpoint",
+            params={"token_id": token_id},
+            timeout=5,
+        )
+        if r.status_code == 200:
+            data = r.json()
+            mid = data.get("mid")
+            if mid is not None:
+                return float(mid)
+    except Exception:
+        pass
+
+    # Fallback: derive from CLOB spread
+    try:
+        import requests as req
+        r = req.get(f"{CLOB_API}/book", params={"token_id": token_id}, timeout=5)
+        if r.status_code == 200:
+            book = r.json()
+            bids = book.get("bids", [])
+            asks = book.get("asks", [])
+            if bids and asks:
+                return round((float(bids[0]["price"]) + float(asks[0]["price"])) / 2, 2)
+            if asks:
+                return float(asks[0]["price"])
+            if bids:
+                return float(bids[0]["price"])
+    except Exception as e:
+        log.warning("[trader] _fetch_live_price fallback failed: %s", e)
+    return None
 
 
 def _fetch_best_bid(token_id: str) -> Optional[float]:
