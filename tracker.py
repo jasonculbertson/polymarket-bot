@@ -1494,6 +1494,38 @@ def mark_exited_early(opp_id: str, exit_price: float) -> bool:
     return _mark_exit(opp_id, exit_price, "take_profit")
 
 
+def mark_order_cancelled(opp_id: str) -> bool:
+    """
+    Mark a live position as cancelled because its CLOB buy order never filled.
+
+    Sets is_live=False, outcome=loss (no real P&L), exit_reason=order_cancelled.
+    Also removes opp_id from the live_bets Postgres key so it stops appearing
+    in get_live_positions() and the monitor loop.
+    """
+    with _tracker_lock:
+        data = _load()
+        for opp in data["opportunities"]:
+            if opp["id"] == opp_id:
+                opp["is_live"]       = False
+                opp["outcome"]       = "loss"
+                opp["exit_reason"]   = "order_cancelled"
+                opp["exit_at"]       = datetime.utcnow().isoformat()
+                opp["exit_price"]    = opp.get("entry_price", 0)
+                opp["pnl_pct"]       = 0.0
+                opp["paper_pnl_usd"] = 0.0
+
+                # Remove from live_bets tracking key
+                live_bets = data.setdefault("live_bets", [])
+                if opp_id in live_bets:
+                    live_bets.remove(opp_id)
+
+                _save(data)
+                log.info("[tracker] marked order_cancelled: %s", opp_id)
+                return True
+    log.warning("[tracker] mark_order_cancelled: opp_id not found: %s", opp_id)
+    return False
+
+
 def _mark_exit(opp_id: str, exit_price: float, reason: str) -> bool:
     with _tracker_lock:
         data = _load()

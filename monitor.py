@@ -3,8 +3,11 @@ monitor.py — Background position monitor with auto stop-loss
 
 Runs a daemon thread that wakes every MONITOR_INTERVAL_SECS seconds and:
   1. Loads all live positions from tracker
-  2. Fetches current best-bid price from CLOB for each position's token
-  3. Auto-sells if:
+  2. Verifies each position's buy order actually filled:
+       - If the CLOB order is still LIVE (unfilled) after STALE_ORDER_HOURS → cancel + mark cancelled
+       - If unfilled but recent → log as PENDING and skip (let it fill)
+  3. Fetches current best-bid price from CLOB for filled positions
+  4. Auto-sells if:
        current_price < entry_price × (1 - STOP_LOSS_PCT/100)   → stop-loss
        current_price ≥ entry_price × (1 + TAKE_PROFIT_PCT/100) → take-profit (if enabled)
 
@@ -16,6 +19,7 @@ Safe to call start_monitor() unconditionally — it's a no-op when:
 import logging
 import threading
 import time
+from datetime import datetime
 
 import requests
 
@@ -27,6 +31,10 @@ STOP_LOSS_PCT         = TRADING["stop_loss_pct"]
 TAKE_PROFIT_PCT       = TRADING["take_profit_pct"]
 MONITOR_INTERVAL_SECS = TRADING["monitor_interval_secs"]
 LIVE_MODE             = TRADING["live_mode"]
+
+# Cancel GTC buy orders that are still unfilled after this many hours.
+# After 2h a bid-at-ask order should have filled; if not the market has moved away.
+STALE_ORDER_HOURS = 2.0
 
 import os
 _POLY_KEY = os.environ.get("POLY_PRIVATE_KEY", "")
@@ -77,10 +85,29 @@ def _fetch_best_bid(token_id: str) -> float | None:
     return None
 
 
+def _order_age_hours(live_at_str: str) -> float:
+    """Return how many hours have elapsed since live_at_str (ISO format). Returns 999 on parse error."""
+    try:
+        placed_at = datetime.fromisoformat(live_at_str)
+        return (datetime.utcnow() - placed_at).total_seconds() / 3600
+    except Exception:
+        return 999.0  # Treat unparseable timestamp as very old → safe to cancel
+
+
 def check_positions():
     """
-    Core check: iterate live positions, fetch current prices,
-    trigger stop-loss or take-profit sells as needed.
+    Core check: iterate live positions, verify fill status, then apply stop-loss/take-profit.
+
+    Phase 1 — Fill verification (runs first, per position):
+      - Reads live_order_id and live_at from the tracker record
+      - Calls trader.check_order_filled() to query CLOB for current order status
+      - LIVE + age ≥ STALE_ORDER_HOURS  → cancel order, mark order_cancelled in tracker
+      - LIVE + age < STALE_ORDER_HOURS  → log PENDING, skip (give it more time)
+      - FILLED / paper / unknown        → proceed to Phase 2
+
+    Phase 2 — Price monitoring (stop-loss / take-profit):
+      - Fetches current best-bid from CLOB
+      - Sells and marks exit if threshold crossed
     """
     import tracker
     import trader
@@ -95,10 +122,63 @@ def check_positions():
         opp_id   = pos["id"]
         token_id = pos.get("token_id", "")
         entry    = float(pos.get("entry_price", 0))
+        order_id = pos.get("live_order_id", "")
+        live_at  = pos.get("live_at", "")
 
         if not token_id or entry <= 0:
             continue
 
+        # ── Phase 1: verify the buy order actually filled ─────────────────────
+        # Only check real (non-paper) orders. Paper orders are always "filled".
+        if LIVE_MODE and order_id and not order_id.startswith("paper_"):
+            fill_status = trader.check_order_filled(order_id)
+
+            if fill_status == "LIVE":
+                # Order is still open in the CLOB — has not filled yet.
+                age_h = _order_age_hours(live_at)
+
+                if age_h >= STALE_ORDER_HOURS:
+                    # Old enough to be considered dead — cancel and clean up.
+                    log.warning(
+                        "[monitor] STALE ORDER opp=%s order=%s age=%.1fh — cancelling",
+                        opp_id, order_id[:20], age_h,
+                    )
+                    _log_event("STALE_ORDER", opp_id, token_id, 0.0,
+                               f"order={order_id[:20]} age={age_h:.1f}h")
+                    try:
+                        trader.cancel(order_id)
+                    except Exception as ce:
+                        log.warning("[monitor] cancel failed for %s: %s", order_id[:20], ce)
+                    tracker.mark_order_cancelled(opp_id)
+                    # Remove from exiting set so it never re-enters stop-loss logic
+                    with _exiting_lock:
+                        _exiting_positions.discard(opp_id)
+                    continue  # Done with this position
+
+                else:
+                    # Still fresh — let it sit, log as pending.
+                    log.info(
+                        "[monitor] PENDING opp=%s order=%s age=%.1fh — waiting for fill",
+                        opp_id, order_id[:20], age_h,
+                    )
+                    _log_event("PENDING", opp_id, token_id, 0.0,
+                               f"order={order_id[:20]} age={age_h:.1f}h")
+                    continue  # Skip price monitoring until the order fills
+
+            elif fill_status == "CANCELLED":
+                # Order was already cancelled externally — clean up tracker.
+                log.warning("[monitor] order already CANCELLED opp=%s order=%s — marking",
+                            opp_id, order_id[:20])
+                _log_event("ORDER_CANCELLED", opp_id, token_id, 0.0,
+                           f"order={order_id[:20]} (external cancel)")
+                tracker.mark_order_cancelled(opp_id)
+                with _exiting_lock:
+                    _exiting_positions.discard(opp_id)
+                continue
+
+            # fill_status == "FILLED" or None (error → treat as filled, proceed normally)
+
+        # ── Phase 2: price monitoring — stop-loss / take-profit ───────────────
         current = _fetch_best_bid(token_id)
         if current is None:
             log.warning("[monitor] no price for %s, skipping", opp_id)
@@ -121,8 +201,8 @@ def check_positions():
             except Exception as e:
                 err_str = str(e)
                 if "not enough balance" in err_str or "allowance" in err_str:
-                    # CLOB can't sell this position (approval not set or unfilled order).
-                    # Log as simulated exit — do NOT retry (leave in _exiting_positions).
+                    # CLOB can't sell — order may have been partially filled or
+                    # approval sync is needed. Log as simulated exit.
                     log.warning("[monitor] stop-loss SIMULATED (can't sell): %s — %s", opp_id, e)
                     tracker.mark_stopped_out(opp_id, current)
                 else:

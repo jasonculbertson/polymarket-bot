@@ -311,33 +311,43 @@ def buy(token_id: str, size_usd: float, price: float,
 
     Returns: {"order_id": str, "shares": float, "price": float, "live": bool}
     """
-    # Always fetch live price at order time — scan prices go stale in seconds.
-    # Add 1¢ slippage so the order fills immediately against current liquidity.
+    # ── Fetch live orderbook and set bid price to guarantee immediate fill ──
+    # KEY: to guarantee a GTC order fills immediately, we must bid AT or ABOVE
+    # the current best ask (lowest sell offer). Bidding at the midpoint leaves
+    # orders unfilled indefinitely because sellers won't accept below their ask.
+    book_ask  = _fetch_best_ask(token_id)
     live_price = _fetch_live_price(token_id)
-    if live_price is not None:
-        drift = abs(live_price - price)
-        if drift > 0.15:
-            # Market has moved >15¢ from scan price — opportunity is stale or
-            # the market has already resolved. Skip to avoid bad fills.
-            raise ValueError(
-                f"Price drift too large: scan={price:.2f} live={live_price:.2f} "
-                f"(drift={drift:.2f}) for {token_id[:16]} — skipping"
-            )
-        if drift > 0.05:
-            log.warning("[trader] Price drift: scan=%.2f live=%.2f for %s", price, live_price, token_id[:16])
-        price = live_price + _DEFAULT_TICK  # +1¢ slippage guarantees immediate fill
+    ref_price  = live_price  # used for drift check against scan price
+
+    if ref_price is None:
+        # Midpoint API failed — derive reference from orderbook
+        ref_price = book_ask or _fetch_best_bid(token_id)
+
+    if ref_price is None:
+        raise ValueError(
+            f"No live price or orderbook for {token_id[:16]} — "
+            f"market appears closed or inactive, skipping"
+        )
+
+    # Drift check: reject if market moved >15¢ from scan price since we scored it
+    drift = abs(ref_price - price)
+    if drift > 0.15:
+        raise ValueError(
+            f"Price drift too large: scan={price:.2f} live={ref_price:.2f} "
+            f"(drift={drift:.2f}) for {token_id[:16]} — skipping"
+        )
+    if drift > 0.05:
+        log.warning("[trader] Price drift: scan=%.2f live=%.2f for %s", price, ref_price, token_id[:16])
+
+    if book_ask is not None:
+        # Bid 1 tick above the best ask → crosses the spread → guaranteed fill
+        price = book_ask + _DEFAULT_TICK
+        log.warning("[trader] Using ask-based price: ask=%.4f → bid=%.4f for %s",
+                    book_ask, price, token_id[:16])
     else:
-        # Could not fetch live price (market may be closed or not yet active).
-        # Double-check via orderbook — if no bids exist, the market is dead.
-        best_bid = _fetch_best_bid(token_id)
-        if best_bid is None:
-            raise ValueError(
-                f"No live price or orderbook for {token_id[:16]} — "
-                f"market appears closed or inactive, skipping"
-            )
-        # Orderbook exists but midpoint API failed — use bid as proxy price
-        log.warning("[trader] midpoint unavailable for %s, using best bid %.4f", token_id[:16], best_bid)
-        price = best_bid + _DEFAULT_TICK
+        # Ask side empty (rare) — fall back to midpoint + tick
+        price = ref_price + _DEFAULT_TICK
+        log.warning("[trader] No ask in book — using midpoint+tick: %.4f for %s", price, token_id[:16])
 
     # Hard floor: NO tokens below 0.50 means market has moved heavily against us
     if price < 0.50:
@@ -694,4 +704,50 @@ def _fetch_best_bid(token_id: str) -> Optional[float]:
                 return float(bids[0]["price"])
     except Exception as e:
         log.warning("[trader] _fetch_best_bid failed: %s", e)
+    return None
+
+
+def _fetch_best_ask(token_id: str) -> Optional[float]:
+    """
+    Fetch the current best ask (lowest sell offer) from the order book.
+
+    For BUY orders, bidding at ask+1tick guarantees immediate fill.
+    Midpoint-based pricing can leave orders unfilled indefinitely.
+    """
+    import requests
+    try:
+        r = requests.get(
+            f"{CLOB_API}/book",
+            params={"token_id": token_id},
+            timeout=8,
+        )
+        if r.status_code == 200:
+            book = r.json()
+            asks = book.get("asks", [])
+            if asks:
+                return float(asks[0]["price"])
+    except Exception as e:
+        log.warning("[trader] _fetch_best_ask failed: %s", e)
+    return None
+
+
+def check_order_filled(order_id: str) -> Optional[str]:
+    """
+    Query the CLOB for an order's current status.
+    Returns 'FILLED', 'LIVE', 'CANCELLED', or None on error.
+    """
+    if not LIVE_MODE or not order_id or order_id.startswith("paper_"):
+        return "FILLED" if not LIVE_MODE else None
+    try:
+        client = _get_client()
+        order = client.get_order(order_id)
+        if isinstance(order, dict):
+            status = order.get("status", "")
+            size_matched = float(order.get("size_matched", "0") or 0)
+            orig_size    = float(order.get("original_size", "1") or 1)
+            if status == "MATCHED" or size_matched >= orig_size * 0.95:
+                return "FILLED"
+            return status
+    except Exception as e:
+        log.warning("[trader] check_order_filled(%s): %s", order_id[:20], e)
     return None
