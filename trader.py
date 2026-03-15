@@ -92,9 +92,24 @@ def buy(token_id: str, size_usd: float, price: float,
     # Add 1¢ slippage so the order fills immediately against current liquidity.
     live_price = _fetch_live_price(token_id)
     if live_price is not None:
-        if abs(live_price - price) > 0.05:
+        drift = abs(live_price - price)
+        if drift > 0.15:
+            # Market has moved >15¢ from scan price — opportunity is stale or
+            # the market has already resolved. Skip to avoid bad fills.
+            raise ValueError(
+                f"Price drift too large: scan={price:.2f} live={live_price:.2f} "
+                f"(drift={drift:.2f}) for {token_id[:16]} — skipping"
+            )
+        if drift > 0.05:
             log.warning("[trader] Price drift: scan=%.2f live=%.2f for %s", price, live_price, token_id[:16])
         price = live_price + _DEFAULT_TICK  # +1¢ slippage guarantees immediate fill
+
+    # Hard floor: NO tokens below 0.50 means market has moved heavily against us
+    if price < 0.50:
+        raise ValueError(
+            f"Live price {price:.2f} below minimum threshold (0.50) for {token_id[:16]} — "
+            f"market may have already resolved or moved against forecast"
+        )
     price = _round_price(min(price, 0.99))  # cap at 99¢
     if price <= 0:
         raise ValueError(f"Invalid price {price!r} for token {token_id[:16]}")
