@@ -798,9 +798,17 @@ def _is_circuit_breaker_tripped() -> bool:
 
 def _scan_capital() -> float:
     """
-    Return full current bankroll as scan capital — deploy everything.
-    Falls back to SCAN_CAPITAL env-var on any error.
+    Return available USDC from Polymarket CLOB as scan capital.
+    This reflects actual deployable cash, not portfolio value.
+    Falls back to internal bankroll, then SCAN_CAPITAL env-var.
     """
+    try:
+        import trader as _trader
+        live = _trader.get_balance()
+        if live is not None and live > 0:
+            return live
+    except Exception:
+        pass
     try:
         from tracker import get_bankroll
         return get_bankroll()
