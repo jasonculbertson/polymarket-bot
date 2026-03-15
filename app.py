@@ -1044,9 +1044,15 @@ def trade_balance():
     """Return available USDC balance in the trading wallet."""
     try:
         import trader as _trader
+        from py_clob_client.clob_types import BalanceAllowanceParams, AssetType
+        client = _trader._get_client()
+        raw = client.get_balance_allowance(
+            BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
+        )
         balance = _trader.get_balance()
         return jsonify({
             "balance_usdc": balance,
+            "raw_response": raw,
             "live_mode": os.environ.get("LIVE_MODE", "false").lower() == "true",
         })
     except Exception as e:
