@@ -16,12 +16,15 @@ Storage: DATA_DIR/outcomes.json  (persists across Railway deploys when volume is
 """
 
 import json
+import logging
 import os
 import re
 import threading
 import requests
 from datetime import datetime, date, timedelta
 from typing import Optional
+
+log = logging.getLogger(__name__)
 
 _tracker_lock = threading.Lock()
 
@@ -1046,10 +1049,25 @@ def record_live_trade(
                 taken_list = data.setdefault("taken", [])
                 if opp_id not in taken_list:
                     taken_list.append(opp_id)
-                    print(f"[tracker] marked {opp_id} as taken ({len(taken_list)} total)")
+                log.warning("[tracker] marked %s as taken (%d total)", opp_id, len(taken_list))
                 _save(data)
+                # Also persist to a SEPARATE "live_bets" key so this dedup
+                # survives race conditions where resolve_outcomes or
+                # update_open_position_prices overwrites the main outcomes blob.
+                try:
+                    lb = _pg_load("live_bets") or {"ids": []}
+                    lb_ids = lb.get("ids", [])
+                    if opp_id not in lb_ids:
+                        lb_ids.append(opp_id)
+                    _pg_save("live_bets", {
+                        "ids":     lb_ids,
+                        "updated": datetime.utcnow().isoformat(),
+                    })
+                    log.warning("[tracker] live_bets key updated: %d IDs", len(lb_ids))
+                except Exception as _lbe:
+                    log.warning("[tracker] WARNING: could not save live_bets key: %s", _lbe)
                 return True
-    print(f"[tracker] record_live_trade: opp_id {opp_id!r} not found in tracker")
+    log.warning("[tracker] record_live_trade: opp_id %r not found in tracker", opp_id)
     return False
 
 

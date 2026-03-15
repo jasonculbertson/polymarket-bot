@@ -883,24 +883,42 @@ def _bracket_side(opp: dict) -> str:
     return "high" if float(nums[0]) > forecast else "low"
 
 
+import logging as _logging
+_atlog = _logging.getLogger("auto_trade")
+
+
 def _auto_execute_trades(scan_opportunities: list):
     """
     After a scan completes, auto-execute NEW A-tier opportunities from THIS scan only.
     Requires AUTO_TRADE=true env var — disabled by default.
     Max 5 trades per run. Per city/date: at most one high-end NO + one low-end NO
     (opposite ends of the market) — never two adjacent brackets.
+
+    Dedup strategy (belt + suspenders):
+      1. "live_bets" Postgres key — written by record_live_trade, never touched by
+         resolve_outcomes / update_open_position_prices. Survives race conditions.
+      2. data["taken"] inside the main outcomes blob (secondary, may lag).
+      3. opp["is_live"] flag on the opportunity itself (tertiary, may lag too).
     """
     from config import TRADING
     if not TRADING.get("live_mode"):
         return
     if os.environ.get("AUTO_TRADE", "false").lower() != "true":
-        print("[auto-trade] disabled — set AUTO_TRADE=true in Railway to enable")
+        _atlog.warning("[auto-trade] disabled — set AUTO_TRADE=true in Railway to enable")
         return
     try:
         import trader as _trader
         from tracker import record_live_trade, _load as _tload
-        data   = _tload()
-        taken  = set(data.get("taken", []))
+        data = _tload()
+
+        # PRIMARY dedup: separate "live_bets" key, immune to race conditions.
+        lb_data   = _pg_kv_load("live_bets") or {}
+        live_bets = set(lb_data.get("ids", []))
+        # SECONDARY dedup: main outcomes blob "taken" list (may be stale after race).
+        taken = live_bets | set(data.get("taken", []))
+
+        _atlog.warning("[auto-trade] dedup: %d live_bets IDs, %d taken IDs",
+                       len(live_bets), len(taken))
 
         # YES bets disabled in live trading — paper-only until model improves
         live_yes = TRADING.get("live_yes_enabled", False)
@@ -909,7 +927,7 @@ def _auto_execute_trades(scan_opportunities: list):
         a_tier = [o for o in scan_opportunities
                   if o.get("quality_tier") == "A"
                   and o.get("id") not in taken
-                  and not o.get("is_live")          # secondary guard: skip already-placed bets
+                  and not o.get("is_live")          # tertiary guard: skip already-placed bets
                   and (o.get("no_token_id") or o.get("token_id"))
                   and (live_yes or o.get("type") == "no")]
 
@@ -926,20 +944,26 @@ def _auto_execute_trades(scan_opportunities: list):
         a_tier = list(seen_city_date_side.values())[:5]  # hard cap: 5 bets per scan
 
         if not a_tier:
-            print("[auto-trade] no new A-tier opportunities to execute")
+            _atlog.warning("[auto-trade] no new A-tier opportunities to execute")
             return
 
-        print(f"[auto-trade] executing {len(a_tier)} A-tier opportunities")
+        _atlog.warning("[auto-trade] executing %d A-tier opportunities", len(a_tier))
         for opp in a_tier:
             try:
                 token_id   = opp.get("no_token_id") or opp.get("token_id", "")
                 size_usd   = float(opp.get("recommended_size") or opp.get("size_usd") or 20)
-                scan_price = float(opp.get("no_price") or opp.get("price") or 0.80)
+                # Use entry_price (stored field name); fall back to no_price for legacy data
+                scan_price = float(opp.get("entry_price") or opp.get("no_price") or opp.get("price") or 0.80)
                 opp_id     = opp.get("id", "")
                 if not token_id or not opp_id:
+                    _atlog.warning("[auto-trade] skipping opp with missing token_id or opp_id: %s", opp.get("id"))
                     continue
+                _atlog.warning("[auto-trade] attempting BUY: city=%s type=%s opp_id=%s "
+                               "token=%s size=$%.0f price=%.3f",
+                               opp.get("city"), opp.get("type"), opp_id,
+                               token_id[:16], size_usd, scan_price)
                 result = _trader.buy(token_id, size_usd, scan_price, neg_risk=False)
-                record_live_trade(
+                ok = record_live_trade(
                     opp_id=opp_id,
                     order_id=result["order_id"],
                     size_usd=size_usd,
@@ -947,13 +971,15 @@ def _auto_execute_trades(scan_opportunities: list):
                     token_id=token_id,
                     execution_price=result.get("execution_price"),
                 )
-                print(f"[auto-trade] ✅ {opp.get('city')} {opp.get('type','?').upper()} "
-                      f"${size_usd:.0f} @ {result.get('price', scan_price):.2f} "
-                      f"order={result.get('order_id','')[:16]}")
+                _atlog.warning("[auto-trade] ✅ %s %s $%.0f @ %.2f order=%s record_ok=%s",
+                               opp.get("city"), opp.get("type", "?").upper(),
+                               size_usd, result.get("price", scan_price),
+                               result.get("order_id", "")[:16], ok)
             except Exception as e:
-                print(f"[auto-trade] ❌ {opp.get('city')} {opp.get('id')}: {e}")
+                _atlog.warning("[auto-trade] ❌ %s %s: %s",
+                               opp.get("city"), opp.get("id"), e)
     except Exception as e:
-        print(f"[auto-trade] ERROR: {e}")
+        _atlog.warning("[auto-trade] ERROR: %s", e)
 
 
 def _auto_scan_job():
