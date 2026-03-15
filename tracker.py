@@ -920,6 +920,77 @@ def resolve_outcomes() -> int:
     return resolved_count
 
 
+# ─── Claim winning live positions ─────────────────────────────────────────────
+
+def redeem_all_live_wins() -> dict:
+    """
+    For every opportunity that is both live (real money placed) AND has just
+    resolved as a win, attempt to sell the winning tokens on the CLOB or redeem
+    them on-chain.
+
+    Called automatically by the resolve cron after resolve_outcomes().
+    Also exposed as POST /admin/redeem-all-wins.
+
+    Returns {"attempted": n, "results": [...]}
+    """
+    import logging as _log_mod
+    _log = _log_mod.getLogger(__name__)
+
+    try:
+        from trader import redeem_winning_position, get_condition_id_for_market, LIVE_MODE
+    except ImportError:
+        return {"attempted": 0, "results": [], "error": "trader module unavailable"}
+
+    if not LIVE_MODE:
+        return {"attempted": 0, "results": [], "note": "paper mode — no real redemptions"}
+
+    data = _load()
+    live_wins = [
+        o for o in data["opportunities"]
+        if o.get("outcome") == "win"
+        and o.get("is_live")
+        and not o.get("redeemed")          # avoid re-processing
+        and o.get("token_id")              # must have a real on-chain token ID
+    ]
+
+    results = []
+    for opp in live_wins:
+        token_id  = opp.get("token_id", "")
+        market_id = opp.get("market_id", "")
+        bet_type  = opp.get("type", "no")
+
+        condition_id = ""
+        if market_id:
+            try:
+                condition_id = get_condition_id_for_market(market_id) or ""
+            except Exception:
+                pass
+
+        try:
+            result = redeem_winning_position(token_id, condition_id, bet_type)
+        except Exception as e:
+            result = {"redeemed": False, "message": str(e)}
+
+        result["opp_id"] = opp.get("id")
+        results.append(result)
+
+        if result.get("redeemed") or result.get("method") == "clob_sell":
+            # Mark as redeemed so we don't retry
+            with _tracker_lock:
+                d = _load()
+                for o in d["opportunities"]:
+                    if o.get("id") == opp.get("id"):
+                        o["redeemed"] = True
+                        o["redeem_method"] = result.get("method", "unknown")
+                        o["redeem_tx"] = result.get("tx_hash")
+                        break
+                _save(d)
+
+        _log.warning("[tracker] redeem %s → %s", opp.get("id"), result.get("message", ""))
+
+    return {"attempted": len(live_wins), "results": results}
+
+
 # ─── Summary ──────────────────────────────────────────────────────────────────
 
 def get_summary() -> dict:

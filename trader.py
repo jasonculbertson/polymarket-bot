@@ -462,10 +462,155 @@ def cancel(order_id: str) -> bool:
     try:
         client = _get_client()
         client.cancel(order_id)
+        log.warning("[trader] cancelled order %s", order_id)
         return True
     except Exception as e:
         log.warning("[trader] cancel failed for %s: %s", order_id, e)
         return False
+
+
+def cancel_all_orders() -> dict:
+    """
+    Cancel every open CLOB order for this account and return the USDC to the wallet.
+
+    Use when:
+    - Open GTC buy orders never filled and the market has resolved against you
+    - You want to free up locked USDC immediately rather than waiting for market closure
+
+    Returns: {"cancelled": [order_ids], "failed": [order_ids], "total": int}
+    """
+    if not LIVE_MODE:
+        return {"cancelled": [], "failed": [], "total": 0, "note": "paper mode — no real orders"}
+
+    try:
+        client = _get_client()
+        orders = client.get_orders()
+        if not isinstance(orders, list):
+            orders = [orders] if orders else []
+
+        live_orders = [o for o in orders if o.get("status") == "LIVE"]
+        log.warning("[trader] cancelling %d live orders", len(live_orders))
+
+        cancelled, failed = [], []
+        for o in live_orders:
+            oid = o.get("id", "")
+            try:
+                client.cancel(oid)
+                cancelled.append(oid)
+                log.warning("[trader] cancelled %s (%s %s @ %s)",
+                            oid[:20], o.get("side"), o.get("outcome"), o.get("price"))
+            except Exception as e:
+                failed.append(oid)
+                log.warning("[trader] cancel failed for %s: %s", oid[:20], e)
+
+        return {"cancelled": cancelled, "failed": failed, "total": len(live_orders)}
+    except Exception as e:
+        log.error("[trader] cancel_all_orders error: %s", e)
+        return {"cancelled": [], "failed": [], "total": 0, "error": str(e)}
+
+
+def redeem_winning_position(token_id: str, condition_id: str, bet_type: str) -> dict:
+    """
+    Redeem winning conditional tokens for USDC after a market resolves.
+
+    Polymarket often auto-redeems for proxy wallet users, but this provides an
+    explicit fallback.  For simple YES/NO binary markets:
+      - Winning NO token  → indexSets = [1]  (outcome slot 0)
+      - Winning YES token → indexSets = [2]  (outcome slot 1)
+
+    Parameters
+    ----------
+    token_id     : ERC1155 token ID string (stored per opportunity)
+    condition_id : 32-byte hex condition ID from Polymarket Gamma API
+    bet_type     : "no" or "yes"
+
+    Returns dict with keys: redeemed (bool), tx_hash, message
+    """
+    if not LIVE_MODE:
+        return {"redeemed": False, "tx_hash": None, "message": "paper mode — no redemption needed"}
+
+    USDC_ADDRESS = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
+    index_sets   = [1] if bet_type.lower() == "no" else [2]
+
+    # ── First try: sell winning tokens on CLOB at near-full value ───────────
+    # If the market is still in the CLOB (not yet settled on-chain), selling at
+    # $0.99 is faster and avoids the on-chain redemption complexity.
+    try:
+        best_bid = _fetch_best_bid(token_id)
+        if best_bid is not None and best_bid >= 0.90:
+            log.warning("[trader] winning token bid=%.4f — attempting CLOB sell first", best_bid)
+            result = sell(token_id, shares=None, price=best_bid)  # type: ignore[arg-type]
+            return {"redeemed": True, "tx_hash": result.get("order_id"),
+                    "method": "clob_sell",
+                    "message": f"Sold winning tokens on CLOB at {best_bid:.4f}"}
+    except Exception as _se:
+        log.warning("[trader] CLOB sell of winning tokens failed (%s) — trying on-chain redeem", _se)
+
+    # ── Fallback: on-chain redeemPositions ──────────────────────────────────
+    # Note: with signature_type=2 (proxy wallet), Polymarket usually auto-redeems.
+    # This path handles the case where auto-redemption hasn't happened yet.
+    try:
+        from eth_abi import encode
+        from eth_account import Account
+        from eth_utils import keccak, to_checksum_address
+
+        # Ensure condition_id is bytes32
+        cid_bytes = bytes.fromhex(condition_id.lstrip("0x").zfill(64))
+
+        # redeemPositions(address collateral, bytes32 parentId, bytes32 conditionId, uint256[] indexSets)
+        selector = keccak(text="redeemPositions(address,bytes32,bytes32,uint256[])")[:4]
+        calldata = "0x" + (selector + encode(
+            ["address", "bytes32", "bytes32", "uint256[]"],
+            [
+                to_checksum_address(USDC_ADDRESS),
+                b"\x00" * 32,   # parentCollectionId = 0 (root)
+                cid_bytes,
+                index_sets,
+            ]
+        )).hex()
+
+        # For proxy wallets Polymarket auto-handles this; log calldata for manual fallback
+        log.warning("[trader] redeemPositions calldata: %s", calldata[:60])
+        log.warning("[trader] NOTE: funder is a proxy — auto-redemption should happen within 24h. "
+                    "If not, call redeemPositions on CTF contract from funder wallet.")
+
+        return {
+            "redeemed": False,
+            "tx_hash": None,
+            "method": "manual_needed",
+            "condition_id": condition_id,
+            "index_sets": index_sets,
+            "calldata": calldata,
+            "message": (
+                "Could not sell on CLOB. Polymarket should auto-redeem winning tokens within 24h. "
+                "If not, call redeemPositions on the ConditionalTokens contract from your funder wallet."
+            ),
+        }
+
+    except Exception as e:
+        log.error("[trader] redeem_winning_position error: %s", e)
+        return {"redeemed": False, "tx_hash": None, "message": f"Error: {e}"}
+
+
+def get_condition_id_for_market(market_id: str) -> Optional[str]:
+    """
+    Fetch the condition_id for a Polymarket market from the Gamma API.
+    The condition_id is needed for on-chain redeemPositions calls.
+    """
+    try:
+        r = _http_req.get(
+            f"https://gamma-api.polymarket.com/markets/{market_id}",
+            timeout=8,
+        )
+        if r.status_code == 200:
+            data = r.json()
+            # Gamma API returns conditionId as a hex string
+            cid = data.get("conditionId") or data.get("condition_id")
+            if cid:
+                return cid
+    except Exception as e:
+        log.warning("[trader] get_condition_id_for_market(%s) failed: %s", market_id, e)
+    return None
 
 
 def get_balance() -> Optional[float]:

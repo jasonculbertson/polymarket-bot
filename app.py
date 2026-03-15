@@ -597,12 +597,95 @@ def admin_check_orders():
     """
     List open CLOB orders for this account.  Use to verify whether buy orders
     were filled (tokens exist) or are still pending (tokens don't exist yet).
+    Annotates each order with the current live bid/ask so you can see how far
+    the market has moved vs. your open bid.
     """
     try:
         from trader import _get_client
+        import requests as _req
         client = _get_client()
         orders = client.get_orders()
-        return jsonify({"orders": orders if isinstance(orders, list) else [orders]})
+        if not isinstance(orders, list):
+            orders = [orders] if orders else []
+        for o in orders:
+            tid = o.get("asset_id", "")
+            if tid:
+                try:
+                    r = _req.get("https://clob.polymarket.com/book",
+                                 params={"token_id": tid}, timeout=5)
+                    if r.status_code == 200:
+                        book = r.json()
+                        bids = book.get("bids", [])
+                        asks = book.get("asks", [])
+                        o["live_best_bid"] = bids[0]["price"] if bids else None
+                        o["live_best_ask"] = asks[0]["price"] if asks else None
+                except Exception:
+                    pass
+        return jsonify({"orders": orders, "total": len(orders)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/admin/cancel-all-orders", methods=["POST"])
+def admin_cancel_all_orders():
+    """
+    Cancel every live open GTC order and return USDC to the wallet.
+
+    Use when buy orders never filled and the market has resolved against you,
+    or when you want to free up locked USDC immediately.
+
+    No body required.
+    """
+    try:
+        from trader import cancel_all_orders
+        result = cancel_all_orders()
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/admin/redeem", methods=["POST"])
+def admin_redeem():
+    """
+    Redeem winning conditional tokens for USDC after a market resolves.
+
+    Polymarket usually auto-redeems for proxy wallet users within 24h.
+    Use this for immediate redemption or to check calldata for manual action.
+
+    POST JSON (one of):
+      { "opp_id": "no_1577541" }
+      { "token_id": "...", "market_id": "...", "bet_type": "no" }
+      { "token_id": "...", "condition_id": "0x...", "bet_type": "yes" }
+    """
+    try:
+        from tracker import _load as _tload, _tracker_lock
+        from trader import redeem_winning_position, get_condition_id_for_market
+
+        body      = request.get_json(force=True) or {}
+        opp_id    = body.get("opp_id", "")
+        token_id  = body.get("token_id", "")
+        market_id = body.get("market_id", "")
+        bet_type  = body.get("bet_type", "no")
+
+        if opp_id:
+            with _tracker_lock:
+                data = _tload()
+            opp = next((o for o in data["opportunities"] if o.get("id") == opp_id), None)
+            if not opp:
+                return jsonify({"error": f"opp_id {opp_id!r} not found"}), 404
+            token_id  = token_id  or opp.get("token_id") or opp.get("no_token_id") or ""
+            market_id = market_id or opp.get("market_id") or ""
+            bet_type  = opp.get("type", "no")
+
+        if not token_id:
+            return jsonify({"error": "Provide opp_id, or token_id + bet_type"}), 400
+
+        condition_id = body.get("condition_id", "")
+        if not condition_id and market_id:
+            condition_id = get_condition_id_for_market(market_id) or ""
+
+        result = redeem_winning_position(token_id, condition_id, bet_type)
+        return jsonify(result)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -686,14 +769,35 @@ def outcomes_correct():
 def outcomes_backfill():
     """Run resolution once (no cooldown) to fill pending outcomes. Call once to manually fill the table."""
     try:
-        from tracker import get_summary, resolve_outcomes
+        from tracker import get_summary, resolve_outcomes, redeem_all_live_wins
         n = resolve_outcomes()
+        # After resolving, immediately try to claim any newly-won live positions
+        redeem_result = redeem_all_live_wins()
         summary = get_summary()
         summary["backfill_run"] = True
         summary["newly_resolved"] = n
+        summary["redeem"] = redeem_result
         return jsonify(summary)
     except Exception as e:
         return jsonify({"error": str(e), "backfill_run": False, "newly_resolved": 0})
+
+
+@app.route("/admin/redeem-all-wins", methods=["POST"])
+def admin_redeem_all_wins():
+    """
+    Scan all live positions that resolved as wins and sell/redeem the winning tokens.
+
+    Polymarket usually auto-redeems proxy wallet users within 24h after market settlement.
+    Call this manually to trigger immediate redemption or to check status.
+
+    No body required.
+    """
+    try:
+        from tracker import redeem_all_live_wins
+        result = redeem_all_live_wins()
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/learning")
@@ -1130,11 +1234,15 @@ def _daily_learn_job():
     def _run():
         try:
             print("[daily-learn] starting resolve + learn + optimize pipeline")
-            from tracker import resolve_outcomes, _load
+            from tracker import resolve_outcomes, redeem_all_live_wins, _load
             from learner import learn_from_outcomes
             from optimizer import run_daily_optimizer
 
             resolve_outcomes()
+            # Claim any live positions that just resolved as wins
+            redeem_result = redeem_all_live_wins()
+            if redeem_result.get("attempted", 0) > 0:
+                print(f"[daily-learn] redeem: {redeem_result}")
             learn_result = learn_from_outcomes()
             data = _load()
             report = run_daily_optimizer(data)
