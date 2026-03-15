@@ -834,11 +834,15 @@ def _auto_execute_trades(scan_opportunities: list):
         data   = _tload()
         taken  = set(data.get("taken", []))
 
+        # YES bets disabled in live trading — paper-only until model improves
+        live_yes = TRADING.get("live_yes_enabled", False)
+
         # Only act on opportunities from THIS scan, A-tier, not already taken
         a_tier = [o for o in scan_opportunities
                   if o.get("quality_tier") == "A"
                   and o.get("id") not in taken
-                  and (o.get("no_token_id") or o.get("token_id"))]
+                  and (o.get("no_token_id") or o.get("token_id"))
+                  and (live_yes or o.get("type") == "no")]
 
         # De-duplicate: one bet per (city, date) pair — pick highest return
         seen_city_date = {}
@@ -1091,6 +1095,13 @@ def trade():
                     "quality_tier": _opp.get("quality_tier"),
                     "tip": "This bet is above the paper-trade minimum but below the live-trade threshold. "
                            "Use /api/trade in paper mode or wait for a higher-confidence opportunity."
+                }), 400
+            # YES bets blocked in live trading until model improves (21% win rate in paper)
+            if _opp and _opp.get("type") == "yes" and not TRADING.get("live_yes_enabled"):
+                return jsonify({
+                    "error": "YES bets are disabled in live trading (paper-only)",
+                    "reason": "Model win rate 21% — not yet profitable. Set LIVE_YES_ENABLED=true to override.",
+                    "tip": "YES bets continue to paper-trade and improve the model automatically."
                 }), 400
 
         if side == "buy":

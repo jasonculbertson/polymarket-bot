@@ -258,6 +258,10 @@ STRATEGY = {
 # LIVE_MODE=false by default — bot paper-trades until you explicitly enable it.
 TRADING = {
     "live_mode":             os.environ.get("LIVE_MODE", "false").lower() == "true",
+    # YES bets are disabled in live trading — model not yet profitable (21% win rate).
+    # Paper trading continues tracking YES bets for model improvement.
+    # Set LIVE_YES_ENABLED=true in Railway to re-enable when model improves.
+    "live_yes_enabled":      os.environ.get("LIVE_YES_ENABLED", "false").lower() == "true",
     "stop_loss_pct":         float(os.environ.get("STOP_LOSS_PCT") or "50"),    # exit if down X%
     # Don't trigger stop-loss within this many hours of resolution (price may just be stale)
     "stop_loss_min_hours_to_resolution": float(os.environ.get("STOP_LOSS_MIN_HOURS") or "4"),
