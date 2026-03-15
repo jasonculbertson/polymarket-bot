@@ -1039,6 +1039,21 @@ def trade():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/trade/cancel", methods=["POST"])
+def trade_cancel():
+    """Cancel an open GTC order by order_id."""
+    try:
+        import trader as _trader
+        body = request.get_json(silent=True) or {}
+        order_id = body.get("order_id", "").strip()
+        if not order_id:
+            return jsonify({"error": "order_id required"}), 400
+        ok = _trader.cancel(order_id)
+        return jsonify({"ok": ok, "order_id": order_id})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/trade/balance")
 def trade_balance():
     """Return available USDC balance in the trading wallet."""
