@@ -561,6 +561,52 @@ def admin_restore_live():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/admin/mark-cancelled", methods=["POST"])
+def admin_mark_cancelled():
+    """
+    Mark positions as cancelled (order never filled / CLOB order was cancelled).
+
+    Sets is_live=False, outcome=loss, exit_reason=order_cancelled so these
+    positions don't re-enter the monitor or dedup loops.
+
+    POST JSON: { "opp_ids": ["no_1577541", ...] }
+    """
+    try:
+        from tracker import _load as _tload, _save as _tsave, _tracker_lock
+        from datetime import datetime
+        body      = request.get_json(force=True) or {}
+        ids       = body.get("opp_ids", [])
+        if not ids:
+            return jsonify({"error": "opp_ids list required"}), 400
+        marked = []
+        with _tracker_lock:
+            data = _tload()
+            for opp in data["opportunities"]:
+                if opp.get("id") in ids:
+                    opp["is_live"]       = False
+                    opp["outcome"]       = "loss"        # market moved against, order cancelled
+                    opp["exit_reason"]   = "order_cancelled"  # GTC buy cancelled before fill
+                    opp["exit_at"]       = datetime.utcnow().isoformat()
+                    opp["exit_price"]    = opp.get("entry_price", 0)
+                    opp["pnl_pct"]       = 0.0           # no real money deployed
+                    opp["paper_pnl_usd"] = 0.0
+                    marked.append(opp.get("id"))
+            _tsave(data)
+
+        # Also remove from live_bets Postgres key so dedup is clean
+        try:
+            lb = _pg_kv_load("live_bets") or {"ids": []}
+            lb["ids"] = [i for i in lb.get("ids", []) if i not in ids]
+            lb["updated"] = datetime.utcnow().isoformat()
+            _pg_kv_save("live_bets", lb)
+        except Exception as _lbe:
+            pass  # non-fatal
+
+        return jsonify({"marked_cancelled": marked, "count": len(marked)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/admin/setup-approvals", methods=["POST"])
 def admin_setup_approvals():
     """
