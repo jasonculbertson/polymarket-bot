@@ -63,17 +63,10 @@ def _get_client():
         signature_type=0,   # 0 = EOA (MetaMask)
     )
 
-    # Use provided API creds if available; otherwise derive from private key.
-    if POLY_API_KEY and POLY_API_SECRET and POLY_API_PASSPHRASE:
-        client.set_api_creds(ApiCreds(
-            api_key=POLY_API_KEY,
-            api_secret=POLY_API_SECRET,
-            api_passphrase=POLY_API_PASSPHRASE,
-        ))
-    else:
-        creds = client.create_or_derive_api_creds()
-        client.set_api_creds(creds)
-        log.info("[trader] API creds derived from private key")
+    # Always derive API creds from the private key — stored creds go stale.
+    creds = client.create_or_derive_api_creds()
+    client.set_api_creds(creds)
+    log.info("[trader] API creds derived from private key")
 
     return client
 
