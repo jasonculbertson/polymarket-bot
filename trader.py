@@ -9,11 +9,14 @@ Entry point functions:
   sell(token_id, shares, price)             → dict with order_id
   cancel(order_id)                          → bool
   get_balance()                             → float (USDC)
+  setup_ctf_approvals()                     → dict (enable sell capability)
 """
 
 import os
 import logging
 from typing import Optional
+
+import requests as _http_req
 
 from config import TRADING, CLOB_API
 
@@ -39,6 +42,226 @@ _CHAIN_ID = 137
 
 # Minimum tick size on Polymarket (most markets use 0.01)
 _DEFAULT_TICK = 0.01
+
+# ── On-chain contract addresses (Polygon mainnet) ───────────────────────────
+# ConditionalTokens ERC1155 contract — holds YES/NO token balances
+_CTF_ADDRESS        = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"
+# Standard CTF Exchange — needs setApprovalForAll to pull tokens for SELL orders
+_CTF_EXCHANGE       = "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E"
+# Neg-risk CTF Exchange — used for mutually-exclusive bracket markets
+_NEG_CTF_EXCHANGE   = "0xC5d563A36AE78145C45a50134d48A1215220f80a"
+
+# Polygon JSON-RPC endpoints — tried in order until one works.
+# NOTE: Both CTF exchanges (std + neg-risk) are already approved for the funder
+# wallet (confirmed 2026-03-15 via isApprovedForAll on-chain check).
+# The "not enough balance / allowance" CLOB error is a stale-cache problem;
+# it is resolved by calling update_balance_allowance() before each sell order.
+_POLYGON_RPC_URLS = [
+    "https://polygon-bor-rpc.publicnode.com",   # public, no-key, reliable
+    "https://polygon-rpc.com",                  # may require API key
+    "https://rpc.ankr.com/polygon",             # requires Ankr account
+]
+
+
+# ── Low-level Polygon RPC helpers (no web3 required) ────────────────────────
+
+def _rpc_call(method: str, params: list, timeout: int = 12) -> str:
+    """Make a JSON-RPC call to Polygon, trying fallback endpoints."""
+    last_err = None
+    for url in _POLYGON_RPC_URLS:
+        try:
+            r = _http_req.post(
+                url,
+                json={"jsonrpc": "2.0", "method": method, "params": params, "id": 1},
+                timeout=timeout,
+            )
+            data = r.json()
+            if "error" in data:
+                raise RuntimeError(data["error"].get("message", str(data["error"])))
+            return data["result"]
+        except Exception as e:
+            log.warning("[rpc] %s failed (%s): %s", method, url, e)
+            last_err = e
+    raise RuntimeError(f"All RPC endpoints failed for {method}: {last_err}")
+
+
+def _is_contract(address: str) -> bool:
+    """Return True if address has contract code deployed (is not a plain EOA)."""
+    try:
+        code = _rpc_call("eth_getCode", [address, "latest"])
+        return code not in ("0x", "0x0", "")
+    except Exception as e:
+        log.warning("[rpc] eth_getCode failed for %s: %s", address, e)
+        return False  # Assume EOA on failure
+
+
+def _is_approved_for_all(owner: str, operator: str) -> bool:
+    """
+    Call ConditionalTokens.isApprovedForAll(owner, operator) on-chain.
+    Returns True if the CTF Exchange is authorised to pull tokens from `owner`.
+    """
+    try:
+        from eth_abi import encode
+        from eth_utils import keccak, to_checksum_address
+
+        owner    = to_checksum_address(owner)
+        operator = to_checksum_address(operator)
+        selector = keccak(text="isApprovedForAll(address,address)")[:4]
+        calldata = "0x" + (selector + encode(["address", "address"], [owner, operator])).hex()
+        result   = _rpc_call("eth_call", [{"to": _CTF_ADDRESS, "data": calldata}, "latest"])
+        return int(result, 16) == 1
+    except Exception as e:
+        log.warning("[rpc] isApprovedForAll check failed: %s", e)
+        return False
+
+
+def _send_set_approval_for_all(private_key: str, operator: str) -> str:
+    """
+    Build, sign, and broadcast a ConditionalTokens.setApprovalForAll(operator, True)
+    transaction FROM the wallet derived from `private_key`.
+
+    Returns the transaction hash string.
+    """
+    from eth_abi import encode
+    from eth_account import Account
+    from eth_utils import keccak, to_checksum_address
+
+    account  = Account.from_key(private_key)
+    operator = to_checksum_address(operator)
+    selector = keccak(text="setApprovalForAll(address,bool)")[:4]
+    calldata = "0x" + (selector + encode(["address", "bool"], [operator, True])).hex()
+
+    nonce          = int(_rpc_call("eth_getTransactionCount", [account.address, "pending"]), 16)
+    base_gas_price = int(_rpc_call("eth_gasPrice", []), 16)
+    gas_price      = int(base_gas_price * 2.0)  # 2× for fast Polygon inclusion
+
+    tx = {
+        "to":       to_checksum_address(_CTF_ADDRESS),
+        "data":     calldata,
+        "gas":      120_000,
+        "gasPrice": gas_price,
+        "nonce":    nonce,
+        "chainId":  _CHAIN_ID,
+        "value":    0,
+    }
+    signed   = Account.sign_transaction(tx, private_key)
+    raw_hex  = "0x" + signed.raw_transaction.hex()
+    tx_hash  = _rpc_call("eth_sendRawTransaction", [raw_hex])
+    log.warning("[trader] setApprovalForAll tx submitted: %s", tx_hash)
+    return tx_hash
+
+
+def setup_ctf_approvals() -> dict:
+    """
+    Ensure the CTF Exchange is approved to transfer conditional tokens from the
+    funder wallet. This approval is required for SELL orders. Buys only need USDC
+    allowance, which is handled separately.
+
+    Strategy
+    --------
+    1. Call isApprovedForAll(funder, CTF_EXCHANGE) on-chain — if already True, done.
+    2. If funder == EOA (same wallet), sign setApprovalForAll from POLY_PRIVATE_KEY.
+    3. If funder is a plain EOA (different wallet), we don't hold its key — return
+       instructions for manual approval.
+    4. If funder is a smart contract (Polymarket proxy), return instructions for the
+       Polymarket web UI or Polygonscan.
+
+    Returns dict with keys: approved, tx_hash, pending, message
+    """
+    if not POLY_PRIVATE_KEY:
+        return {"approved": False, "tx_hash": None, "pending": False,
+                "message": "POLY_PRIVATE_KEY env var not set"}
+
+    try:
+        from eth_account import Account
+        from eth_utils import to_checksum_address
+
+        eoa_account    = Account.from_key(POLY_PRIVATE_KEY)
+        eoa_address    = to_checksum_address(eoa_account.address)
+        funder_address = to_checksum_address(POLY_FUNDER) if POLY_FUNDER else eoa_address
+        exchange       = to_checksum_address(_CTF_EXCHANGE)
+
+        log.warning("[trader] setup_ctf_approvals: EOA=%s  funder=%s  exchange=%s",
+                    eoa_address, funder_address, exchange)
+
+        # ── 1. Check current on-chain state ─────────────────────────────────
+        approved = _is_approved_for_all(funder_address, exchange)
+        if approved:
+            return {"approved": True, "tx_hash": None, "pending": False,
+                    "message": f"setApprovalForAll already set: {funder_address} → {exchange}"}
+
+        log.warning("[trader] setApprovalForAll NOT set — funder=%s", funder_address)
+
+        # ── 2. Funder == EOA: we can sign directly ───────────────────────────
+        if funder_address.lower() == eoa_address.lower():
+            tx_hash = _send_set_approval_for_all(POLY_PRIVATE_KEY, exchange)
+            return {"approved": False, "tx_hash": tx_hash, "pending": True,
+                    "message": f"Transaction submitted — wait 30s then retry sells. tx={tx_hash}"}
+
+        # ── 3. Funder is a different wallet — need to determine type ─────────
+        is_proxy = _is_contract(funder_address)
+        if not is_proxy:
+            return {
+                "approved": False, "tx_hash": None, "pending": False,
+                "message": (
+                    f"Funder {funder_address} is an EOA but we don't have its private key. "
+                    "MANUAL ACTION REQUIRED: Import the funder wallet into MetaMask and visit "
+                    f"https://polygonscan.com/address/{_CTF_ADDRESS}#writeContract — "
+                    f"call setApprovalForAll with operator={exchange}, approved=true."
+                ),
+            }
+
+        # ── 4. Funder is a Polymarket proxy (smart contract) ─────────────────
+        return {
+            "approved": False, "tx_hash": None, "pending": False,
+            "message": (
+                f"Funder {funder_address} is a smart contract (Polymarket proxy). "
+                "setApprovalForAll must be executed through the proxy contract. "
+                "MANUAL ACTION: Connect the funder wallet to https://polymarket.com and "
+                "deposit/withdraw once to trigger the approval transaction automatically, OR "
+                f"call the proxy's execute() with target={_CTF_ADDRESS} and "
+                f"calldata=setApprovalForAll({exchange}, true)."
+            ),
+        }
+
+    except Exception as e:
+        log.error("[trader] setup_ctf_approvals error: %s", e, exc_info=True)
+        return {"approved": False, "tx_hash": None, "pending": False, "message": f"Error: {e}"}
+
+
+def check_ctf_approval_status() -> dict:
+    """
+    Read-only diagnostic: returns the on-chain approval state plus CLOB cached
+    balance/allowance for the funder wallet.
+
+    Returns dict with keys: funder, exchange, is_approved_onchain, clob_balance
+    """
+    try:
+        from eth_account import Account
+        from eth_utils import to_checksum_address
+
+        eoa_address    = Account.from_key(POLY_PRIVATE_KEY).address if POLY_PRIVATE_KEY else "unknown"
+        funder_address = to_checksum_address(POLY_FUNDER) if POLY_FUNDER else eoa_address
+        exchange       = to_checksum_address(_CTF_EXCHANGE)
+        neg_exchange   = to_checksum_address(_NEG_CTF_EXCHANGE)
+
+        on_chain_std     = _is_approved_for_all(funder_address, exchange)
+        on_chain_neg     = _is_approved_for_all(funder_address, neg_exchange)
+        is_proxy         = _is_contract(funder_address)
+
+        return {
+            "eoa":                    eoa_address,
+            "funder":                 funder_address,
+            "funder_is_contract":     is_proxy,
+            "ctf_exchange":           exchange,
+            "neg_risk_ctf_exchange":  neg_exchange,
+            "is_approved_std_market": on_chain_std,
+            "is_approved_neg_market": on_chain_neg,
+            "action_needed":          not (on_chain_std and on_chain_neg),
+        }
+    except Exception as e:
+        log.warning("[trader] check_ctf_approval_status error: %s", e)
+        return {"error": str(e)}
 
 
 def _round_price(price: float, tick: float = _DEFAULT_TICK) -> float:
@@ -198,10 +421,24 @@ def sell(token_id: str, shares: float, price: Optional[float] = None) -> dict:
     if not _CLOB_AVAILABLE:
         raise RuntimeError("py-clob-client is not installed. Live trading unavailable.")
 
-    from py_clob_client.clob_types import MarketOrderArgs, OrderType
+    from py_clob_client.clob_types import MarketOrderArgs, OrderType, BalanceAllowanceParams, AssetType
     from py_clob_client.order_builder.constants import SELL as _SELL
 
     client = _get_client()
+
+    # ── Sync CLOB's cached view of our conditional-token balance ────────────
+    # "not enough balance / allowance" is often a stale CLOB cache issue.
+    # update_balance_allowance forces the CLOB to re-read on-chain state.
+    try:
+        bal_params   = BalanceAllowanceParams(asset_type=AssetType.CONDITIONAL, token_id=token_id)
+        pre_balance  = client.get_balance_allowance(bal_params)
+        log.warning("[trader] pre-sell CLOB balance: %s", pre_balance)
+        client.update_balance_allowance(bal_params)
+        post_balance = client.get_balance_allowance(bal_params)
+        log.warning("[trader] post-sync CLOB balance: %s", post_balance)
+    except Exception as _be:
+        log.warning("[trader] balance sync (non-fatal): %s", _be)
+
     # Use market order (FOK) for stop-loss exits to ensure immediate execution.
     market_order = MarketOrderArgs(
         token_id=token_id,
@@ -213,7 +450,7 @@ def sell(token_id: str, shares: float, price: Optional[float] = None) -> dict:
     response = client.post_order(signed, OrderType.FOK)
 
     order_id = response.get("orderID") or response.get("id", "")
-    log.info("[trader] SELL placed  order_id=%s  exit_price=%.4f", order_id, exit_price)
+    log.warning("[trader] SELL placed  order_id=%s  exit_price=%.4f", order_id, exit_price)
     return {"order_id": order_id, "exit_price": exit_price, "live": True}
 
 

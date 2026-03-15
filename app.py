@@ -561,6 +561,52 @@ def admin_restore_live():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/admin/setup-approvals", methods=["POST"])
+def admin_setup_approvals():
+    """
+    Set the CTF Exchange's ERC1155 approval on the funder wallet so SELL orders
+    can execute. This is a one-time setup step that Polymarket's web UI normally
+    handles during onboarding.
+
+    No body required.  Returns on-chain approval state and (if needed) submits
+    a setApprovalForAll transaction.
+    """
+    try:
+        from trader import setup_ctf_approvals
+        result = setup_ctf_approvals()
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/admin/check-approvals")
+def admin_check_approvals():
+    """
+    Diagnostic: read the on-chain CTF Exchange approval state for the funder wallet.
+    GET only — does not change any state.
+    """
+    try:
+        from trader import check_ctf_approval_status
+        return jsonify(check_ctf_approval_status())
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/admin/check-orders")
+def admin_check_orders():
+    """
+    List open CLOB orders for this account.  Use to verify whether buy orders
+    were filled (tokens exist) or are still pending (tokens don't exist yet).
+    """
+    try:
+        from trader import _get_client
+        client = _get_client()
+        orders = client.get_orders()
+        return jsonify({"orders": orders if isinstance(orders, list) else [orders]})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/outcomes/correct", methods=["POST"])
 def outcomes_correct():
     """
