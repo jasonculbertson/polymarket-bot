@@ -816,36 +816,51 @@ def _scan_capital() -> float:
         return float(SCAN_CAPITAL)
 
 
-def _auto_execute_trades():
+def _auto_execute_trades(scan_opportunities: list):
     """
-    After a scan completes, auto-execute all A-tier opportunities not yet taken.
-    Fetches live price at order time — no stale scan prices.
+    After a scan completes, auto-execute NEW A-tier opportunities from THIS scan only.
+    Requires AUTO_TRADE=true env var — disabled by default.
+    Max 5 trades per run. One trade per city per date.
     """
     from config import TRADING
     if not TRADING.get("live_mode"):
         return
+    if os.environ.get("AUTO_TRADE", "false").lower() != "true":
+        print("[auto-trade] disabled — set AUTO_TRADE=true in Railway to enable")
+        return
     try:
         import trader as _trader
         from tracker import record_live_trade, _load as _tload
-        data = _tload()
-        taken = set(data.get("taken", []))
-        opps  = data.get("opportunities", [])
-        a_tier = [o for o in opps
+        data   = _tload()
+        taken  = set(data.get("taken", []))
+
+        # Only act on opportunities from THIS scan, A-tier, not already taken
+        a_tier = [o for o in scan_opportunities
                   if o.get("quality_tier") == "A"
                   and o.get("id") not in taken
-                  and o.get("no_token_id") or o.get("token_id")]
+                  and (o.get("no_token_id") or o.get("token_id"))]
+
+        # De-duplicate: one bet per (city, date) pair — pick highest return
+        seen_city_date = {}
+        for o in sorted(a_tier, key=lambda x: x.get("return_pct", 0), reverse=True):
+            key = (o.get("city", ""), o.get("date", ""))
+            if key not in seen_city_date:
+                seen_city_date[key] = o
+        a_tier = list(seen_city_date.values())[:5]  # hard cap: 5 bets per scan
+
         if not a_tier:
             print("[auto-trade] no new A-tier opportunities to execute")
             return
+
+        print(f"[auto-trade] executing {len(a_tier)} A-tier opportunities")
         for opp in a_tier:
             try:
-                token_id = opp.get("no_token_id") or opp.get("token_id", "")
-                size_usd = float(opp.get("recommended_size") or opp.get("size_usd") or 20)
+                token_id   = opp.get("no_token_id") or opp.get("token_id", "")
+                size_usd   = float(opp.get("recommended_size") or opp.get("size_usd") or 20)
                 scan_price = float(opp.get("no_price") or opp.get("price") or 0.80)
-                opp_id   = opp.get("id", "")
+                opp_id     = opp.get("id", "")
                 if not token_id or not opp_id:
                     continue
-                # buy() fetches live price + 1¢ slippage internally — always fills
                 result = _trader.buy(token_id, size_usd, scan_price, neg_risk=False)
                 record_live_trade(
                     opp_id=opp_id,
@@ -881,12 +896,13 @@ def _auto_scan_job():
     _last_auto_scan = datetime.now().isoformat()
     capital = _scan_capital()
 
-    def _scan_then_trade():
-        run_scan_bg(days=3, capital=capital)
-        _auto_execute_trades()
-
     # days=3: scan yesterday + today + tomorrow + day-after-tomorrow
-    threading.Thread(target=_scan_then_trade, daemon=True).start()
+    # Auto-execute is gated by AUTO_TRADE=true env var — disabled by default
+    threading.Thread(
+        target=run_scan_bg,
+        kwargs={"days": 3, "capital": capital},
+        daemon=True,
+    ).start()
 
 
 def _daily_learn_job():
