@@ -33,8 +33,8 @@ MONITOR_INTERVAL_SECS = TRADING["monitor_interval_secs"]
 LIVE_MODE             = TRADING["live_mode"]
 
 # Cancel GTC buy orders that are still unfilled after this many hours.
-# After 2h a bid-at-ask order should have filled; if not the market has moved away.
-STALE_ORDER_HOURS = 2.0
+# After 1h a bid-at-ask order should have filled; if not the market has moved away.
+STALE_ORDER_HOURS = 1.0
 
 import os
 _POLY_KEY = os.environ.get("POLY_PRIVATE_KEY", "")
