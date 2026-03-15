@@ -119,9 +119,16 @@ def check_positions():
                 trader.sell(token_id, shares, current)
                 tracker.mark_stopped_out(opp_id, current)
             except Exception as e:
-                log.error("[monitor] stop-loss sell FAILED for %s: %s", opp_id, e)
-                with _exiting_lock:
-                    _exiting_positions.discard(opp_id)
+                err_str = str(e)
+                if "not enough balance" in err_str or "allowance" in err_str:
+                    # CLOB can't sell this position (approval not set or unfilled order).
+                    # Log as simulated exit — do NOT retry (leave in _exiting_positions).
+                    log.warning("[monitor] stop-loss SIMULATED (can't sell): %s — %s", opp_id, e)
+                    tracker.mark_stopped_out(opp_id, current)
+                else:
+                    log.error("[monitor] stop-loss sell FAILED for %s: %s", opp_id, e)
+                    with _exiting_lock:
+                        _exiting_positions.discard(opp_id)
 
         elif take_profit_threshold and current >= take_profit_threshold:
             with _exiting_lock:
@@ -135,9 +142,14 @@ def check_positions():
                 trader.sell(token_id, shares, current)
                 tracker.mark_exited_early(opp_id, current)
             except Exception as e:
-                log.error("[monitor] take-profit sell FAILED for %s: %s", opp_id, e)
-                with _exiting_lock:
-                    _exiting_positions.discard(opp_id)
+                err_str = str(e)
+                if "not enough balance" in err_str or "allowance" in err_str:
+                    log.warning("[monitor] take-profit SIMULATED (can't sell): %s — %s", opp_id, e)
+                    tracker.mark_exited_early(opp_id, current)
+                else:
+                    log.error("[monitor] take-profit sell FAILED for %s: %s", opp_id, e)
+                    with _exiting_lock:
+                        _exiting_positions.discard(opp_id)
 
         else:
             pct_chg = (current - entry) / entry * 100
