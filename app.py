@@ -769,29 +769,66 @@ _scheduler      = None
 _last_auto_scan = None   # ISO string of last auto-scan start time
 
 
+def _get_live_today_pnl() -> float:
+    """
+    Sum of P&L on live trades that settled today (UTC).
+    Paper-only positions do NOT count — circuit breaker protects real money only.
+    """
+    from tracker import _load as _tload
+    data  = _tload()
+    today = __import__("datetime").datetime.utcnow().date().isoformat()
+    total = 0.0
+    for t in data.get("live_trades", []):
+        if not (t.get("settled_at") or "").startswith(today):
+            continue
+        pnl = t.get("pnl_usd")
+        if pnl is not None:
+            total += float(pnl)
+    return round(total, 2)
+
+
 def _is_circuit_breaker_tripped() -> bool:
     """
-    Return True if today's loss exceeds the daily cap.
+    Return True if today's LIVE loss exceeds the daily cap.
+
+    In live mode: uses actual USDC balance as bankroll and counts only
+    settled live-trade losses — paper P&L does not trip the breaker.
 
     Priority:
-      1. DAILY_LOSS_LIMIT_USD env var / TRADING config (fixed $ amount, backward compat)
-      2. STRATEGY['daily_loss_cap_pct'] % of current bankroll (default 10%)
+      1. DAILY_LOSS_LIMIT_USD env var / TRADING config (fixed $ amount)
+      2. STRATEGY['daily_loss_cap_pct'] % of live USDC balance (default 10%)
     """
     from config import TRADING, STRATEGY
     try:
-        from tracker import get_today_pnl, get_bankroll
-        today_pnl = get_today_pnl()
+        live_mode = TRADING.get("live_mode", False)
 
-        # Fixed-$ override (env var)
-        fixed_limit = TRADING.get("daily_loss_limit_usd", 0)
-        if fixed_limit > 0:
-            return today_pnl <= -fixed_limit
-
-        # Percentage cap (default path)
-        cap_pct = float(STRATEGY.get("daily_loss_cap_pct", 10.0))
-        bankroll = get_bankroll()
-        cap_usd  = bankroll * cap_pct / 100.0
-        return today_pnl <= -cap_usd
+        if live_mode:
+            # Only real money losses count in live mode
+            today_pnl = _get_live_today_pnl()
+            fixed_limit = TRADING.get("daily_loss_limit_usd", 0)
+            if fixed_limit > 0:
+                return today_pnl <= -fixed_limit
+            # Use live USDC balance as bankroll denominator
+            try:
+                import trader as _trader
+                bankroll = _trader.get_balance() or 0.0
+            except Exception:
+                from tracker import get_bankroll
+                bankroll = get_bankroll()
+            cap_pct = float(STRATEGY.get("daily_loss_cap_pct", 10.0))
+            cap_usd = bankroll * cap_pct / 100.0
+            return today_pnl <= -cap_usd
+        else:
+            # Paper mode: use paper P&L and paper bankroll as before
+            from tracker import get_today_pnl, get_bankroll
+            today_pnl   = get_today_pnl()
+            fixed_limit = TRADING.get("daily_loss_limit_usd", 0)
+            if fixed_limit > 0:
+                return today_pnl <= -fixed_limit
+            cap_pct  = float(STRATEGY.get("daily_loss_cap_pct", 10.0))
+            bankroll = get_bankroll()
+            cap_usd  = bankroll * cap_pct / 100.0
+            return today_pnl <= -cap_usd
     except Exception:
         return False
 
@@ -1211,30 +1248,56 @@ def circuit_breaker_status():
     """Return bankroll + circuit breaker state (daily P&L, targets, loss cap)."""
     from config import TRADING, STRATEGY
     try:
-        from tracker import get_daily_bankroll_stats, get_bankroll
-        stats = get_daily_bankroll_stats()
+        live_mode   = TRADING.get("live_mode", False)
         fixed_limit = TRADING.get("daily_loss_limit_usd", 0)
-        return jsonify({
-            # Bankroll progress
-            "bankroll_usd":        stats["bankroll"],
-            "initial_bankroll_usd": float(STRATEGY.get("initial_bankroll", 200)),
-            "today_pnl_usd":       stats["today_pnl_usd"],
-            "today_pnl_pct":       stats["today_pnl_pct"],
-            "pct_of_daily_target": stats["pct_of_target"],
-            # Targets (informational only — no longer affects bet sizing)
-            "daily_target_pct":    stats["daily_target_pct"],
-            "daily_target_usd":    stats["daily_target_usd"],
-            "target_hit":          stats["target_hit"],
-            # Loss cap
-            "loss_cap_pct":        stats["loss_cap_pct"],
-            "loss_cap_usd":        stats["loss_cap_usd"],
-            "loss_cap_hit":        stats["loss_cap_hit"],
-            "fixed_loss_limit_usd": fixed_limit,
-            "tripped":             _is_circuit_breaker_tripped(),
-            # Scan capital (= full bankroll, no cap)
-            "scan_capital":        _scan_capital(),
-            "max_bet_pct":         float(STRATEGY.get("max_bet_pct", 20)),
-        })
+        cap_pct     = float(STRATEGY.get("daily_loss_cap_pct", 10.0))
+
+        if live_mode:
+            # Live mode: use real USDC balance + live trade P&L only
+            try:
+                import trader as _trader
+                bankroll = _trader.get_balance() or 0.0
+            except Exception:
+                from tracker import get_bankroll
+                bankroll = get_bankroll()
+            today_pnl = _get_live_today_pnl()
+            cap_usd   = bankroll * cap_pct / 100.0
+            tripped   = _is_circuit_breaker_tripped()
+            return jsonify({
+                "live_mode":           True,
+                "bankroll_usd":        round(bankroll, 2),
+                "today_pnl_usd":       today_pnl,
+                "today_pnl_pct":       round(today_pnl / bankroll * 100, 2) if bankroll else 0,
+                "loss_cap_pct":        cap_pct,
+                "loss_cap_usd":        round(cap_usd, 2),
+                "loss_cap_hit":        tripped,
+                "fixed_loss_limit_usd": fixed_limit,
+                "tripped":             tripped,
+                "scan_capital":        _scan_capital(),
+                "note":                "Paper P&L excluded — live trade losses only",
+            })
+        else:
+            # Paper mode: original paper-bankroll stats
+            from tracker import get_daily_bankroll_stats
+            stats = get_daily_bankroll_stats()
+            return jsonify({
+                "live_mode":           False,
+                "bankroll_usd":        stats["bankroll"],
+                "initial_bankroll_usd": float(STRATEGY.get("initial_bankroll", 200)),
+                "today_pnl_usd":       stats["today_pnl_usd"],
+                "today_pnl_pct":       stats["today_pnl_pct"],
+                "pct_of_daily_target": stats["pct_of_target"],
+                "daily_target_pct":    stats["daily_target_pct"],
+                "daily_target_usd":    stats["daily_target_usd"],
+                "target_hit":          stats["target_hit"],
+                "loss_cap_pct":        stats["loss_cap_pct"],
+                "loss_cap_usd":        stats["loss_cap_usd"],
+                "loss_cap_hit":        stats["loss_cap_hit"],
+                "fixed_loss_limit_usd": fixed_limit,
+                "tripped":             _is_circuit_breaker_tripped(),
+                "scan_capital":        _scan_capital(),
+                "max_bet_pct":         float(STRATEGY.get("max_bet_pct", 20)),
+            })
     except Exception as e:
         return jsonify({"error": str(e), "tripped": _is_circuit_breaker_tripped()})
 
