@@ -706,17 +706,12 @@ def trigger_scan():
     target_date = body.get("date") or None  # None = scan full window
     days        = int(body.get("days", 3))  # how many forward days (default 3)
 
-    scan_start = datetime.utcnow().isoformat()
-
     def _scan_then_trade():
         run_scan_bg(capital=capital, target_date=target_date, days=days)
         if os.environ.get("AUTO_TRADE", "false").lower() == "true":
             from tracker import _load as _tload
-            data  = _tload()
-            fresh = [o for o in data.get("opportunities", [])
-                     if o.get("first_seen", "") >= scan_start]
-            print(f"[auto-scan] {len(fresh)} fresh opportunities from manual scan")
-            _auto_execute_trades(fresh)
+            data = _tload()
+            _auto_execute_trades(data.get("opportunities", []))
 
     t = threading.Thread(target=_scan_then_trade, daemon=True)
     t.start()
@@ -980,16 +975,14 @@ def _auto_scan_job():
 
     def _scan_then_trade():
         run_scan_bg(days=3, capital=capital)
-        # After scan completes, auto-execute opportunities found in THIS scan only.
+        # After scan completes, auto-execute open A-tier opportunities.
         # Gated by AUTO_TRADE=true — safe to call, it will no-op if disabled.
+        # Safety: _auto_execute_trades filters to A-tier, skips taken IDs,
+        # deduplicates by city/date/side, and caps at 5 bets per run.
         if os.environ.get("AUTO_TRADE", "false").lower() == "true":
             from tracker import _load as _tload
             data = _tload()
-            # Filter to opportunities first_seen during this scan run
-            fresh = [o for o in data.get("opportunities", [])
-                     if o.get("first_seen", "") >= scan_start]
-            print(f"[auto-scan] {len(fresh)} fresh opportunities from this scan")
-            _auto_execute_trades(fresh)
+            _auto_execute_trades(data.get("opportunities", []))
 
     # days=3: scan yesterday + today + tomorrow + day-after-tomorrow
     threading.Thread(target=_scan_then_trade, daemon=True).start()
