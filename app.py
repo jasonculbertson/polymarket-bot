@@ -766,7 +766,17 @@ def export_csv(type):
 
 
 _scheduler      = None
-_last_auto_scan = None   # ISO string of last auto-scan start time
+_last_auto_scan = None   # ISO string of last auto-scan start time (Pacific time)
+
+try:
+    from zoneinfo import ZoneInfo
+    _TZ_PACIFIC = ZoneInfo("America/Los_Angeles")
+except ImportError:
+    try:
+        import pytz
+        _TZ_PACIFIC = pytz.timezone("America/Los_Angeles")
+    except ImportError:
+        _TZ_PACIFIC = None   # fall back to local time
 
 
 def _get_live_today_pnl() -> float:
@@ -954,7 +964,7 @@ def _auto_scan_job():
         except Exception:
             print("[auto-scan] ⛔ daily loss cap hit — scan skipped")
         return
-    _last_auto_scan = datetime.now().isoformat()
+    _last_auto_scan = datetime.now(_TZ_PACIFIC).isoformat() if _TZ_PACIFIC else datetime.now().isoformat()
     capital = _scan_capital()
     scan_start = datetime.utcnow().isoformat()
 
@@ -1020,7 +1030,7 @@ def _start_scheduler():
         print("apscheduler not installed — auto-scan disabled. pip install apscheduler")
         return
 
-    _scheduler = BackgroundScheduler(daemon=True)
+    _scheduler = BackgroundScheduler(daemon=True, timezone="America/Los_Angeles")
 
     _scheduler.add_job(
         _auto_scan_job,
@@ -1041,7 +1051,12 @@ def _start_scheduler():
             id="market_open_scan",
             timezone="UTC",
         )
-        print(f"Market-open scan scheduled at {MARKET_OPEN_UTC} UTC daily")
+        # Convert UTC market-open time to Pacific for logging
+        from datetime import timezone as _dtz
+        utc_dt  = datetime(2000, 1, 1, int(h_str), int(m_str), tzinfo=_dtz.utc)
+        pst_dt  = utc_dt.astimezone(_TZ_PACIFIC) if _TZ_PACIFIC else utc_dt
+        pst_str = pst_dt.strftime("%I:%M %p PT")
+        print(f"Market-open scan scheduled at {MARKET_OPEN_UTC} UTC ({pst_str}) daily")
     except Exception as e:
         print(f"[WARN] Could not schedule market-open scan: {e}")
 
@@ -1095,14 +1110,23 @@ def schedule_status():
         })
     scan_job    = _scheduler.get_job("auto_scan")
     monitor_job = _scheduler.get_job("quick_monitor")
+
+    def _to_pst(dt):
+        if dt is None:
+            return None
+        if _TZ_PACIFIC:
+            return dt.astimezone(_TZ_PACIFIC).isoformat()
+        return dt.isoformat()
+
     return jsonify({
         "enabled":           True,
         "interval_hrs":      SCAN_INTERVAL_HOURS,
-        "next_scan":         scan_job.next_run_time.isoformat()    if scan_job    and scan_job.next_run_time    else None,
+        "next_scan":         _to_pst(scan_job.next_run_time)    if scan_job    else None,
         "last_scan":         _last_auto_scan,
-        "next_monitor":      monitor_job.next_run_time.isoformat() if monitor_job and monitor_job.next_run_time else None,
+        "next_monitor":      _to_pst(monitor_job.next_run_time) if monitor_job else None,
         "last_monitor":      _last_monitor,
         "monitor_log":       _monitor_log[-50:],
+        "timezone":          "America/Los_Angeles",
     })
 
 
