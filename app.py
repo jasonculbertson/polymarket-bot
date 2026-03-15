@@ -976,8 +976,25 @@ def _auto_execute_trades(scan_opportunities: list):
                                size_usd, result.get("price", scan_price),
                                result.get("order_id", "")[:16], ok)
             except Exception as e:
+                err_str = str(e)
                 _atlog.warning("[auto-trade] ❌ %s %s: %s",
                                opp.get("city"), opp.get("id"), e)
+                # If the orderbook no longer exists, the market is closed.
+                # Add to live_bets taken list so we never retry this opp.
+                if "does not exist" in err_str or "inactive" in err_str or "closed" in err_str:
+                    try:
+                        lb = _pg_kv_load("live_bets") or {}
+                        lb_ids = lb.get("ids", [])
+                        if opp_id and opp_id not in lb_ids:
+                            lb_ids.append(opp_id)
+                            _pg_kv_save("live_bets", {
+                                "ids":     lb_ids,
+                                "updated": datetime.utcnow().isoformat(),
+                            })
+                            _atlog.warning("[auto-trade] marked %s as taken (closed market)",
+                                           opp_id)
+                    except Exception as _e2:
+                        _atlog.warning("[auto-trade] failed to save taken for closed market: %s", _e2)
     except Exception as e:
         _atlog.warning("[auto-trade] ERROR: %s", e)
 

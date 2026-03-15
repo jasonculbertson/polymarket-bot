@@ -103,6 +103,18 @@ def buy(token_id: str, size_usd: float, price: float,
         if drift > 0.05:
             log.warning("[trader] Price drift: scan=%.2f live=%.2f for %s", price, live_price, token_id[:16])
         price = live_price + _DEFAULT_TICK  # +1¢ slippage guarantees immediate fill
+    else:
+        # Could not fetch live price (market may be closed or not yet active).
+        # Double-check via orderbook — if no bids exist, the market is dead.
+        best_bid = _fetch_best_bid(token_id)
+        if best_bid is None:
+            raise ValueError(
+                f"No live price or orderbook for {token_id[:16]} — "
+                f"market appears closed or inactive, skipping"
+            )
+        # Orderbook exists but midpoint API failed — use bid as proxy price
+        log.warning("[trader] midpoint unavailable for %s, using best bid %.4f", token_id[:16], best_bid)
+        price = best_bid + _DEFAULT_TICK
 
     # Hard floor: NO tokens below 0.50 means market has moved heavily against us
     if price < 0.50:
