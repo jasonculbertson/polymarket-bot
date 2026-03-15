@@ -1043,10 +1043,13 @@ def record_live_trade(
                 opp["exit_reason"]      = None
                 opp["live_at"]          = datetime.utcnow().isoformat()
                 # Add to taken set so auto-execute never re-places this bet
-                if opp_id not in data["taken"]:
-                    data["taken"].append(opp_id)
+                taken_list = data.setdefault("taken", [])
+                if opp_id not in taken_list:
+                    taken_list.append(opp_id)
+                    print(f"[tracker] marked {opp_id} as taken ({len(taken_list)} total)")
                 _save(data)
                 return True
+    print(f"[tracker] record_live_trade: opp_id {opp_id!r} not found in tracker")
     return False
 
 
