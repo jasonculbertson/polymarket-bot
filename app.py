@@ -524,6 +524,43 @@ def outcomes():
                         "wins": 0, "losses": 0, "pending": 0, "recent": []})
 
 
+@app.route("/admin/restore-live", methods=["POST"])
+def admin_restore_live():
+    """
+    Restore a stop-loss-simulated live position back to open status.
+
+    Use when the monitor recorded a simulated stop-loss exit but the CLOB sell
+    never actually executed (e.g. 'not enough balance / allowance'), so the real
+    position is still open on Polymarket and should be resolved via actual temps.
+
+    POST JSON: { "opp_ids": ["no_1577541", "no_1585912", ...] }
+    """
+    try:
+        from tracker import _load as _tload, _save as _tsave, _tracker_lock
+        import threading
+        body   = request.get_json(force=True) or {}
+        ids    = body.get("opp_ids", [])
+        if not ids:
+            return jsonify({"error": "opp_ids list required"}), 400
+        restored = []
+        with _tracker_lock:
+            data = _tload()
+            for opp in data["opportunities"]:
+                if opp.get("id") in ids:
+                    opp["outcome"]      = None
+                    opp["exit_reason"]  = None
+                    opp["exit_price"]   = None
+                    opp["exit_at"]      = None
+                    opp["pnl_pct"]      = None
+                    opp["paper_pnl_usd"] = None
+                    opp["is_live"]      = True   # re-flag so monitor watches it
+                    restored.append(opp.get("id"))
+            _tsave(data)
+        return jsonify({"restored": restored, "count": len(restored)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/outcomes/correct", methods=["POST"])
 def outcomes_correct():
     """
