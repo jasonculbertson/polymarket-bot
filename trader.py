@@ -60,7 +60,7 @@ def _get_client():
         CLOB_API,
         key=POLY_PRIVATE_KEY,
         chain_id=_CHAIN_ID,
-        signature_type=0,   # 0 = EOA (MetaMask)
+        signature_type=1,   # 1 = Polymarket browser/proxy wallet (exported from Polymarket settings)
     )
 
     # Always derive API creds from the private key — stored creds go stale.
