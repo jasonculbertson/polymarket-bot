@@ -1042,6 +1042,9 @@ def record_live_trade(
                 opp["exit_price"]       = None
                 opp["exit_reason"]      = None
                 opp["live_at"]          = datetime.utcnow().isoformat()
+                # Add to taken set so auto-execute never re-places this bet
+                if opp_id not in data["taken"]:
+                    data["taken"].append(opp_id)
                 _save(data)
                 return True
     return False

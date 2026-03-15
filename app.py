@@ -905,10 +905,11 @@ def _auto_execute_trades(scan_opportunities: list):
         # YES bets disabled in live trading — paper-only until model improves
         live_yes = TRADING.get("live_yes_enabled", False)
 
-        # Only act on opportunities from THIS scan, A-tier, not already taken
+        # Only act on opportunities that are: A-tier, not taken, not already live, NO type
         a_tier = [o for o in scan_opportunities
                   if o.get("quality_tier") == "A"
                   and o.get("id") not in taken
+                  and not o.get("is_live")          # secondary guard: skip already-placed bets
                   and (o.get("no_token_id") or o.get("token_id"))
                   and (live_yes or o.get("type") == "no")]
 
