@@ -23,7 +23,7 @@ LATEST   = os.path.join(DATA_DIR, "latest_scan.json")
 os.makedirs(DATA_DIR, exist_ok=True)
 
 # Auto-scan config (set SCAN_INTERVAL_HOURS=0 to disable)
-SCAN_INTERVAL_HOURS = int(os.environ.get("SCAN_INTERVAL_HOURS", "2"))  # 2h default — scans 3 days ahead
+SCAN_INTERVAL_HOURS = int(os.environ.get("SCAN_INTERVAL_HOURS", "1"))  # 1h default — scans for new bets hourly
 SCAN_CAPITAL        = int(os.environ.get("SCAN_CAPITAL", "400"))
 
 _scan_lock    = threading.Lock()
