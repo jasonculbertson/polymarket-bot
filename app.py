@@ -979,9 +979,16 @@ def _auto_execute_trades(scan_opportunities: list):
                 err_str = str(e)
                 _atlog.warning("[auto-trade] ❌ %s %s: %s",
                                opp.get("city"), opp.get("id"), e)
-                # If the orderbook no longer exists, the market is closed.
-                # Add to live_bets taken list so we never retry this opp.
-                if "does not exist" in err_str or "inactive" in err_str or "closed" in err_str:
+                # If the orderbook no longer exists or the market resolved to 0,
+                # add to live_bets taken list so we never retry this opp.
+                _market_dead = (
+                    "does not exist" in err_str
+                    or "inactive" in err_str
+                    or "closed" in err_str
+                    or ("drift too large" in err_str and "live=0.00" in err_str)
+                    or "No live price or orderbook" in err_str
+                )
+                if _market_dead:
                     try:
                         lb = _pg_kv_load("live_bets") or {}
                         lb_ids = lb.get("ids", [])
