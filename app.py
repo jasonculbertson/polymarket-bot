@@ -895,14 +895,23 @@ def _auto_scan_job():
         return
     _last_auto_scan = datetime.now().isoformat()
     capital = _scan_capital()
+    scan_start = datetime.utcnow().isoformat()
+
+    def _scan_then_trade():
+        run_scan_bg(days=3, capital=capital)
+        # After scan completes, auto-execute opportunities found in THIS scan only.
+        # Gated by AUTO_TRADE=true — safe to call, it will no-op if disabled.
+        if os.environ.get("AUTO_TRADE", "false").lower() == "true":
+            from tracker import _load as _tload
+            data = _tload()
+            # Filter to opportunities first_seen during this scan run
+            fresh = [o for o in data.get("opportunities", [])
+                     if o.get("first_seen", "") >= scan_start]
+            print(f"[auto-scan] {len(fresh)} fresh opportunities from this scan")
+            _auto_execute_trades(fresh)
 
     # days=3: scan yesterday + today + tomorrow + day-after-tomorrow
-    # Auto-execute is gated by AUTO_TRADE=true env var — disabled by default
-    threading.Thread(
-        target=run_scan_bg,
-        kwargs={"days": 3, "capital": capital},
-        daemon=True,
-    ).start()
+    threading.Thread(target=_scan_then_trade, daemon=True).start()
 
 
 def _daily_learn_job():
