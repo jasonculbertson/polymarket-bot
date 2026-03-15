@@ -1059,6 +1059,26 @@ def trade_balance():
         return jsonify({"error": str(e), "balance_usdc": None})
 
 
+@app.route("/trade/activate", methods=["POST"])
+def trade_activate():
+    """Activate CLOB allowance so Polymarket balance is accessible for trading."""
+    try:
+        import trader as _trader
+        from py_clob_client.clob_types import BalanceAllowanceParams, AssetType
+        client = _trader._get_client()
+        # update_balance_allowance syncs on-chain USDC balance → CLOB allowance
+        result = client.update_balance_allowance(
+            BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
+        )
+        # Re-check balance after activation
+        after = client.get_balance_allowance(
+            BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
+        )
+        return jsonify({"activate_result": result, "balance_after": after})
+    except Exception as e:
+        return jsonify({"error": str(e)})
+
+
 @app.route("/circuit-breaker/status")
 def circuit_breaker_status():
     """Return bankroll + circuit breaker state (daily P&L, targets, loss cap)."""
