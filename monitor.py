@@ -1,13 +1,15 @@
 """
-monitor.py — Background position monitor with auto stop-loss
+monitor.py — Background position monitor with auto stop-loss and forecast-drift exit
 
 Runs a daemon thread that wakes every MONITOR_INTERVAL_SECS seconds and:
   1. Loads all live positions from tracker
   2. Verifies each position's buy order actually filled:
        - If the CLOB order is still LIVE (unfilled) after STALE_ORDER_HOURS → cancel + mark cancelled
        - If unfilled but recent → log as PENDING and skip (let it fill)
-  3. Fetches current best-bid price from CLOB for filled positions
-  4. Auto-sells if:
+  3. For filled positions — checks forecast drift first:
+       - If tracker has flagged edge_gone=True (weather forecast moved against the bet) → sell immediately
+  4. Fetches current best-bid price from CLOB for filled positions
+  5. Auto-sells if:
        current_price < entry_price × (1 - STOP_LOSS_PCT/100)   → stop-loss
        current_price ≥ entry_price × (1 + TAKE_PROFIT_PCT/100) → take-profit (if enabled)
 
@@ -105,7 +107,12 @@ def check_positions():
       - LIVE + age < STALE_ORDER_HOURS  → log PENDING, skip (give it more time)
       - FILLED / paper / unknown        → proceed to Phase 2
 
-    Phase 2 — Price monitoring (stop-loss / take-profit):
+    Phase 2a — Forecast-drift exit (runs before price thresholds):
+      - If tracker has set edge_gone=True (weather forecast shifted against our bet),
+        sell immediately at the current bid. We'd rather take a small loss now than
+        ride to a near-certain full loss at resolution.
+
+    Phase 2b — Price monitoring (stop-loss / take-profit):
       - Fetches current best-bid from CLOB
       - Sells and marks exit if threshold crossed
     """
@@ -178,7 +185,48 @@ def check_positions():
 
             # fill_status == "FILLED" or None (error → treat as filled, proceed normally)
 
-        # ── Phase 2: price monitoring — stop-loss / take-profit ───────────────
+        # ── Phase 2a: forecast-drift exit ─────────────────────────────────────
+        # check_forecast_drift() (runs every 15 min via quick_monitor) sets
+        # edge_gone=True when the weather forecast has moved enough that our
+        # original edge is gone. Sell immediately — don't wait for the price
+        # to crater at resolution.
+        if pos.get("edge_gone"):
+            with _exiting_lock:
+                if opp_id in _exiting_positions:
+                    continue
+                _exiting_positions.add(opp_id)
+
+            current = _fetch_best_bid(token_id)
+            reason  = pos.get("edge_gone_reason", "forecast drifted against bet")
+            _log_event("FORECAST_DRIFT", opp_id, token_id, current or 0.0,
+                       f"edge_gone — {reason[:80]}")
+            log.warning(
+                "[monitor] FORECAST DRIFT EXIT opp=%s current=%.4f reason=%s",
+                opp_id, current or 0.0, reason[:60],
+            )
+
+            if current is None:
+                log.warning("[monitor] drift exit: no bid for %s — skipping sell", opp_id)
+                with _exiting_lock:
+                    _exiting_positions.discard(opp_id)
+                continue
+
+            try:
+                shares = float(pos.get("shares", 0))
+                trader.sell(token_id, shares, current)
+                tracker.mark_exited_early(opp_id, current)
+            except Exception as e:
+                err_str = str(e)
+                if "not enough balance" in err_str or "allowance" in err_str:
+                    log.warning("[monitor] drift exit SIMULATED (can't sell): %s — %s", opp_id, e)
+                    tracker.mark_exited_early(opp_id, current)
+                else:
+                    log.error("[monitor] drift exit sell FAILED for %s: %s", opp_id, e)
+                    with _exiting_lock:
+                        _exiting_positions.discard(opp_id)
+            continue  # Done — don't also apply stop-loss logic to this position
+
+        # ── Phase 2b: price monitoring — stop-loss / take-profit ──────────────
         current = _fetch_best_bid(token_id)
         if current is None:
             log.warning("[monitor] no price for %s, skipping", opp_id)
