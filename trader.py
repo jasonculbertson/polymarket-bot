@@ -203,9 +203,14 @@ def get_balance() -> Optional[float]:
     if not POLY_PRIVATE_KEY:
         return None
     try:
+        from py_clob_client.clob_types import BalanceAllowanceParams, AssetType
         client = _get_client()
-        balance_wei = client.get_balance()
-        return int(balance_wei) / 1e6
+        result = client.get_balance_allowance(
+            BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
+        )
+        # result is {"balance": "1000000", "allowance": "..."}  (USDC has 6 decimals)
+        raw = result.get("balance", "0") if isinstance(result, dict) else str(result)
+        return round(int(raw) / 1e6, 2)
     except Exception as e:
         log.warning("[trader] get_balance failed: %s", e)
         return None
