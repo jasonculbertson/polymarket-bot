@@ -705,10 +705,20 @@ def trigger_scan():
     capital     = body.get("capital") or _scan_capital()
     target_date = body.get("date") or None  # None = scan full window
     days        = int(body.get("days", 3))  # how many forward days (default 3)
-    t = threading.Thread(target=run_scan_bg,
-                         kwargs=dict(capital=capital, target_date=target_date,
-                                     days=days),
-                         daemon=True)
+
+    scan_start = datetime.utcnow().isoformat()
+
+    def _scan_then_trade():
+        run_scan_bg(capital=capital, target_date=target_date, days=days)
+        if os.environ.get("AUTO_TRADE", "false").lower() == "true":
+            from tracker import _load as _tload
+            data  = _tload()
+            fresh = [o for o in data.get("opportunities", [])
+                     if o.get("first_seen", "") >= scan_start]
+            print(f"[auto-scan] {len(fresh)} fresh opportunities from manual scan")
+            _auto_execute_trades(fresh)
+
+    t = threading.Thread(target=_scan_then_trade, daemon=True)
     t.start()
     return jsonify({"status": "started", "capital": capital})
 
