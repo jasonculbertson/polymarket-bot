@@ -29,6 +29,7 @@ LIVE_MODE        = TRADING["live_mode"]
 SLIPPAGE_PCT     = TRADING["slippage_pct"]
 
 POLY_PRIVATE_KEY    = os.environ.get("POLY_PRIVATE_KEY", "")
+POLY_FUNDER         = os.environ.get("POLY_FUNDER", "")   # Polymarket proxy wallet address
 POLY_API_KEY        = os.environ.get("POLY_API_KEY", "")
 POLY_API_SECRET     = os.environ.get("POLY_API_SECRET", "")
 POLY_API_PASSPHRASE = os.environ.get("POLY_API_PASSPHRASE", "")
@@ -56,17 +57,22 @@ def _get_client():
     from py_clob_client.client import ClobClient
     from py_clob_client.clob_types import ApiCreds
 
+    # signature_type=2: EOA key signs, but funds live in a Polymarket proxy wallet (funder)
+    # signature_type=0: EOA key signs AND holds funds directly
+    sig_type = 2 if POLY_FUNDER else 0
     client = ClobClient(
         CLOB_API,
         key=POLY_PRIVATE_KEY,
         chain_id=_CHAIN_ID,
-        signature_type=1,   # 1 = Polymarket browser/proxy wallet (exported from Polymarket settings)
+        signature_type=sig_type,
+        funder=POLY_FUNDER or None,
     )
+    log.warning("[trader] Using signature_type=%d funder=%s", sig_type, POLY_FUNDER or "none")
 
     # Always derive API creds from the private key — stored creds go stale.
     creds = client.create_or_derive_api_creds()
     client.set_api_creds(creds)
-    log.info("[trader] API creds derived from private key")
+    log.warning("[trader] API creds derived from private key")
 
     return client
 
