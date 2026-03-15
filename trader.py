@@ -202,7 +202,14 @@ def get_balance() -> Optional[float]:
             BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
         )
         # result is {"balance": "1000000", "allowance": "..."}  (USDC has 6 decimals)
-        raw = result.get("balance", "0") if isinstance(result, dict) else str(result)
+        log.info("[trader] balance_allowance response: %s", result)
+        if isinstance(result, dict):
+            # Return wallet balance (raw on-chain USDC), not just allowance
+            raw = result.get("balance", "0")
+            allowance = result.get("allowance", "0")
+            log.info("[trader] USDC balance=%s allowance=%s (raw wei)", raw, allowance)
+        else:
+            raw = str(result)
         return round(int(raw) / 1e6, 2)
     except Exception as e:
         log.warning("[trader] get_balance failed: %s", e)
