@@ -704,7 +704,7 @@ def trigger_scan():
     # Default to bankroll-aware capital; allow manual override
     capital     = body.get("capital") or _scan_capital()
     target_date = body.get("date") or None  # None = scan full window
-    days        = int(body.get("days", 3))  # how many forward days (default 3)
+    days        = int(body.get("days", 5))  # how many forward days (default 5)
 
     def _scan_then_trade():
         run_scan_bg(capital=capital, target_date=target_date, days=days)
@@ -1025,7 +1025,7 @@ def _auto_scan_job():
     scan_start = datetime.utcnow().isoformat()
 
     def _scan_then_trade():
-        run_scan_bg(days=3, capital=capital)
+        run_scan_bg(days=5, capital=capital)
         # After scan completes, auto-execute open A-tier opportunities.
         # Gated by AUTO_TRADE=true — safe to call, it will no-op if disabled.
         # Safety: _auto_execute_trades filters to A-tier, skips taken IDs,
@@ -1035,7 +1035,7 @@ def _auto_scan_job():
             data = _tload()
             _auto_execute_trades(data.get("opportunities", []))
 
-    # days=3: scan yesterday + today + tomorrow + day-after-tomorrow
+    # days=5: scan yesterday + today + 5 forward days (today through today+5)
     threading.Thread(target=_scan_then_trade, daemon=True).start()
 
 
