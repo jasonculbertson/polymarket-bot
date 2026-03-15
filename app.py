@@ -816,11 +816,27 @@ def _scan_capital() -> float:
         return float(SCAN_CAPITAL)
 
 
+def _bracket_side(opp: dict) -> str:
+    """
+    Returns 'high' if the NO bracket is above the forecast (won't go that high),
+    or 'low' if below (won't go that low). Used to allow one bet on each end
+    of the market for the same city/date without placing adjacent bracket bets.
+    """
+    import re
+    bracket  = str(opp.get("bracket", ""))
+    forecast = float(opp.get("forecast_temp") or 0)
+    nums = re.findall(r'-?\d+\.?\d*', bracket)
+    if not nums:
+        return "high"
+    return "high" if float(nums[0]) > forecast else "low"
+
+
 def _auto_execute_trades(scan_opportunities: list):
     """
     After a scan completes, auto-execute NEW A-tier opportunities from THIS scan only.
     Requires AUTO_TRADE=true env var — disabled by default.
-    Max 5 trades per run. One trade per city per date.
+    Max 5 trades per run. Per city/date: at most one high-end NO + one low-end NO
+    (opposite ends of the market) — never two adjacent brackets.
     """
     from config import TRADING
     if not TRADING.get("live_mode"):
@@ -844,13 +860,17 @@ def _auto_execute_trades(scan_opportunities: list):
                   and (o.get("no_token_id") or o.get("token_id"))
                   and (live_yes or o.get("type") == "no")]
 
-        # De-duplicate: one bet per (city, date) pair — pick highest return
-        seen_city_date = {}
+        # Per city/date: allow ONE high-end + ONE low-end NO bet (opposite ends only).
+        # High-end = bracket above forecast (won't go that high).
+        # Low-end  = bracket below forecast (won't go that low).
+        # Sort by return_pct desc so the best bet on each side wins.
+        seen_city_date_side = {}
         for o in sorted(a_tier, key=lambda x: x.get("return_pct", 0), reverse=True):
-            key = (o.get("city", ""), o.get("date", ""))
-            if key not in seen_city_date:
-                seen_city_date[key] = o
-        a_tier = list(seen_city_date.values())[:5]  # hard cap: 5 bets per scan
+            side = _bracket_side(o)
+            key  = (o.get("city", ""), o.get("date", ""), side)
+            if key not in seen_city_date_side:
+                seen_city_date_side[key] = o
+        a_tier = list(seen_city_date_side.values())[:5]  # hard cap: 5 bets per scan
 
         if not a_tier:
             print("[auto-trade] no new A-tier opportunities to execute")
