@@ -374,14 +374,12 @@ STRATEGY = {
     "yes_lottery_size": 5,           # $ per bracket for lottery clusters (vs default_yes_size)
     # ── Live-trading quality gate (A-tier) ─────────────────────────────────────
     # In LIVE_MODE, only A-tier opportunities are executed. B-tier still paper-tracks.
-    # Raise these from paper minimums to require a clear edge before spending real money.
     "live_no_min_distance_f": 6.0,   # °F — A-tier live gate (vs paper threshold of 4°F)
     "live_no_min_distance_c": 3.5,   # °C — A-tier live gate (vs paper threshold of 2.2°C)
     "live_yes_min_margin_f":  3.0,   # °F inside bracket — vs paper threshold of 2°F
     "live_yes_min_margin_c":  1.7,   # °C — vs paper threshold of 1°C
     "live_min_ev_score":     12.0,   # minimum EV score for any live trade
     # Probability-edge thresholds for A-tier qualification
-    # edge = model_P(bracket) − market_implied_P (= YES price)
     # NO A-tier: edge ≤ −0.15  (market charges 15%+ more than our Gaussian says bracket is worth)
     # YES A-tier: edge ≥ 0.12  (our Gaussian says bracket is 12%+ more likely than market implies)
     "live_no_min_edge":  0.15,   # |negative edge| threshold for NO A-tier
