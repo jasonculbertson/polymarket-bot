@@ -315,9 +315,24 @@ def record_scan(yes_clusters, no_opps, all_forecasts: dict = None) -> int:
             "consensus":    day_fc.get("consensus"),
         }
 
+    # Build lookup for re-grading existing unresolved opportunities
+    existing_by_id = {o["id"]: o for o in data["opportunities"]}
+
     for o in no_opps:
         oid = _no_id(o.market_id)
         if oid in existing_ids:
+            # Re-grade quality_tier and refresh price/edge fields for open positions.
+            # This ensures config changes (e.g. moving A-tier thresholds) take effect
+            # on already-tracked opportunities, not just newly discovered ones.
+            existing = existing_by_id.get(oid)
+            if existing and existing.get("outcome") is None and not existing.get("is_live"):
+                existing["quality_tier"] = getattr(o, "quality_tier", existing["quality_tier"])
+                existing["entry_price"]  = round(o.no_price, 4)
+                existing["return_pct"]   = round(o.return_pct, 2)
+                existing["prob_edge"]    = getattr(o, "prob_edge", existing.get("prob_edge"))
+                existing["model_prob"]   = getattr(o, "model_prob", existing.get("model_prob"))
+                existing["market_prob"]  = getattr(o, "market_prob", existing.get("market_prob"))
+                existing["no_token_id"]  = o.no_token_id or existing.get("no_token_id", "")
             continue
         data["opportunities"].append({
             "id": oid,
