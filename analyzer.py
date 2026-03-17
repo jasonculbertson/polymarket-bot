@@ -206,8 +206,8 @@ def _no_quality_tier(distance_f: float, unit: str, confidence: str,
 
     B = borderline: paper-trade only.
     """
-    live_dist_f   = float(STRATEGY.get("live_no_min_distance_f", 9.0))
-    live_dist_c   = float(STRATEGY.get("live_no_min_distance_c", 5.0))
+    live_dist_f   = float(STRATEGY.get("live_no_min_distance_f", 6.0))
+    live_dist_c   = float(STRATEGY.get("live_no_min_distance_c", 3.5))
     live_ev       = float(STRATEGY.get("live_min_ev_score", 12.0))
     live_min_edge = float(STRATEGY.get("live_no_min_edge", 0.15))  # |edge| threshold for A-tier
     min_dist = live_dist_c if unit == "C" else live_dist_f
