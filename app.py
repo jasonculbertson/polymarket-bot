@@ -363,6 +363,9 @@ def _normalize_scan(scan: dict) -> dict:
             "yes_token_id": "", "no_token_id": "", "polymarket_url": o.get("polymarket_url"),
         } for o in no_list]
     scan.setdefault("forecasts", [])
+    # Inject live_mode flag so UI can mark YES clusters as paper-only
+    from config import TRADING
+    scan["live_mode"] = TRADING.get("live_mode", False)
     return scan
 
 
@@ -873,6 +876,10 @@ def api_learn():
         from optimizer import run_daily_optimizer
 
         resolve_outcomes()
+
+        from tracker import claim_resolved_winnings
+        claim_result = claim_resolved_winnings()
+
         learn_result = learn_from_outcomes()
         data = _load()
         report = run_daily_optimizer(data)
@@ -880,6 +887,7 @@ def api_learn():
 
         return jsonify({
             "ok":        True,
+            "claim":     claim_result,
             "learn":     {k: v for k, v in learn_result.items() if k != "current_weights"},
             "optimizer": report,
         })
@@ -895,6 +903,113 @@ def api_report():
     if report is None:
         return jsonify({"error": "No report yet — call POST /api/learn first"}), 404
     return jsonify(report)
+
+
+@app.route("/api/daily-summary", methods=["POST"])
+def api_daily_summary():
+    """
+    Send the daily Slack summary on demand (same message as the 8am UTC cron).
+    Useful for testing the webhook or previewing the summary format.
+    Requires SLACK_WEBHOOK_URL to be set.
+    """
+    try:
+        from tracker import _load
+        from notify import send_daily_summary
+
+        report = _pg_kv_load("daily_report") or {}
+        data   = _load()
+        # Minimal learn_result stub if no recent learn run
+        learn_result = {"learned": 0, "temps_fetched": 0,
+                        "weights_updated": False, "calib_updated": False,
+                        "city_adjustments": {}}
+        sent = send_daily_summary(data, learn_result, report)
+        return jsonify({"ok": True, "sent": sent,
+                        "note": "Set SLACK_WEBHOOK_URL to enable" if not sent else ""})
+    except Exception as e:
+        import traceback
+        return jsonify({"ok": False, "error": str(e), "trace": traceback.format_exc()}), 500
+
+
+@app.route("/api/results")
+def api_results():
+    """
+    Detailed per-bet results for resolved positions.
+
+    Query params:
+      ?days=N    — look back N days (default: 1 = yesterday only)
+      ?all=1     — return all resolved bets ever
+    """
+    try:
+        from tracker import _load
+        from datetime import date, timedelta
+        import math
+
+        data = _load()
+        opps = data.get("opportunities", [])
+
+        if request.args.get("all") == "1":
+            resolved = [o for o in opps if o.get("outcome") is not None]
+        else:
+            days = int(request.args.get("days", 1))
+            cutoff = (date.today() - timedelta(days=days)).isoformat()
+            resolved = [
+                o for o in opps
+                if o.get("outcome") is not None
+                and (o.get("exit_at") or o.get("resolution_date") or "") >= cutoff
+            ]
+
+        # Sort newest first
+        resolved.sort(key=lambda o: o.get("exit_at") or o.get("resolution_date") or "", reverse=True)
+
+        wins   = [o for o in resolved if o.get("outcome") == "win"]
+        losses = [o for o in resolved if o.get("outcome") in ("loss",)]
+        cancelled = [o for o in resolved if o.get("outcome") == "loss"
+                     and o.get("exit_reason") == "order_cancelled"]
+
+        total_pnl    = sum(float(o.get("paper_pnl_usd") or 0) for o in resolved)
+        total_staked = sum(float(o.get("paper_size_usd") or 0) for o in resolved)
+        win_rate     = len(wins) / len(resolved) if resolved else None
+        roi          = total_pnl / total_staked * 100 if total_staked > 0 else None
+
+        bets = []
+        for o in resolved:
+            pnl = float(o.get("paper_pnl_usd") or 0)
+            entry  = float(o.get("execution_price") or o.get("entry_price") or 0)
+            exit_p = float(o.get("exit_price") or (0 if o.get("outcome") == "loss" else 1.0))
+            bets.append({
+                "id":             o.get("id"),
+                "city":           o.get("city"),
+                "date":           o.get("date"),
+                "bracket":        o.get("bracket"),
+                "type":           o.get("type"),
+                "outcome":        o.get("outcome"),
+                "exit_reason":    o.get("exit_reason"),
+                "entry_price":    round(entry, 4),
+                "exit_price":     round(exit_p, 4),
+                "actual_temp":    o.get("actual_temp"),
+                "paper_size_usd": float(o.get("paper_size_usd") or 0),
+                "paper_pnl_usd":  round(pnl, 2),
+                "pnl_pct":        o.get("pnl_pct"),
+                "resolved_at":    o.get("exit_at") or o.get("resolution_date"),
+                "is_live":        o.get("is_live", False),
+                "live_order_id":  o.get("live_order_id"),
+            })
+
+        return jsonify({
+            "period_days":       int(request.args.get("days", 1)) if request.args.get("all") != "1" else None,
+            "total_bets":        len(resolved),
+            "wins":              len(wins),
+            "losses":            len(losses) - len(cancelled),
+            "cancelled":         len(cancelled),
+            "win_rate":          round(win_rate, 4) if win_rate is not None else None,
+            "total_staked_usd":  round(total_staked, 2),
+            "total_pnl_usd":     round(total_pnl, 2),
+            "roi_pct":           round(roi, 2) if roi is not None else None,
+            "bets":              bets,
+        })
+    except Exception as e:
+        import traceback
+        return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
 
 
 @app.route("/api/positions")
@@ -1289,6 +1404,7 @@ def _daily_learn_job():
             redeem_result = redeem_all_live_wins()
             if redeem_result.get("attempted", 0) > 0:
                 print(f"[daily-learn] redeem: {redeem_result}")
+
             learn_result = learn_from_outcomes()
             data = _load()
             report = run_daily_optimizer(data)
@@ -1303,6 +1419,10 @@ def _daily_learn_job():
                 print(f"[daily-learn] backtest: {bt_rec.get('n_recommendations', 0)} recommendations")
             except Exception as bt_e:
                 print(f"[daily-learn] backtest error: {bt_e}")
+
+            from notify import send_daily_summary
+            sent = send_daily_summary(data, learn_result, report)
+            print(f"[daily-learn] daily summary Slack message {'sent' if sent else 'skipped (no webhook)'}")
         except Exception as e:
             print(f"[daily-learn] error: {e}")
 
@@ -1450,6 +1570,17 @@ def trade():
 
         if not opp_id or not token_id:
             return jsonify({"error": "id and token_id are required"}), 400
+
+        # YES cluster bets are paper-only — never execute live
+        if TRADING["live_mode"] and side == "buy":
+            from tracker import _load
+            _data = _load()
+            _opp = next((o for o in _data["opportunities"] if o["id"] == opp_id), None)
+            if _opp and _opp.get("type") == "yes":
+                return jsonify({
+                    "error": "YES cluster trades are paper-only. Only NO bets are executed live.",
+                    "paper_only": True,
+                }), 400
 
         if price is None:
             return jsonify({"error": "price is required"}), 400

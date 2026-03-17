@@ -1347,7 +1347,10 @@ function renderYes(clusters) {
       </td>
       <td style="white-space:nowrap">
         <button class="take-btn ${taken?'is-taken':''}" onclick="markTaken('${id}',this)">${taken?'✓ Taken':'Take'}</button>
-        <button class="trade-btn" id="trade-btn-${id}" data-id="${id}" data-token="${(c.brackets[0]&&c.brackets[0].yes_token_id)||''}" data-price="${c.total_price}" data-bracket="${encodeURIComponent(labels)}" data-side="buy" onclick="openTradeModalFromBtn(this)">Trade</button>
+        ${(_data&&_data.live_mode)
+          ? `<button class="trade-btn" id="trade-btn-${id}" data-id="${id}" data-token="${(c.brackets[0]&&c.brackets[0].yes_token_id)||''}" data-price="${c.total_price}" data-bracket="${encodeURIComponent(labels)}" data-side="buy" onclick="openTradeModalFromBtn(this)" title="YES clusters are paper-only in live mode" style="opacity:.5;cursor:default" disabled>Paper Only</button>`
+          : `<button class="trade-btn" id="trade-btn-${id}" data-id="${id}" data-token="${(c.brackets[0]&&c.brackets[0].yes_token_id)||''}" data-price="${c.total_price}" data-bracket="${encodeURIComponent(labels)}" data-side="buy" onclick="openTradeModalFromBtn(this)">Trade</button>`
+        }
       </td>
     </tr>
     <tr id="${detailId}" class="bracket-detail">
