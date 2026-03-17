@@ -329,7 +329,7 @@ STRATEGY = {
     # NO bets: only place when forecast confidence is "high" (all sources agree)
     "no_require_high_confidence": True,
     # Default order size for YES bets (USDC) — used as Kelly cap
-    "default_yes_size": 10,
+    "default_yes_size": 5,
     # YES clusters: minimum total_price — below this means market has likely already resolved
     "yes_min_total_price": 0.04,
     # YES clusters: forecast must be ≥ this many degrees inside the cluster edge
@@ -371,7 +371,7 @@ STRATEGY = {
     "ensemble_spread_no_boost_c": 3.3,    # °C equivalent
     # YES lottery: clusters with total_price < threshold get smaller per-bracket sizing
     "yes_lottery_threshold": 0.25,   # total_price below this = lottery cluster
-    "yes_lottery_size": 5,           # $ per bracket for lottery clusters (vs default_yes_size)
+    "yes_lottery_size": 2,           # $ per bracket for lottery clusters (vs default_yes_size)
     # ── Live-trading quality gate (A-tier) ─────────────────────────────────────
     # In LIVE_MODE, only A-tier opportunities are executed. B-tier still paper-tracks.
     "live_no_min_distance_f": 6.0,   # °F — A-tier live gate (vs paper threshold of 4°F)
