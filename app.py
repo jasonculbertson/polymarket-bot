@@ -169,6 +169,12 @@ def run_scan_bg(cities=None, capital=None, days=1, target_date=None):
             _scan_log.append(line.rstrip())
         proc.wait()
         _run_quick_monitor(log=_scan_log)
+        # Auto-execute A-tier NO bets for new qualifying opportunities
+        try:
+            from tracker import _load as _tload
+            _auto_execute_trades(_tload().get("opportunities", []))
+        except Exception as e:
+            _scan_log.append(f"[auto-trade] ERROR: {e}")
     except Exception as e:
         _scan_log.append(f"ERROR: {e}")
     finally:
@@ -1280,9 +1286,6 @@ def _auto_execute_trades(scan_opportunities: list):
                   and (live_yes or o.get("type") == "no")]
 
         # Per city/date: allow ONE high-end + ONE low-end NO bet (opposite ends only).
-        # High-end = bracket above forecast (won't go that high).
-        # Low-end  = bracket below forecast (won't go that low).
-        # Sort by return_pct desc so the best bet on each side wins.
         seen_city_date_side = {}
         for o in sorted(a_tier, key=lambda x: x.get("return_pct", 0), reverse=True):
             side = _bracket_side(o)
@@ -1300,7 +1303,6 @@ def _auto_execute_trades(scan_opportunities: list):
             try:
                 token_id   = opp.get("no_token_id") or opp.get("token_id", "")
                 size_usd   = float(opp.get("recommended_size") or opp.get("size_usd") or 20)
-                # Use entry_price (stored field name); fall back to no_price for legacy data
                 scan_price = float(opp.get("entry_price") or opp.get("no_price") or opp.get("price") or 0.80)
                 opp_id     = opp.get("id", "")
                 if not token_id or not opp_id:
@@ -1327,8 +1329,6 @@ def _auto_execute_trades(scan_opportunities: list):
                 err_str = str(e)
                 _atlog.warning("[auto-trade] ❌ %s %s: %s",
                                opp.get("city"), opp.get("id"), e)
-                # If the orderbook no longer exists or the market resolved to 0,
-                # add to live_bets taken list so we never retry this opp.
                 _market_dead = (
                     "does not exist" in err_str
                     or "inactive" in err_str
