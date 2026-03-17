@@ -99,6 +99,51 @@ CITIES = {
         "unit": "C",
         "wu_path": "/hourly/de/bavaria/munich/EDDM/date/",
     },
+    "LA": {
+        "series_id": 10725,
+        "station": "KLAX",
+        "lat": 33.942,
+        "lon": -118.408,
+        "tz": "America/Los_Angeles",
+        "unit": "F",
+        "wu_path": "/hourly/us/ca/los-angeles/KLAX/date/",
+    },
+    "Phoenix": {
+        "series_id": 10729,
+        "station": "KPHX",
+        "lat": 33.437,
+        "lon": -112.008,
+        "tz": "America/Phoenix",
+        "unit": "F",
+        "wu_path": "/hourly/us/az/phoenix/KPHX/date/",
+    },
+    "Denver": {
+        "series_id": 10730,
+        "station": "KDEN",
+        "lat": 39.856,
+        "lon": -104.674,
+        "tz": "America/Denver",
+        "unit": "F",
+        "wu_path": "/hourly/us/co/denver/KDEN/date/",
+    },
+    "Boston": {
+        "series_id": 10735,
+        "station": "KBOS",
+        "lat": 42.364,
+        "lon": -71.005,
+        "tz": "America/New_York",
+        "unit": "F",
+        "wu_path": "/hourly/us/ma/boston/KBOS/date/",
+    },
+    "Minneapolis": {
+        "series_id": 10736,
+        "station": "KMSP",
+        "lat": 44.880,
+        "lon": -93.218,
+        "tz": "America/Chicago",
+        "unit": "F",
+        "wu_path": "/hourly/us/mn/minneapolis/KMSP/date/",
+    },
     "Buenos Aires": {
         "series_id": 10744,
         "station": "SAEZ",
@@ -107,6 +152,105 @@ CITIES = {
         "tz": "America/Argentina/Buenos_Aires",
         "unit": "C",
         "wu_path": "/hourly/ar/buenos-aires/buenos-aires/SAEZ/date/",
+    },
+    "Dubai": {
+        "series_id": 10115,
+        "station": "OMDB",
+        "lat": 25.256,
+        "lon": 55.364,
+        "tz": "Asia/Dubai",
+        "unit": "C",
+        "wu_path": "/hourly/ae/dubai/dubai/OMDB/date/",
+    },
+    "Tokyo": {
+        "series_id": 10740,
+        "station": "RJTT",
+        "lat": 35.553,
+        "lon": 139.781,
+        "tz": "Asia/Tokyo",
+        "unit": "C",
+        "wu_path": "/hourly/jp/tokyo/tokyo/RJTT/date/",
+    },
+    "Shanghai": {
+        "series_id": 10741,
+        "station": "ZSSS",
+        "lat": 31.198,
+        "lon": 121.336,
+        "tz": "Asia/Shanghai",
+        "unit": "C",
+        "wu_path": "/hourly/cn/shanghai/shanghai/ZSSS/date/",
+    },
+    "Singapore": {
+        "series_id": 11314,
+        "station": "WSSS",
+        "lat": 1.359,
+        "lon": 103.989,
+        "tz": "Asia/Singapore",
+        "unit": "C",
+        "wu_path": "/hourly/sg/singapore/singapore/WSSS/date/",
+    },
+    "Hong Kong": {
+        "series_id": 11312,
+        "station": "VHHH",
+        "lat": 22.308,
+        "lon": 113.918,
+        "tz": "Asia/Hong_Kong",
+        "unit": "C",
+        "wu_path": "/hourly/hk/hong-kong/hong-kong/VHHH/date/",
+    },
+    "Auckland": {
+        "series_id": 10901,
+        "station": "NZAA",
+        "lat": -37.008,
+        "lon": 174.791,
+        "tz": "Pacific/Auckland",
+        "unit": "C",
+        "wu_path": "/hourly/nz/auckland/auckland/NZAA/date/",
+    },
+    "Warsaw": {
+        "series_id": 11342,
+        "station": "EPWA",
+        "lat": 52.165,
+        "lon": 20.967,
+        "tz": "Europe/Warsaw",
+        "unit": "C",
+        "wu_path": "/hourly/pl/masovian/warsaw/EPWA/date/",
+    },
+    "Tel Aviv": {
+        "series_id": 11295,
+        "station": "LLBG",
+        "lat": 32.011,
+        "lon": 34.887,
+        "tz": "Asia/Jerusalem",
+        "unit": "C",
+        "wu_path": "/hourly/il/tel-aviv/tel-aviv/LLBG/date/",
+    },
+    "Milan": {
+        "series_id": 11343,
+        "station": "LIML",
+        "lat": 45.445,
+        "lon": 9.277,
+        "tz": "Europe/Rome",
+        "unit": "C",
+        "wu_path": "/hourly/it/lombardy/milan/LIML/date/",
+    },
+    "Madrid": {
+        "series_id": 11345,
+        "station": "LEMD",
+        "lat": 40.472,
+        "lon": -3.561,
+        "tz": "Europe/Madrid",
+        "unit": "C",
+        "wu_path": "/hourly/es/madrid/madrid/LEMD/date/",
+    },
+    "Taipei": {
+        "series_id": 11346,
+        "station": "RCTP",
+        "lat": 25.077,
+        "lon": 121.233,
+        "tz": "Asia/Taipei",
+        "unit": "C",
+        "wu_path": "/hourly/tw/taipei/taipei/RCTP/date/",
     },
     "Sao Paulo": {
         "series_id": 11169,
@@ -203,11 +347,22 @@ STRATEGY = {
     # YES clusters: cities excluded due to high/bi-modal forecast error
     # Chicago MAE=6.27°F, Dallas MAE=5.18°F (bi-modal: 1°F when stable, 11-16°F during fronts)
     # Paris MAE=3.69°C — cluster window is ~3°F/1.5°C wide, can't reliably cover the error
-    "yes_exclude_cities": ["Chicago", "Dallas", "Paris"],
+    # Denver: rapid temperature swings (can drop 40°F in 24h) — too unpredictable for clusters
+    # Boston: New England frontal systems cause frequent day-of forecast errors
+    # Tokyo/Shanghai/HK/Taipei: typhoon season + rapid marine/continental swings
+    # Warsaw: Central European fronts, large day-to-day variability
+    # Auckland: Maritime southern-hemisphere weather, high cross-source error
+    "yes_exclude_cities": [
+        "Chicago", "Dallas", "Paris",           # original exclusions
+        "Denver", "Boston",                      # high US variability
+        "Tokyo", "Shanghai", "Hong Kong", "Taipei",  # Asia-Pacific typhoon/frontal risk
+        "Warsaw", "Auckland",                    # high variability, limited WU accuracy data
+    ],
+    # NO bets: reject markets with less than this total liquidity (USDC)
+    # Low-liquidity markets have wide bid-ask spreads and unreliable stop-loss exits
+    "no_min_liquidity_usd": 100,
     # Ensemble model spread thresholds — proxy for frontal instability / forecast uncertainty
     # Source: Open-Meteo ensemble API (ICON Seamless, ~40 members); spread = std dev of daily highs
-    # Even when WU and NWS agree, all sources can be wrong if they share the same biased model run.
-    # (e.g., Dallas 3/12: WU=65°F, NWS=66°F — both wrong, actual=76°F when warm front came early)
     # yes_skip: abort YES clusters when spread ≥ threshold (too risky to pin exact bracket)
     # no_boost: raise NO min-distance by ~2°F when spread ≥ threshold (extra margin for error)
     "ensemble_spread_yes_skip_f": 4.0,    # °F std dev across ~40 members → skip YES clusters
@@ -262,9 +417,9 @@ TRADING = {
     # Paper trading continues tracking YES bets for model improvement.
     # Set LIVE_YES_ENABLED=true in Railway to re-enable when model improves.
     "live_yes_enabled":      os.environ.get("LIVE_YES_ENABLED", "false").lower() == "true",
-    "stop_loss_pct":         float(os.environ.get("STOP_LOSS_PCT") or "50"),    # exit if down X%
+    "stop_loss_pct":         float(os.environ.get("STOP_LOSS_PCT") or "30"),    # exit if down X%
     # Don't trigger stop-loss within this many hours of resolution (price may just be stale)
-    "stop_loss_min_hours_to_resolution": float(os.environ.get("STOP_LOSS_MIN_HOURS") or "4"),
+    "stop_loss_min_hours_to_resolution": float(os.environ.get("STOP_LOSS_MIN_HOURS") or "2"),
     "take_profit_pct":       float(os.environ.get("TAKE_PROFIT_PCT") or "0"),   # 0 = disabled
     "monitor_interval_secs": int(os.environ.get("MONITOR_INTERVAL_SECS") or "300"),
     "slippage_pct":          float(os.environ.get("SLIPPAGE_PCT") or "1"),      # price tolerance %
