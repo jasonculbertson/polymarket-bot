@@ -655,7 +655,6 @@ def _fetch_live_price(token_id: str) -> Optional[float]:
     """
     import requests
     try:
-        # Polymarket midpoint price endpoint (most accurate)
         r = requests.get(
             f"{CLOB_API}/midpoint",
             params={"token_id": token_id},
@@ -669,7 +668,6 @@ def _fetch_live_price(token_id: str) -> Optional[float]:
     except Exception:
         pass
 
-    # Fallback: derive from CLOB spread
     try:
         import requests as req
         r = req.get(f"{CLOB_API}/book", params={"token_id": token_id}, timeout=5)

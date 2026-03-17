@@ -514,8 +514,6 @@ def find_no_opps(event: dict, forecast_temp: float, confidence: str,
         dist = bracket_distance(forecast_temp, lo, hi)
 
         # ── Hard distance gate — ALWAYS required, no edge bypass ──────────
-        # Never bet NO on a bracket within min_dist of the forecast.
-        # The edge model can flag quality tier but cannot override this floor.
         if dist < min_dist:
             continue
 
@@ -526,10 +524,15 @@ def find_no_opps(event: dict, forecast_temp: float, confidence: str,
         if no_price < cfg["no_min_price"]:
             continue
 
+        # ── Liquidity floor — skip thin markets ────────────────────────────
+        min_liq = cfg.get("no_min_liquidity_usd", 100)
+        if mkt["liquidity"] < min_liq:
+            continue
+
         # ── Probability edge (for quality-tier assignment only) ────────────
         model_p = _bracket_prob(forecast_temp, sigma, lo, hi)
-        market_p = float(yes_price)          # market's implied prob = YES price
-        edge = round(model_p - market_p, 4)  # negative = bracket overpriced → NO edge
+        market_p = float(yes_price)
+        edge = round(model_p - market_p, 4)
 
         ret_pct = (1.0 - no_price) / no_price * 100
         if ret_pct < no_min_return:
@@ -537,10 +540,9 @@ def find_no_opps(event: dict, forecast_temp: float, confidence: str,
 
         win_prob = estimate_no_win_prob(dist, confidence, unit)
         ev = round(win_prob * ret_pct - (1 - win_prob) * 100, 1)
-        # Spread-adjusted effective return using CLOB bid
         clob_bid = mkt.get("clob_best_bid")
         if clob_bid and 0 < clob_bid < 1:
-            eff_no = 1.0 - clob_bid   # cost to buy NO = sell YES at bid price
+            eff_no = 1.0 - clob_bid
             eff_ret = round((1.0 - eff_no) / eff_no * 100, 1) if 0 < eff_no < 1 else ret_pct
             sprd = round((eff_no - no_price) / no_price * 100, 1) if no_price > 0 else 0.0
         else:
