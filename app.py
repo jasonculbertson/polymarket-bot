@@ -1583,7 +1583,12 @@ def trade():
             from tracker import _load as _tload
             _tdata = _tload()
             _opp = next((o for o in _tdata.get("opportunities", []) if o.get("id") == opp_id), None)
-            if _opp and _opp.get("quality_tier", "B") != "A":
+            if _opp is None:
+                return jsonify({
+                    "error": "opportunity not found in current scan — may be stale",
+                    "tip": "Run a fresh scan and retry.",
+                }), 400
+            if _opp.get("quality_tier", "B") != "A":
                 return jsonify({
                     "error": "live_mode quality gate: only A-tier opportunities may be traded live",
                     "quality_tier": _opp.get("quality_tier"),
@@ -1591,7 +1596,7 @@ def trade():
                            "Use /api/trade in paper mode or wait for a higher-confidence opportunity."
                 }), 400
             # YES bets blocked in live trading until model improves (21% win rate in paper)
-            if _opp and _opp.get("type") == "yes" and not TRADING.get("live_yes_enabled"):
+            if _opp.get("type") == "yes" and not TRADING.get("live_yes_enabled"):
                 return jsonify({
                     "error": "YES bets are disabled in live trading (paper-only)",
                     "reason": "Model win rate 21% — not yet profitable. Set LIVE_YES_ENABLED=true to override.",

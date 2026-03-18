@@ -133,6 +133,10 @@ def save_results(clusters, no_opps, markets, forecasts, scan_time: str, target_d
             "forecast_confidence": o.forecast_confidence,
             "liquidity": o.liquidity,
             "recommended_size": o.recommended_size,
+            "quality_tier": getattr(o, "quality_tier", "B"),
+            "prob_edge": round(getattr(o, "prob_edge", 0.0), 4),
+            "model_prob": round(getattr(o, "model_prob", 0.0), 4),
+            "market_prob": round(getattr(o, "market_prob", 0.0), 4),
             "yes_token_id": o.yes_token_id,
             "no_token_id": o.no_token_id,
             "polymarket_url": (
