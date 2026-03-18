@@ -308,10 +308,10 @@ CLOB_API = "https://clob.polymarket.com"
 # Strategy parameters
 STRATEGY = {
     # BUY NO: bracket must be at least this far from forecast (°F for F cities, °C for C cities)
-    # These markets have 2°F / 1°C brackets spanning only ~10°F total, so max possible
-    # distance is ~5°F. 4°F keeps a safe 2-bracket buffer while still finding valid NO bets.
-    "no_min_distance_f": 4,    # °F  — safe buffer from forecast; 1-2°F brackets always excluded
-    "no_min_distance_c": 2.2,  # °C  — ~4°F equivalent; proportional to C bracket widths
+    # Historical MAE = 4.45°F. At 5°F min distance we get ~82% win rate with σ=4.0.
+    # At 6°F we get ~93% which is needed to profit at 85¢+ entry prices.
+    "no_min_distance_f": 6,    # °F  — raised from 4; need ≥6°F for profitable NO bets
+    "no_min_distance_c": 3.3,  # °C  — raised from 2.2; proportional to F threshold
     # BUY NO: minimum NO price
     "no_min_price": 0.65,
     # BUY YES: maximum YES price to consider (looking for underpriced YES)
@@ -338,12 +338,17 @@ STRATEGY = {
     # YES clusters: maximum entry price per token — no buying expensive consensus bets
     # At 0.85, a win pays only 15¢; at 50% win rate that's a guaranteed loser
     "yes_max_entry_price": 0.75,
-    # NO bets: hard YES-price ceiling — skip brackets the market already prices at ≥92% YES.
-    # These are almost always within 1-2°F of the forecast (risky NO bet).
-    "no_max_yes_price": float(os.environ.get("NO_MAX_YES_PRICE") or "0.92"),
-    # NO bets: minimum return % — looser than global min_return_pct because a
-    # high-confidence "guarantee" at 5% return is still a worthwhile compounding play.
-    "no_min_return_pct": float(os.environ.get("NO_MIN_RETURN_PCT") or "5.0"),
+    # NO bets: hard YES-price ceiling — skip brackets the market already prices at ≥X% YES.
+    # High YES price = close bracket = tiny return with huge loss on miss.
+    # At 88¢ NO (12¢ YES), a loss costs 88¢ but a win only pays 12¢ → need 88% win rate.
+    "no_max_yes_price": float(os.environ.get("NO_MAX_YES_PRICE") or "0.88"),
+    # NO bets: minimum NO price (maximum we'll pay for a NO token)
+    # Higher NO price = lower return but higher win probability.
+    # Cap at 88¢ to ensure minimum 13.6% return on winners.
+    "no_max_no_price": float(os.environ.get("NO_MAX_NO_PRICE") or "0.88"),
+    # NO bets: minimum return % — need enough return to overcome occasional losses.
+    # At 73% win rate and 85¢ avg entry, need ≥8% return to approach break-even.
+    "no_min_return_pct": float(os.environ.get("NO_MIN_RETURN_PCT") or "8.0"),
     # YES clusters: cities excluded due to high/bi-modal forecast error
     # Chicago MAE=6.27°F, Dallas MAE=5.18°F (bi-modal: 1°F when stable, 11-16°F during fronts)
     # Paris MAE=3.69°C — cluster window is ~3°F/1.5°C wide, can't reliably cover the error
@@ -374,11 +379,14 @@ STRATEGY = {
     "yes_lottery_size": 2,           # $ per bracket for lottery clusters (vs default_yes_size)
     # ── Live-trading quality gate (A-tier) ─────────────────────────────────────
     # In LIVE_MODE, only A-tier opportunities are executed. B-tier still paper-tracks.
-    "live_no_min_distance_f": 6.0,   # °F — A-tier live gate (vs paper threshold of 4°F)
-    "live_no_min_distance_c": 3.5,   # °C — A-tier live gate (vs paper threshold of 2.2°C)
-    "live_yes_min_margin_f":  3.0,   # °F inside bracket — vs paper threshold of 2°F
-    "live_yes_min_margin_c":  1.7,   # °C — vs paper threshold of 1°C
-    "live_min_ev_score":     12.0,   # minimum EV score for any live trade
+    # A-tier thresholds (what actually auto-executes with real money):
+    # Based on actual MAE of 4.45°F, need ≥8°F distance for 90%+ win rate
+    # which is the minimum to be profitable at typical 85-90¢ entry prices.
+    "live_no_min_distance_f": 8.0,   # °F — need 90%+ win rate for profitability
+    "live_no_min_distance_c": 4.5,   # °C — proportional (8°F / 1.8)
+    "live_yes_min_margin_f":  4.0,   # °F inside bracket — wider margin for YES safety
+    "live_yes_min_margin_c":  2.2,   # °C — proportional
+    "live_min_ev_score":     15.0,   # raised from 12; higher bar for live trades
     # Probability-edge thresholds for A-tier qualification
     # NO A-tier: edge ≤ −0.15  (market charges 15%+ more than our Gaussian says bracket is worth)
     # YES A-tier: edge ≥ 0.12  (our Gaussian says bracket is 12%+ more likely than market implies)

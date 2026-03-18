@@ -1,0 +1,25 @@
+{
+  "no_sigma": {
+    "F": {
+      "high": 4.0,
+      "medium": 5.5
+    },
+    "C": {
+      "high": 2.2,
+      "medium": 3.1
+    }
+  },
+  "yes_sigma": {
+    "F": {
+      "high": 4.0,
+      "medium": 5.5
+    },
+    "C": {
+      "high": 2.2,
+      "medium": 3.1
+    }
+  },
+  "samples": 52,
+  "updated": "2026-03-17T12:00:00",
+  "note": "Reset based on actual MAE=4.45F. Old sigma=2.08 was 2.7x too confident."
+}
