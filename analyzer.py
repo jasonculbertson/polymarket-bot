@@ -39,7 +39,9 @@ from config import STRATEGY, CITIES
 
 def _load_calibrated_sigma() -> dict:
     """Load sigma values calibrated by learner.py. Falls back to defaults."""
-    defaults = {"F": {"high": 1.8, "medium": 3.2}, "C": {"high": 1.0, "medium": 1.8}}
+    # Defaults based on actual MAE of 4.45°F across 52 resolved bets.
+    # Old defaults (1.8/1.0) were 2.7x too confident, causing massive over-betting.
+    defaults = {"F": {"high": 4.0, "medium": 5.5}, "C": {"high": 2.2, "medium": 3.1}}
     try:
         calib_file = os.path.join(
             os.environ.get("DATA_DIR", os.path.join(os.path.dirname(__file__), "data")),
@@ -526,6 +528,13 @@ def find_no_opps(event: dict, forecast_temp: float, confidence: str,
             continue
 
         if no_price < cfg["no_min_price"]:
+            continue
+
+        # ── NO price ceiling — don't pay more than 88¢ for a NO token ────
+        # At 88¢ entry, win pays 12¢ but loss costs 88¢ → need 88% win rate.
+        # Higher prices have worse risk/reward and require near-perfect forecasts.
+        no_max_price = float(cfg.get("no_max_no_price", 0.88))
+        if no_price > no_max_price:
             continue
 
         # ── Liquidity floor — skip thin markets ────────────────────────────
