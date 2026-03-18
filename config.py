@@ -415,7 +415,7 @@ TRADING = {
     # Paper trading continues tracking YES bets for model improvement.
     # Set LIVE_YES_ENABLED=true in Railway to re-enable when model improves.
     "live_yes_enabled":      os.environ.get("LIVE_YES_ENABLED", "false").lower() == "true",
-    "stop_loss_pct":         float(os.environ.get("STOP_LOSS_PCT") or "30"),    # exit if down X%
+    "stop_loss_pct":         float(os.environ.get("STOP_LOSS_PCT") or "20"),    # exit if down X%
     # Don't trigger stop-loss within this many hours of resolution (price may just be stale)
     "stop_loss_min_hours_to_resolution": float(os.environ.get("STOP_LOSS_MIN_HOURS") or "2"),
     "take_profit_pct":       float(os.environ.get("TAKE_PROFIT_PCT") or "0"),   # 0 = disabled
