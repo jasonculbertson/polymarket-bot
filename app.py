@@ -1060,14 +1060,11 @@ def trigger_scan():
     target_date = body.get("date") or None  # None = scan full window
     days        = int(body.get("days", 5))  # how many forward days (default 5)
 
-    def _scan_then_trade():
-        run_scan_bg(capital=capital, target_date=target_date, days=days)
-        if os.environ.get("AUTO_TRADE", "false").lower() == "true":
-            from tracker import _load as _tload
-            data = _tload()
-            _auto_execute_trades(data.get("opportunities", []))
-
-    t = threading.Thread(target=_scan_then_trade, daemon=True)
+    # run_scan_bg calls _auto_execute_trades internally — no second call needed.
+    t = threading.Thread(
+        target=lambda: run_scan_bg(capital=capital, target_date=target_date, days=days),
+        daemon=True,
+    )
     t.start()
     return jsonify({"status": "started", "capital": capital})
 
@@ -1140,17 +1137,21 @@ except ImportError:
 
 def _get_live_today_pnl() -> float:
     """
-    Sum of P&L on live trades that settled today (UTC).
+    Sum of P&L on live trades that exited today (UTC).
     Paper-only positions do NOT count — circuit breaker protects real money only.
     """
     from tracker import _load as _tload
     data  = _tload()
     today = __import__("datetime").datetime.utcnow().date().isoformat()
     total = 0.0
-    for t in data.get("live_trades", []):
-        if not (t.get("settled_at") or "").startswith(today):
+    for o in data.get("opportunities", []):
+        # Only count positions that had real money deployed
+        if not o.get("is_live") and not o.get("execution_price"):
             continue
-        pnl = t.get("pnl_usd")
+        # Must have exited today
+        if not (o.get("exit_at") or "").startswith(today):
+            continue
+        pnl = o.get("paper_pnl_usd")  # field used by _mark_exit for both live and paper
         if pnl is not None:
             total += float(pnl)
     return round(total, 2)
@@ -1372,19 +1373,9 @@ def _auto_scan_job():
     capital = _scan_capital()
     scan_start = datetime.utcnow().isoformat()
 
-    def _scan_then_trade():
-        run_scan_bg(days=5, capital=capital)
-        # After scan completes, auto-execute open A-tier opportunities.
-        # Gated by AUTO_TRADE=true — safe to call, it will no-op if disabled.
-        # Safety: _auto_execute_trades filters to A-tier, skips taken IDs,
-        # deduplicates by city/date/side, and caps at 5 bets per run.
-        if os.environ.get("AUTO_TRADE", "false").lower() == "true":
-            from tracker import _load as _tload
-            data = _tload()
-            _auto_execute_trades(data.get("opportunities", []))
-
-    # days=5: scan yesterday + today + 5 forward days (today through today+5)
-    threading.Thread(target=_scan_then_trade, daemon=True).start()
+    # run_scan_bg already calls _auto_execute_trades internally after scan completes.
+    # No second call needed here.
+    threading.Thread(target=lambda: run_scan_bg(days=5, capital=capital), daemon=True).start()
 
 
 def _daily_learn_job():

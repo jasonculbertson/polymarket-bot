@@ -385,26 +385,20 @@ STRATEGY = {
     "live_no_min_edge":  0.15,   # |negative edge| threshold for NO A-tier
     "live_yes_min_edge": 0.12,   # positive edge threshold for YES A-tier
     # ── Bankroll & compounding ────────────────────────────────────────────────
-    # Goal: 5-10% daily return, doubling every 7-10 days.
-    # Strategy: bet the full bankroll every scan — compound wins into next day.
-    # Bet sizes scale automatically as the bankroll grows — never fixed $ amounts.
-    "initial_bankroll":    float(os.environ.get("INITIAL_BANKROLL") or "200"),
+    "initial_bankroll":    float(os.environ.get("INITIAL_BANKROLL") or "150"),
     # Daily return target — informational only, does NOT reduce bet sizes when hit
-    "daily_target_pct":    float(os.environ.get("DAILY_TARGET_PCT") or "7"),
+    "daily_target_pct":    float(os.environ.get("DAILY_TARGET_PCT") or "5"),
     # Hard stop: halt new scans if today's loss exceeds X% of opening bankroll
-    "daily_loss_cap_pct":  float(os.environ.get("DAILY_LOSS_CAP_PCT") or "10"),
-    # Per-bet cap: max single bet = X% of current bankroll (Kelly-compatible deployment)
-    # At $200: 20% = $40 max/bet. Across 5 bets: up to $200 deployed = full bankroll.
-    # Auto-scales up as bankroll compounds.
-    "max_bet_pct":         float(os.environ.get("MAX_BET_PCT") or "20"),
-    # Outsized-edge bonus: if prob_edge magnitude ≥ threshold, allow up to 2× max_bet_pct
-    "outsized_edge_threshold": 0.25,   # |edge| ≥ 25% → allow up to 40% of bankroll/bet
-    # Kelly criterion fraction — 0.33 minimizes max drawdown while retaining
-    # 78% of full-Kelly geometric growth rate (vs 0.5 which is more aggressive).
-    # Per the quant doc: gamma=0.33 is optimal for reducing drawdown on correlated positions.
-    "kelly_fraction": 0.33,
+    "daily_loss_cap_pct":  float(os.environ.get("DAILY_LOSS_CAP_PCT") or "15"),
+    # Per-bet cap: max single bet = X% of current bankroll.
+    # At $150: 10% = $15 max/bet. Max 3 bets per scan = $45 deployed.
+    # Conservative: survive multiple losing days while still compounding wins.
+    "max_bet_pct":         float(os.environ.get("MAX_BET_PCT") or "10"),
+    # Outsized-edge bonus: if prob_edge magnitude ≥ threshold, allow up to 1.5× max_bet_pct
+    "outsized_edge_threshold": 0.25,
+    "kelly_fraction": 0.25,
     # Hard cap per single bet (USDC) — absolute ceiling regardless of bankroll size
-    "max_single_bet": float(os.environ.get("MAX_SINGLE_BET") or "50"),
+    "max_single_bet": float(os.environ.get("MAX_SINGLE_BET") or "20"),
 }
 
 # Live trading settings (all overridable via Railway env vars)

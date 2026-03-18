@@ -128,7 +128,8 @@ def check_positions():
     for pos in positions:
         opp_id   = pos["id"]
         token_id = pos.get("token_id", "")
-        entry    = float(pos.get("entry_price", 0))
+        # Use actual fill price for stop-loss baseline; fall back to scan entry_price
+        entry    = float(pos.get("execution_price") or pos.get("entry_price") or 0)
         order_id = pos.get("live_order_id", "")
         live_at  = pos.get("live_at", "")
 
