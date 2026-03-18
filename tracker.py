@@ -1529,12 +1529,19 @@ def mark_order_cancelled(opp_id: str) -> bool:
                 opp["pnl_pct"]       = 0.0
                 opp["paper_pnl_usd"] = 0.0
 
-                # Remove from live_bets tracking key
-                live_bets = data.setdefault("live_bets", [])
-                if opp_id in live_bets:
-                    live_bets.remove(opp_id)
-
                 _save(data)
+
+                # Also remove from Postgres live_bets key so cancelled IDs
+                # don't permanently block re-tries on future scans.
+                try:
+                    lb = _pg_load("live_bets") or {}
+                    lb_ids = lb.get("ids", [])
+                    if opp_id in lb_ids:
+                        lb_ids.remove(opp_id)
+                        _pg_save("live_bets", {"ids": lb_ids, "updated": datetime.utcnow().isoformat()})
+                except Exception as _lbe:
+                    log.warning("[tracker] mark_order_cancelled: could not update pg live_bets: %s", _lbe)
+
                 log.info("[tracker] marked order_cancelled: %s", opp_id)
                 return True
     log.warning("[tracker] mark_order_cancelled: opp_id not found: %s", opp_id)
@@ -1553,6 +1560,7 @@ def _mark_exit(opp_id: str, exit_price: float, reason: str) -> bool:
                 pnl_usd     = round(proceeds - stake, 2)
                 pnl_pct     = round((proceeds - stake) / stake * 100, 2) if stake else 0.0
 
+                opp["is_live"]       = False   # explicitly closed — no longer active
                 opp["exit_price"]    = exit_price
                 opp["exit_reason"]   = reason
                 opp["exit_at"]       = datetime.utcnow().isoformat()
