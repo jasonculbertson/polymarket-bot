@@ -303,25 +303,18 @@ def _get_client():
 def buy(token_id: str, size_usd: float, price: float,
         neg_risk: bool = False) -> dict:
     """
-    Place a BUY limit order (GTC).
+    Place a BUY market order (FOK — fill immediately or cancel).
 
     size_usd: dollars to spend (e.g. 10.0)
-    price:    price per share (e.g. 0.35 for a 35¢ YES token)
-    neg_risk: set True for neg-risk markets (mutually exclusive brackets)
+    price:    scan price — used only for drift check (not as limit price)
+    neg_risk: unused (kept for API compatibility)
 
     Returns: {"order_id": str, "shares": float, "price": float, "live": bool}
     """
-    # ── Fetch live orderbook and set bid price to guarantee immediate fill ──
-    # KEY: to guarantee a GTC order fills immediately, we must bid AT or ABOVE
-    # the current best ask (lowest sell offer). Bidding at the midpoint leaves
-    # orders unfilled indefinitely because sellers won't accept below their ask.
-    book_ask  = _fetch_best_ask(token_id)
+    # Fetch live price for drift check and share-count calculation
     live_price = _fetch_live_price(token_id)
-    ref_price  = live_price  # used for drift check against scan price
-
-    if ref_price is None:
-        # Midpoint API failed — derive reference from orderbook
-        ref_price = book_ask or _fetch_best_bid(token_id)
+    book_ask   = _fetch_best_ask(token_id)
+    ref_price  = live_price or book_ask or _fetch_best_bid(token_id)
 
     if ref_price is None:
         raise ValueError(
@@ -336,68 +329,55 @@ def buy(token_id: str, size_usd: float, price: float,
             f"Price drift too large: scan={price:.2f} live={ref_price:.2f} "
             f"(drift={drift:.2f}) for {token_id[:16]} — skipping"
         )
-    if drift > 0.05:
-        log.warning("[trader] Price drift: scan=%.2f live=%.2f for %s", price, ref_price, token_id[:16])
 
-    if book_ask is not None:
-        # Bid 1 tick above the best ask → crosses the spread → guaranteed fill
-        price = book_ask + _DEFAULT_TICK
-        log.warning("[trader] Using ask-based price: ask=%.4f → bid=%.4f for %s",
-                    book_ask, price, token_id[:16])
-    else:
-        # Ask side empty (rare) — fall back to midpoint + tick
-        price = ref_price + _DEFAULT_TICK
-        log.warning("[trader] No ask in book — using midpoint+tick: %.4f for %s", price, token_id[:16])
-
-    # Hard floor: NO tokens below 0.50 means market has moved heavily against us
-    if price < 0.50:
+    # Hard floor: refuse to buy if the token price is already below 0.50
+    if ref_price < 0.50:
         raise ValueError(
-            f"Live price {price:.2f} below minimum threshold (0.50) for {token_id[:16]} — "
+            f"Live price {ref_price:.2f} below minimum threshold (0.50) for {token_id[:16]} — "
             f"market may have already resolved or moved against forecast"
         )
-    price = _round_price(min(price, 0.99))  # cap at 99¢
-    if price <= 0:
-        raise ValueError(f"Invalid price {price!r} for token {token_id[:16]}")
-    shares = round(size_usd / price, 4)
+
+    exec_price = book_ask or ref_price
+    shares = round(size_usd / exec_price, 4)
 
     log.warning(
-        "[trader] BUY %s  shares=%.4f  price=%.4f  size_usd=%.2f  live=%s",
-        token_id[:16], shares, price, size_usd, LIVE_MODE
+        "[trader] BUY FOK %s  shares=%.4f  ref_price=%.4f  size_usd=%.2f  live=%s",
+        token_id[:16], shares, exec_price, size_usd, LIVE_MODE,
     )
 
     if not LIVE_MODE:
         return {
             "order_id": f"paper_{token_id[:12]}",
             "shares": shares,
-            "price": price,
+            "price": exec_price,
+            "execution_price": exec_price,
             "live": False,
         }
 
     if not _CLOB_AVAILABLE:
         raise RuntimeError("py-clob-client is not installed. Live trading unavailable.")
 
-    from py_clob_client.clob_types import OrderArgs, OrderType
+    from py_clob_client.clob_types import MarketOrderArgs, OrderType
     from py_clob_client.order_builder.constants import BUY as _BUY
 
     client = _get_client()
-    order_args = OrderArgs(
+    market_order = MarketOrderArgs(
         token_id=token_id,
-        price=price,
-        size=shares,
+        amount=shares,
         side=_BUY,
+        order_type=OrderType.FOK,
     )
-    signed   = client.create_order(order_args)
-    response = client.post_order(signed, OrderType.GTC)
+    signed   = client.create_market_order(market_order)
+    response = client.post_order(signed, OrderType.FOK)
 
     order_id = response.get("orderID") or response.get("id", "")
-    # Capture actual fill price from exchange response if available
-    execution_price = response.get("price") or response.get("avgPrice") or price
-    log.info("[trader] BUY placed  order_id=%s  execution_price=%.4f", order_id, execution_price)
+    execution_price = response.get("price") or response.get("avgPrice") or exec_price
+    log.warning("[trader] BUY FOK placed  order_id=%s  execution_price=%.4f", order_id, execution_price)
     return {
         "order_id": order_id,
         "shares": shares,
-        "price": price,               # intended price (from scan)
-        "execution_price": round(float(execution_price), 6),  # actual fill price
+        "price": exec_price,
+        "execution_price": round(float(execution_price), 6),
         "live": True,
     }
 

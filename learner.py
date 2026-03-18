@@ -52,7 +52,32 @@ _DEFAULT_CALIBRATION = {
 
 # ─── Storage helpers ──────────────────────────────────────────────────────────
 
+def _pg_load_key(key: str) -> Optional[dict]:
+    """Load a JSON value from Postgres kv_store. Returns None if unavailable."""
+    try:
+        from tracker import _pg_load
+        return _pg_load(key)
+    except Exception:
+        return None
+
+
+def _pg_save_key(key: str, data: dict):
+    """Persist a JSON value to Postgres kv_store."""
+    try:
+        from tracker import _pg_save
+        _pg_save(key, data)
+    except Exception as e:
+        pass  # Postgres unavailable — local file fallback below
+
+
 def load_weights() -> dict:
+    # Postgres first (survives Railway deploys), then local file, then defaults
+    pg = _pg_load_key("forecast_weights")
+    if pg:
+        for unit in ("F", "C"):
+            if isinstance(pg.get(unit), dict) and "open_meteo" not in pg[unit] and "wttr" in pg[unit]:
+                pg[unit]["open_meteo"] = pg[unit]["wttr"]
+        return pg
     try:
         if os.path.exists(WEIGHTS_FILE):
             with open(WEIGHTS_FILE) as f:
@@ -67,12 +92,19 @@ def load_weights() -> dict:
 
 
 def _save_weights(w: dict):
-    os.makedirs(DATA_DIR, exist_ok=True)
-    with open(WEIGHTS_FILE, "w") as f:
-        json.dump(w, f, indent=2)
+    _pg_save_key("forecast_weights", w)
+    try:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        with open(WEIGHTS_FILE, "w") as f:
+            json.dump(w, f, indent=2)
+    except Exception:
+        pass
 
 
 def load_calibration() -> dict:
+    pg = _pg_load_key("calibration")
+    if pg:
+        return pg
     try:
         if os.path.exists(CALIBRATION_FILE):
             with open(CALIBRATION_FILE) as f:
@@ -83,9 +115,13 @@ def load_calibration() -> dict:
 
 
 def _save_calibration(c: dict):
-    os.makedirs(DATA_DIR, exist_ok=True)
-    with open(CALIBRATION_FILE, "w") as f:
-        json.dump(c, f, indent=2)
+    _pg_save_key("calibration", c)
+    try:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        with open(CALIBRATION_FILE, "w") as f:
+            json.dump(c, f, indent=2)
+    except Exception:
+        pass
 
 
 # ─── Wunderground: PWS API + history page scrape (exact station from config) ───
@@ -541,7 +577,10 @@ def _errors_to_weights(errors: dict[str, list[float]]) -> dict[str, float]:
 # ─── Main learning function ───────────────────────────────────────────────────
 
 def load_city_adjustments() -> dict:
-    """Load per-city distance bonus (°F) from file. Returns {} if not found."""
+    """Load per-city distance bonus (°F). Postgres first, then local file."""
+    pg = _pg_load_key("city_adjustments")
+    if pg:
+        return pg
     try:
         if os.path.exists(CITY_ADJUSTMENTS_FILE):
             with open(CITY_ADJUSTMENTS_FILE) as f:
@@ -552,9 +591,13 @@ def load_city_adjustments() -> dict:
 
 
 def _save_city_adjustments(adjustments: dict) -> None:
-    os.makedirs(DATA_DIR, exist_ok=True)
-    with open(CITY_ADJUSTMENTS_FILE, "w") as f:
-        json.dump(adjustments, f, indent=2)
+    _pg_save_key("city_adjustments", adjustments)
+    try:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        with open(CITY_ADJUSTMENTS_FILE, "w") as f:
+            json.dump(adjustments, f, indent=2)
+    except Exception:
+        pass
 
 
 def _compute_city_distance_adjustments(data: dict) -> dict:
