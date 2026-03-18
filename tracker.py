@@ -1118,6 +1118,9 @@ def record_live_trade(
     Mark an opportunity as live-traded. Call this right after buy() succeeds.
     Returns True if the opportunity was found and updated.
     """
+    if shares <= 0:
+        log.error("[tracker] record_live_trade: invalid shares=%s for opp=%s — skipping", shares, opp_id)
+        return False
     with _tracker_lock:
         data = _load()
         for opp in data["opportunities"]:

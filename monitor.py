@@ -34,9 +34,10 @@ TAKE_PROFIT_PCT       = TRADING["take_profit_pct"]
 MONITOR_INTERVAL_SECS = TRADING["monitor_interval_secs"]
 LIVE_MODE             = TRADING["live_mode"]
 
-# Cancel GTC buy orders that are still unfilled after this many hours.
-# After 1h a bid-at-ask order should have filled; if not the market has moved away.
-STALE_ORDER_HOURS = 1.0
+# Cancel orders that are still showing LIVE after this many hours.
+# FOK orders fill or cancel within seconds, so this only catches edge cases
+# (e.g. CLOB reporting stale state). 0.25h = 15 min safety margin.
+STALE_ORDER_HOURS = 0.25
 
 import os
 _POLY_KEY = os.environ.get("POLY_PRIVATE_KEY", "")
