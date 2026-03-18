@@ -1609,7 +1609,21 @@ def trade():
                 execution_price=result.get("execution_price"),
             )
         elif side == "sell":
-            result = _trader.sell(token_id, float(body.get("shares", 0)), price)
+            shares_to_sell = float(body.get("shares") or 0)
+            if shares_to_sell <= 0:
+                # Look up share count from tracker if not provided
+                from tracker import _load as _tload2
+                _tdata2 = _tload2()
+                _pos = next((o for o in _tdata2.get("opportunities", []) if o.get("id") == opp_id), None)
+                shares_to_sell = float(_pos.get("shares", 0)) if _pos else 0
+            if shares_to_sell <= 0:
+                return jsonify({"error": "shares required for sell (or position has no recorded shares)"}), 400
+            result = _trader.sell(token_id, shares_to_sell, price)
+            # Update tracker so the monitor stops watching this position
+            if result.get("exit_price") or result.get("order_id"):
+                from tracker import mark_exited_early
+                exit_price = result.get("exit_price") or price or 0.0
+                mark_exited_early(opp_id, exit_price)
         else:
             return jsonify({"error": f"unknown side: {side}"}), 400
 
