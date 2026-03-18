@@ -211,13 +211,17 @@ def _no_quality_tier(distance_f: float, unit: str, confidence: str,
     live_ev       = float(STRATEGY.get("live_min_ev_score", 12.0))
     live_min_edge = float(STRATEGY.get("live_no_min_edge", 0.15))  # |edge| threshold for A-tier
     min_dist = live_dist_c if unit == "C" else live_dist_f
+    # Floor for edge-path: require at least 2/3 of the full distance threshold
+    # so edge-based A-tier can't fire on bets with near-zero distance.
+    edge_min_dist = min_dist * (2.0 / 3.0)
 
     if confidence != "high" or ev_score < live_ev:
         return "B"
-    # Path 1: edge-based (primary — finds opportunities raw distance misses)
-    if prob_edge <= -live_min_edge:
+    # Path 1: edge-based (primary) — strong model vs market disagreement
+    # Still requires a minimum distance floor to avoid near-bracket bets
+    if prob_edge <= -live_min_edge and distance_f >= edge_min_dist:
         return "A"
-    # Path 2: distance-based (legacy fallback)
+    # Path 2: distance-based (legacy)
     if distance_f >= min_dist:
         return "A"
     return "B"
