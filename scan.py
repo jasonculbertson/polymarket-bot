@@ -94,6 +94,10 @@ def save_results(clusters, no_opps, markets, forecasts, scan_time: str, target_d
             "liquidity_min": c.liquidity_min,
             "ev_score": round(getattr(c, "ev_score", 0.0), 1),
             "predicted_win_prob": round(getattr(c, "predicted_win_prob", 0.75), 4),
+            "quality_tier": getattr(c, "quality_tier", "B"),
+            "prob_edge": round(getattr(c, "prob_edge", 0.0), 4),
+            "model_prob": round(getattr(c, "model_prob", 0.0), 4),
+            "market_prob": round(getattr(c, "market_prob", 0.0), 4),
             "polymarket_url": f"https://polymarket.com/event/{c.event_slug}",
         }
 

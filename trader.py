@@ -528,8 +528,25 @@ def redeem_winning_position(token_id: str, condition_id: str, bet_type: str) -> 
     try:
         best_bid = _fetch_best_bid(token_id)
         if best_bid is not None and best_bid >= 0.90:
-            log.warning("[trader] winning token bid=%.4f — attempting CLOB sell first", best_bid)
-            result = sell(token_id, shares=None, price=best_bid)  # type: ignore[arg-type]
+            # Look up actual share count from CLOB balance
+            _shares = None
+            try:
+                if _CLOB_AVAILABLE and POLY_PRIVATE_KEY:
+                    from py_clob_client.clob_types import BalanceAllowanceParams, AssetType
+                    _client = _get_client()
+                    _bal = _client.get_balance_allowance(
+                        BalanceAllowanceParams(asset_type=AssetType.CONDITIONAL, token_id=token_id)
+                    )
+                    if isinstance(_bal, dict):
+                        _shares = float(_bal.get("balance", "0")) / 1e6
+            except Exception as _be:
+                log.warning("[trader] could not fetch token balance for redeem: %s", _be)
+            if not _shares or _shares <= 0:
+                log.warning("[trader] no share count for redeem sell — skipping CLOB sell path")
+                raise RuntimeError("No share count available for CLOB sell")
+            log.warning("[trader] winning token bid=%.4f shares=%.4f — attempting CLOB sell first",
+                        best_bid, _shares)
+            result = sell(token_id, shares=_shares, price=best_bid)
             return {"redeemed": True, "tx_hash": result.get("order_id"),
                     "method": "clob_sell",
                     "message": f"Sold winning tokens on CLOB at {best_bid:.4f}"}
