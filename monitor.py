@@ -145,22 +145,32 @@ def check_positions():
                 age_h = _order_age_hours(live_at)
 
                 if age_h >= STALE_ORDER_HOURS:
-                    # Old enough to be considered dead — cancel and clean up.
+                    # Old enough to be considered dead — try to cancel.
+                    # CRITICAL: only mark as cancelled if cancel actually succeeds.
+                    # A cancel failure means the order already filled — the position
+                    # has real money at risk and must stay in the stop-loss watch list.
                     log.warning(
                         "[monitor] STALE ORDER opp=%s order=%s age=%.1fh — cancelling",
                         opp_id, order_id[:20], age_h,
                     )
                     _log_event("STALE_ORDER", opp_id, token_id, 0.0,
                                f"order={order_id[:20]} age={age_h:.1f}h")
+                    cancel_ok = False
                     try:
                         trader.cancel(order_id)
+                        cancel_ok = True
                     except Exception as ce:
-                        log.warning("[monitor] cancel failed for %s: %s", order_id[:20], ce)
-                    tracker.mark_order_cancelled(opp_id)
-                    # Remove from exiting set so it never re-enters stop-loss logic
-                    with _exiting_lock:
-                        _exiting_positions.discard(opp_id)
-                    continue  # Done with this position
+                        log.warning(
+                            "[monitor] cancel FAILED for %s: %s — order may be filled, "
+                            "keeping in stop-loss watch list",
+                            order_id[:20], ce,
+                        )
+                    if cancel_ok:
+                        tracker.mark_order_cancelled(opp_id)
+                        with _exiting_lock:
+                            _exiting_positions.discard(opp_id)
+                        continue  # Done — genuinely unfilled, no money at risk
+                    # Cancel failed → treat as filled, fall through to stop-loss check
 
                 else:
                     # Still fresh — let it sit, log as pending.
@@ -228,12 +238,18 @@ def check_positions():
 
         # ── Phase 2b: price monitoring — stop-loss / take-profit ──────────────
         current = _fetch_best_bid(token_id)
-        if current is None:
-            log.warning("[monitor] no price for %s, skipping", opp_id)
-            continue
-
         stop_loss_threshold   = entry * (1 - STOP_LOSS_PCT / 100)
         take_profit_threshold = entry * (1 + TAKE_PROFIT_PCT / 100) if TAKE_PROFIT_PCT > 0 else None
+
+        if current is None:
+            # CLOB price unavailable — can't evaluate thresholds, but don't silently
+            # skip: log clearly so Railway logs show the gap.
+            log.warning(
+                "[monitor] no price for %s (opp=%s entry=%.4f) — CLOB unavailable, "
+                "will retry next cycle",
+                token_id[:16], opp_id, entry,
+            )
+            continue
 
         if current <= stop_loss_threshold:
             with _exiting_lock:

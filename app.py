@@ -1285,14 +1285,14 @@ def _auto_execute_trades(scan_opportunities: list):
                   and (o.get("no_token_id") or o.get("token_id"))
                   and (live_yes or o.get("type") == "no")]
 
-        # Per city/date: allow ONE high-end + ONE low-end NO bet (opposite ends only).
-        seen_city_date_side = {}
+        # Per city/date: ONE bet only — take the highest return_pct bracket.
+        # Rule: never place more than one bet on the same market (same city + date).
+        seen_city_date = {}
         for o in sorted(a_tier, key=lambda x: x.get("return_pct", 0), reverse=True):
-            side = _bracket_side(o)
-            key  = (o.get("city", ""), o.get("date", ""), side)
-            if key not in seen_city_date_side:
-                seen_city_date_side[key] = o
-        a_tier = list(seen_city_date_side.values())[:5]  # hard cap: 5 bets per scan
+            key = (o.get("city", ""), o.get("date", ""))
+            if key not in seen_city_date:
+                seen_city_date[key] = o
+        a_tier = list(seen_city_date.values())[:5]  # hard cap: 5 bets per scan
 
         if not a_tier:
             _atlog.warning("[auto-trade] no new A-tier opportunities to execute")
