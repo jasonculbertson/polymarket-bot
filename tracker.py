@@ -1576,5 +1576,17 @@ def _mark_exit(opp_id: str, exit_price: float, reason: str) -> bool:
                 opp["paper_pnl_usd"] = pnl_usd
                 opp["outcome"]       = "win" if pnl_usd > 0 else "loss"
                 _save(data)
+
+                # Clean up Postgres live_bets dedup key so exited positions
+                # don't permanently block future scans for the same market.
+                try:
+                    lb = _pg_load("live_bets") or {}
+                    lb_ids = lb.get("ids", [])
+                    if opp_id in lb_ids:
+                        lb_ids.remove(opp_id)
+                        _pg_save("live_bets", {"ids": lb_ids, "updated": datetime.utcnow().isoformat()})
+                except Exception as _lbe:
+                    log.warning("[tracker] _mark_exit: could not update pg live_bets: %s", _lbe)
+
                 return True
     return False
