@@ -175,6 +175,14 @@ def run_scan_bg(cities=None, capital=None, days=1, target_date=None):
             _auto_execute_trades(_tload().get("opportunities", []))
         except Exception as e:
             _scan_log.append(f"[auto-trade] ERROR: {e}")
+        # Auto-redeem any winning live positions after every scan
+        try:
+            from tracker import redeem_all_live_wins
+            redeem_result = redeem_all_live_wins()
+            if redeem_result.get("attempted", 0) > 0:
+                _scan_log.append(f"[redeem] {redeem_result}")
+        except Exception as e:
+            _scan_log.append(f"[redeem] ERROR: {e}")
     except Exception as e:
         _scan_log.append(f"ERROR: {e}")
     finally:
@@ -1766,6 +1774,55 @@ def monitor_status():
         return jsonify(get_status())
     except Exception as e:
         return jsonify({"error": str(e), "running": False})
+
+
+@app.route("/monitor/debug")
+def monitor_debug():
+    """Diagnostic: show exactly what the monitor sees for each live position."""
+    try:
+        from tracker import get_live_positions
+        from config import TRADING
+        positions = get_live_positions()
+        stop_pct = TRADING["stop_loss_pct"]
+        result = []
+        for pos in positions:
+            entry = float(pos.get("execution_price") or pos.get("entry_price") or 0)
+            threshold = entry * (1 - stop_pct / 100)
+            token_id = pos.get("token_id", "")
+            # Try to fetch current price
+            current = None
+            try:
+                from monitor import _fetch_best_bid
+                current = _fetch_best_bid(token_id) if token_id else None
+            except Exception:
+                pass
+            pct_chg = ((current - entry) / entry * 100) if current and entry else None
+            should_stop = current is not None and current <= threshold
+            result.append({
+                "opp_id": pos.get("id"),
+                "city": pos.get("city"),
+                "token_id": token_id[:20] if token_id else "MISSING",
+                "entry": entry,
+                "execution_price": pos.get("execution_price"),
+                "current_bid": current,
+                "stop_threshold": round(threshold, 4),
+                "pct_change": round(pct_chg, 2) if pct_chg is not None else None,
+                "should_stop_loss": should_stop,
+                "is_live": pos.get("is_live"),
+                "has_token_id": bool(token_id),
+                "shares": pos.get("shares"),
+                "live_order_id": pos.get("live_order_id", "")[:20],
+            })
+        return jsonify({
+            "live_positions": len(positions),
+            "stop_loss_pct": stop_pct,
+            "poly_key_set": bool(os.environ.get("POLY_PRIVATE_KEY")),
+            "live_mode": TRADING["live_mode"],
+            "positions": result,
+        })
+    except Exception as e:
+        import traceback
+        return jsonify({"error": str(e), "trace": traceback.format_exc()})
 
 
 @app.route("/bankroll", methods=["GET"])
