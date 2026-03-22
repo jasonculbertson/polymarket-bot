@@ -429,6 +429,38 @@ TRADING = {
     "daily_loss_limit_usd":  float(os.environ.get("DAILY_LOSS_LIMIT_USD") or "0"),
 }
 
+# ── Auto-applied strategy overrides from optimizer ──────────────────────────
+# The optimizer may auto-raise thresholds based on performance data.
+# These overrides are stored in Postgres under 'strategy_overrides'.
+# Load them at startup and merge into STRATEGY (overrides win).
+def _load_strategy_overrides():
+    """Load auto-applied overrides from Postgres, merge into STRATEGY dict."""
+    try:
+        import psycopg2
+        db_url = os.environ.get("DATABASE_URL")
+        if not db_url:
+            return
+        conn = psycopg2.connect(db_url, connect_timeout=5)
+        cur = conn.cursor()
+        cur.execute("SELECT value FROM kv_store WHERE key = 'strategy_overrides'")
+        row = cur.fetchone()
+        conn.close()
+        if row and row[0]:
+            import json
+            overrides = json.loads(row[0]) if isinstance(row[0], str) else row[0]
+            # Only apply numeric/list overrides that exist in STRATEGY
+            applied = []
+            for k, v in overrides.items():
+                if k in STRATEGY and k not in ("last_auto_applied", "last_changes"):
+                    STRATEGY[k] = v
+                    applied.append(k)
+            if applied:
+                print(f"[config] loaded {len(applied)} strategy overrides: {applied}")
+    except Exception as e:
+        pass  # Silently skip if Postgres unavailable (local dev)
+
+_load_strategy_overrides()
+
 # Daily market-open cron time (UTC). Polymarket adds next-day markets around midnight UTC.
 # Set MARKET_OPEN_UTC=00:30 to catch them as soon as they're live.
 MARKET_OPEN_UTC = os.environ.get("MARKET_OPEN_UTC", "00:30")

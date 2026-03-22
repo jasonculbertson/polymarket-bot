@@ -294,7 +294,125 @@ def run_daily_optimizer(data: dict) -> dict:
     return report
 
 
-if __name__ == "__main__":
+# ─── Auto-apply safe parameter changes ────────────────────────────────────────
+
+def auto_apply_safe_changes(report: dict, data: dict) -> dict:
+    """
+    Read optimizer issues and auto-apply safe, bounded parameter tweaks.
+
+    Safe changes (bounded, reversible, logged):
+      - Raise live_no_min_distance when NO win rate drops below 80%
+      - Add city to yes_exclude_cities when city NO win rate < 60%
+      - Raise no_min_distance when a distance bucket has < 75% win rate
+      - Lower max_single_bet when total losses exceed 20% of bankroll
+
+    Returns: {"changes": [...], "applied": int}
+    """
+    import json, os
+    changes = []
+
+    issues = report.get("issues", [])
+    by_city = report.get("by_city_no", {})
+    by_distance = report.get("by_distance", {})
+    no_stats = report.get("by_type", {}).get("no", {})
+
+    # Load current strategy overrides from Postgres (or file fallback)
+    try:
+        from tracker import _pg_load, _pg_save
+        overrides = _pg_load("strategy_overrides") or {}
+    except Exception:
+        overrides = {}
+
+    # ── Rule 1: If NO win rate < 80%, bump live distance by 0.5°C / 1°F ──────
+    if no_stats.get("n", 0) >= 10 and no_stats.get("win_rate") is not None:
+        wr = no_stats["win_rate"]
+        if wr < 0.80:
+            from config import STRATEGY
+            cur_f = float(overrides.get("live_no_min_distance_f",
+                          STRATEGY.get("live_no_min_distance_f", 8.0)))
+            cur_c = float(overrides.get("live_no_min_distance_c",
+                          STRATEGY.get("live_no_min_distance_c", 4.5)))
+            # Bump by 1°F / 0.5°C, max 14°F / 7.5°C
+            new_f = min(cur_f + 1.0, 14.0)
+            new_c = min(cur_c + 0.5, 7.5)
+            if new_f > cur_f:
+                overrides["live_no_min_distance_f"] = new_f
+                overrides["live_no_min_distance_c"] = new_c
+                changes.append(
+                    f"NO win rate {wr:.0%} < 80%: raised A-tier distance "
+                    f"{cur_f:.0f}°F → {new_f:.0f}°F / {cur_c:.1f}°C → {new_c:.1f}°C"
+                )
+
+    # ── Rule 2: Ban cities with < 60% NO win rate (≥5 samples) ───────────────
+    from config import STRATEGY
+    excluded = list(STRATEGY.get("yes_exclude_cities", []))
+    for city, stats in by_city.items():
+        if stats.get("n", 0) >= 5 and stats.get("win_rate") is not None:
+            if stats["win_rate"] < 0.60 and city not in excluded:
+                excluded.append(city)
+                changes.append(
+                    f"{city} NO win rate {stats['win_rate']:.0%} < 60%: "
+                    f"added to exclude list"
+                )
+    if len(excluded) > len(STRATEGY.get("yes_exclude_cities", [])):
+        overrides["yes_exclude_cities"] = excluded
+
+    # ── Rule 3: Raise base distance when close-distance bucket loses ─────────
+    for bucket, stats in by_distance.items():
+        if "6-8" in bucket and stats.get("n", 0) >= 5:
+            wr = stats.get("win_rate", 1.0)
+            if wr < 0.75:
+                cur = float(overrides.get("no_min_distance_f",
+                            STRATEGY.get("no_min_distance_f", 6.0)))
+                new = min(cur + 1.0, 10.0)
+                if new > cur:
+                    overrides["no_min_distance_f"] = new
+                    overrides["no_min_distance_c"] = round(new / 1.8, 1)
+                    changes.append(
+                        f"6-8°F bucket win rate {wr:.0%} < 75%: raised base distance "
+                        f"{cur:.0f}°F → {new:.0f}°F"
+                    )
+
+    # ── Rule 4: Lower max_single_bet if losing > 20% of bankroll ─────────────
+    overall = report.get("overall", {})
+    total_pnl = overall.get("total_pnl", 0)
+    total_staked = overall.get("total_staked", 0)
+    if total_staked > 50 and total_pnl < 0:
+        loss_pct = abs(total_pnl) / total_staked * 100
+        if loss_pct > 20:
+            cur_max = float(overrides.get("max_single_bet",
+                            STRATEGY.get("max_single_bet", 20)))
+            new_max = max(cur_max * 0.75, 5.0)  # reduce by 25%, min $5
+            if new_max < cur_max:
+                overrides["max_single_bet"] = round(new_max, 0)
+                changes.append(
+                    f"14-day loss {loss_pct:.0f}% of staked: reduced max bet "
+                    f"${cur_max:.0f} → ${new_max:.0f}"
+                )
+
+    # Save overrides
+    if changes:
+        overrides["last_auto_applied"] = datetime.utcnow().isoformat()
+        overrides["last_changes"] = changes
+        try:
+            from tracker import _pg_save
+            _pg_save("strategy_overrides", overrides)
+            print(f"[optimizer] auto-applied {len(changes)} changes: {changes}")
+        except Exception as e:
+            print(f"[optimizer] failed to save overrides: {e}")
+            # Also save locally as fallback
+            try:
+                import os
+                path = os.path.join(os.path.dirname(__file__), "data", "strategy_overrides.json")
+                with open(path, "w") as f:
+                    json.dump(overrides, f, indent=2)
+            except Exception:
+                pass
+
+    return {"changes": changes, "applied": len(changes), "overrides": overrides}
+
+
+
     # Quick local test — loads from tracker and prints report
     import sys, os
     sys.path.insert(0, os.path.dirname(__file__))

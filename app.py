@@ -1411,6 +1411,18 @@ def _daily_learn_job():
             print(f"[daily-learn] done — {report.get('issue_count', 0)} issues, "
                   f"{report.get('critical_count', 0)} critical")
 
+            # Auto-apply safe strategy changes based on performance data
+            auto_applied = {}
+            try:
+                from optimizer import auto_apply_safe_changes
+                auto_applied = auto_apply_safe_changes(report, data)
+                if auto_applied.get("applied", 0) > 0:
+                    print(f"[daily-learn] auto-applied {auto_applied['applied']} strategy changes")
+                    for ch in auto_applied.get("changes", []):
+                        print(f"  → {ch}")
+            except Exception as aa_e:
+                print(f"[daily-learn] auto-apply error: {aa_e}")
+
             # Backtest optimizer: test per-city thresholds on resolved history
             try:
                 from backtest_optimizer import optimize_city_thresholds
@@ -1419,6 +1431,15 @@ def _daily_learn_job():
             except Exception as bt_e:
                 print(f"[daily-learn] backtest error: {bt_e}")
 
+            # Write daily summary .md to Desktop
+            try:
+                from notify import write_daily_summary_md
+                md_path = write_daily_summary_md(data, learn_result, report, auto_applied)
+                print(f"[daily-learn] summary written to {md_path}")
+            except Exception as md_e:
+                print(f"[daily-learn] md summary error: {md_e}")
+
+            # Send Slack summary (if webhook configured)
             from notify import send_daily_summary
             sent = send_daily_summary(data, learn_result, report)
             print(f"[daily-learn] daily summary Slack message {'sent' if sent else 'skipped (no webhook)'}")
@@ -1490,6 +1511,25 @@ def _start_scheduler():
         timezone="UTC",
     )
     print("Daily learn+optimize scheduled at 08:00 UTC")
+
+    # JOB 5a: Redeem resolved wins every 2 hours
+    # Ensures we don't leave redeemable positions sitting on Polymarket
+    def _redeem_job():
+        try:
+            from tracker import redeem_all_live_wins
+            result = redeem_all_live_wins()
+            if result.get("attempted", 0) > 0:
+                print(f"[redeem-job] {result}")
+        except Exception as e:
+            print(f"[redeem-job] error: {e}")
+
+    _scheduler.add_job(
+        _redeem_job,
+        "interval",
+        hours=2,
+        id="redeem_wins",
+    )
+    print("Redeem wins scheduled every 2h")
 
     # JOB 5: Quick position monitor every 15 min
     # Lightweight: price refresh + drift check + micro-learn — no full market scan.

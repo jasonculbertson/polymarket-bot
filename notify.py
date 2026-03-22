@@ -255,3 +255,176 @@ def send_daily_summary(data: dict, learn_result: dict, report: dict) -> bool:
         lines.append("*Issues & Recommended Changes* — :white_check_mark: No issues flagged — strategy is on track")
 
     return _send_slack("\n".join(lines))
+
+
+# ─── Desktop markdown summary ─────────────────────────────────────────────────
+
+DESKTOP_SUMMARY_DIR = os.path.expanduser("~/Desktop")
+
+
+def write_daily_summary_md(data: dict, learn_result: dict, report: dict,
+                           auto_applied: dict = None) -> str:
+    """
+    Write a daily summary .md file to ~/Desktop/polymarket_daily_YYYY-MM-DD.md.
+    Returns the file path written.
+    """
+    from datetime import date as _date
+    today_str = _date.today().isoformat()
+    filepath = os.path.join(DESKTOP_SUMMARY_DIR, f"polymarket_daily_{today_str}.md")
+
+    opps = data.get("opportunities", [])
+    now = datetime.utcnow()
+    yesterday = (now - timedelta(days=1)).strftime("%Y-%m-%d")
+    today_d   = now.strftime("%Y-%m-%d")
+
+    # Resolved
+    def _recent_exit(opp):
+        exit_at = opp.get("exit_at") or opp.get("resolution_date") or ""
+        return exit_at.startswith(yesterday) or exit_at.startswith(today_d)
+
+    resolved = [o for o in opps if o.get("outcome") is not None and _recent_exit(o)]
+    wins   = [o for o in resolved if o.get("outcome") == "win"]
+    losses = [o for o in resolved if o.get("outcome") == "loss"]
+    total_pnl = sum(float(o.get("paper_pnl_usd") or 0) for o in resolved)
+
+    # Open
+    open_pos = [o for o in opps if o.get("is_live") and o.get("outcome") is None]
+    open_cost = sum(float(o.get("live_size_usd") or o.get("paper_size_usd") or 0) for o in open_pos)
+
+    # Overall stats
+    overall = report.get("overall", {})
+    no_stats = report.get("by_type", {}).get("no", {})
+    yes_stats = report.get("by_type", {}).get("yes", {})
+
+    lines = [
+        f"# Polymarket Bot Daily Summary - {today_str}",
+        "",
+        "## Yesterday's Results",
+        "",
+    ]
+
+    if resolved:
+        wr = len(wins) / len(resolved) if resolved else 0
+        pnl_sign = "+" if total_pnl >= 0 else ""
+        lines.append(f"**{len(resolved)} resolved** | {len(wins)}W / {len(losses)}L | "
+                     f"Win rate: {wr:.0%} | P&L: **{pnl_sign}${total_pnl:.2f}**")
+        lines.append("")
+        lines.append("| City | Bracket | Type | Result | P&L | Actual Temp |")
+        lines.append("|------|---------|------|--------|-----|-------------|")
+        for o in resolved:
+            result = o.get("outcome", "?").upper()
+            pnl_usd = float(o.get("paper_pnl_usd") or 0)
+            actual = o.get("actual_temp")
+            act_str = f"{actual:.0f}" if actual is not None else "?"
+            dist = o.get("distance")
+            dist_str = f" ({dist:.0f} gap)" if dist is not None else ""
+            lines.append(
+                f"| {o.get('city','?')} | {o.get('bracket','?')[:30]} | "
+                f"{o.get('type','?').upper()} | {result} | "
+                f"{'+'if pnl_usd>=0 else ''}${pnl_usd:.2f} | {act_str}{dist_str} |"
+            )
+    else:
+        lines.append("No positions resolved in the last 24h.")
+
+    lines.extend(["", "## Open Positions", ""])
+
+    if open_pos:
+        lines.append(f"**{len(open_pos)} open** | Total deployed: ${open_cost:.0f}")
+        lines.append("")
+        lines.append("| City | Bracket | Type | Entry | Shares | Size | Token ID |")
+        lines.append("|------|---------|------|-------|--------|------|----------|")
+        for o in open_pos:
+            entry = float(o.get("execution_price") or o.get("entry_price") or 0)
+            lines.append(
+                f"| {o.get('city','?')} | {o.get('bracket','?')[:30]} | "
+                f"{o.get('type','?').upper()} | {entry:.3f} | "
+                f"{o.get('shares','?')} | ${float(o.get('live_size_usd') or 0):.0f} | "
+                f"{(o.get('token_id') or 'MISSING')[:16]} |"
+            )
+    else:
+        lines.append("No open positions.")
+
+    # 14-day stats
+    lines.extend(["", "## 14-Day Performance", ""])
+    if overall.get("n", 0) > 0:
+        wr_14 = overall.get("win_rate")
+        roi_14 = overall.get("roi_pct")
+        lines.append(f"- **Total resolved:** {overall['n']}")
+        lines.append(f"- **Win rate:** {wr_14:.0%}" if wr_14 is not None else "- **Win rate:** n/a")
+        lines.append(f"- **ROI:** {'+' if (roi_14 or 0) >= 0 else ''}{roi_14:.1f}%" if roi_14 is not None else "- **ROI:** n/a")
+        lines.append(f"- **Total P&L:** ${overall.get('total_pnl', 0):.2f}")
+        lines.append(f"- **Total staked:** ${overall.get('total_staked', 0):.2f}")
+    else:
+        lines.append("Not enough data yet.")
+
+    # NO stats
+    if no_stats.get("n", 0) > 0:
+        lines.extend(["", "### NO Bets"])
+        lines.append(f"- {no_stats['n']} resolved, {no_stats.get('win_rate',0):.0%} win rate, "
+                     f"${no_stats.get('total_pnl',0):.2f} P&L")
+
+    # YES stats
+    if yes_stats.get("n", 0) > 0:
+        lines.extend(["", "### YES Bets"])
+        lines.append(f"- {yes_stats['n']} resolved, {yes_stats.get('win_rate',0):.0%} win rate, "
+                     f"${yes_stats.get('total_pnl',0):.2f} P&L")
+
+    # Distance buckets
+    by_distance = report.get("by_distance", {})
+    if by_distance:
+        lines.extend(["", "### Win Rate by Distance Bucket (NO bets)"])
+        lines.append("| Distance | N | Win Rate | P&L |")
+        lines.append("|----------|---|----------|-----|")
+        for bucket, stats in sorted(by_distance.items()):
+            wr = f"{stats['win_rate']:.0%}" if stats.get("win_rate") is not None else "n/a"
+            lines.append(f"| {bucket} | {stats['n']} | {wr} | ${stats.get('total_pnl',0):.2f} |")
+
+    # City stats
+    by_city = report.get("by_city_no", {})
+    if by_city:
+        lines.extend(["", "### Win Rate by City (NO bets)"])
+        lines.append("| City | N | Win Rate | WU Error | P&L |")
+        lines.append("|------|---|----------|----------|-----|")
+        for city, stats in sorted(by_city.items(), key=lambda x: x[1].get("win_rate", 1)):
+            wr = f"{stats['win_rate']:.0%}" if stats.get("win_rate") is not None else "n/a"
+            wu = f"{stats.get('avg_wu_error_f', 0):.1f}" if stats.get("avg_wu_error_f") else "?"
+            lines.append(f"| {city} | {stats['n']} | {wr} | {wu} | ${stats.get('total_pnl',0):.2f} |")
+
+    # Learning
+    lines.extend(["", "## What the System Learned", ""])
+    learned = learn_result.get("learned", 0)
+    lines.append(f"- Processed {learned} outcome(s)")
+    if learn_result.get("weights_updated"):
+        lines.append("- Forecast weights updated")
+    if learn_result.get("calib_updated"):
+        lines.append("- Calibration sigma updated")
+    city_adj = learn_result.get("city_adjustments", {})
+    if city_adj:
+        lines.append(f"- City distance bonuses: {', '.join(city_adj.keys())}")
+
+    # Issues
+    issues = report.get("issues", [])
+    if issues:
+        lines.extend(["", "## Issues Flagged", ""])
+        for iss in issues:
+            icon = {"critical": "!!!", "warning": "!!", "info": "i"}.get(iss.get("severity"), "?")
+            lines.append(f"- **[{icon}]** {iss['message']}")
+
+    # Auto-applied changes
+    if auto_applied and auto_applied.get("changes"):
+        lines.extend(["", "## Auto-Applied Strategy Changes", ""])
+        for change in auto_applied["changes"]:
+            lines.append(f"- {change}")
+    elif auto_applied:
+        lines.extend(["", "## Auto-Applied Strategy Changes", "", "No changes needed."])
+
+    lines.extend(["", "---", f"*Generated {now.strftime('%Y-%m-%d %H:%M UTC')}*", ""])
+
+    try:
+        with open(filepath, "w") as f:
+            f.write("\n".join(lines))
+        print(f"[notify] daily summary written to {filepath}")
+    except Exception as e:
+        print(f"[notify] failed to write summary: {e}")
+
+    return filepath
