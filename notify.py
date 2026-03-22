@@ -369,6 +369,36 @@ def write_daily_summary_md(data: dict, learn_result: dict, report: dict,
         lines.append(f"- {yes_stats['n']} resolved, {yes_stats.get('win_rate',0):.0%} win rate, "
                      f"${yes_stats.get('total_pnl',0):.2f} P&L")
 
+    # YES margin buckets
+    by_yes_margin = report.get("by_yes_margin", {})
+    if by_yes_margin:
+        lines.extend(["", "### Win Rate by Forecast Margin (YES bets)"])
+        lines.append("| Margin | N | Win Rate | P&L |")
+        lines.append("|--------|---|----------|-----|")
+        for bucket, stats in sorted(by_yes_margin.items()):
+            wr = f"{stats['win_rate']:.0%}" if stats.get("win_rate") is not None else "n/a"
+            lines.append(f"| {bucket} | {stats['n']} | {wr} | ${stats.get('total_pnl',0):.2f} |")
+
+    # YES city stats
+    by_city_yes = report.get("by_city_yes", {})
+    if by_city_yes:
+        lines.extend(["", "### Win Rate by City (YES bets)"])
+        lines.append("| City | N | Win Rate | P&L |")
+        lines.append("|------|---|----------|-----|")
+        for city, stats in sorted(by_city_yes.items(), key=lambda x: x[1].get("win_rate", 1)):
+            wr = f"{stats['win_rate']:.0%}" if stats.get("win_rate") is not None else "n/a"
+            lines.append(f"| {city} | {stats['n']} | {wr} | ${stats.get('total_pnl',0):.2f} |")
+
+    # YES price buckets
+    by_price = report.get("by_price", {})
+    if by_price:
+        lines.extend(["", "### Win Rate by Entry Price (YES bets)"])
+        lines.append("| Price Bucket | N | Win Rate | P&L |")
+        lines.append("|-------------|---|----------|-----|")
+        for bucket, stats in sorted(by_price.items()):
+            wr = f"{stats['win_rate']:.0%}" if stats.get("win_rate") is not None else "n/a"
+            lines.append(f"| {bucket} | {stats['n']} | {wr} | ${stats.get('total_pnl',0):.2f} |")
+
     # Distance buckets
     by_distance = report.get("by_distance", {})
     if by_distance:

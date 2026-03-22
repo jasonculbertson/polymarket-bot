@@ -135,6 +135,29 @@ def _compute_yes_price_buckets(yes_opps: list) -> dict:
     return {k: _compute_stats(v) for k, v in sorted(buckets.items())}
 
 
+def _compute_yes_margin_buckets(yes_opps: list) -> dict:
+    """YES win rate by forecast margin (how far inside the bracket the forecast is)."""
+    buckets: dict = defaultdict(list)
+    for o in yes_opps:
+        margin = o.get("distance") or o.get("margin")
+        if margin is None:
+            buckets["unknown"].append(o)
+            continue
+        margin = abs(float(margin))
+        if o.get("temp_unit") == "C":
+            margin = margin * 1.8
+        if margin < 2:
+            key = "<2°F margin"
+        elif margin < 4:
+            key = "2-4°F margin"
+        elif margin < 6:
+            key = "4-6°F margin"
+        else:
+            key = "6+°F margin"
+        buckets[key].append(o)
+    return {k: _compute_stats(v) for k, v in sorted(buckets.items())}
+
+
 def _compute_rolling_trend(resolved: list, days: int = 14) -> list:
     """Daily win rate and P&L for the last N days."""
     by_date: dict = defaultdict(list)
@@ -163,6 +186,8 @@ def _identify_issues(
     by_confidence: dict,
     by_distance: dict,
     by_price: dict,
+    by_city_yes: dict = None,
+    by_yes_margin: dict = None,
 ) -> list:
     """Return list of flagged issues with severity, category, and context."""
     issues = []
@@ -234,6 +259,29 @@ def _identify_issues(
                   f"Medium-confidence win rate {wr:.1%} — no_require_high_confidence may be too strict",
                   win_rate=wr, n=medium_stats["n"])
 
+    # ── YES city-level problems ──────────────────────────────────────────────
+    if by_city_yes:
+        for city, stats in by_city_yes.items():
+            wr = stats.get("win_rate")
+            n = stats.get("n", 0)
+            if n < MIN_SAMPLES_CITY:
+                continue
+            if wr is not None and wr < YES_WIN_RATE_WARN:
+                _flag("warning", "yes_city_loss",
+                      f"{city} YES win rate {wr:.1%} ({n} bets) — consider adding to yes_exclude_cities",
+                      city=city, win_rate=wr, n=n)
+
+    # ── YES margin bucket problems ───────────────────────────────────────────
+    if by_yes_margin:
+        for bucket, stats in by_yes_margin.items():
+            if stats.get("n", 0) >= 5 and stats.get("win_rate") is not None:
+                wr = stats["win_rate"]
+                if wr < 0.20 and "unknown" not in bucket:
+                    _flag("warning", "yes_margin_threshold",
+                          f"YES win rate {wr:.1%} in margin bucket '{bucket}' — "
+                          f"yes_min_margin may be too low",
+                          bucket=bucket, win_rate=wr, n=stats["n"])
+
     return sorted(issues, key=lambda x: {"critical": 0, "warning": 1, "info": 2}.get(x["severity"], 3))
 
 
@@ -258,15 +306,18 @@ def run_daily_optimizer(data: dict) -> dict:
         "no":  _compute_stats([o for o in recent if o["type"] == "no"]),
     }
     by_city_no     = _compute_city_stats([o for o in recent if o["type"] == "no"])
+    by_city_yes    = _compute_city_stats([o for o in recent if o["type"] == "yes"])
     by_confidence  = {
         "high":   _compute_stats([o for o in recent if o.get("confidence") == "high"]),
         "medium": _compute_stats([o for o in recent if o.get("confidence") == "medium"]),
     }
     by_distance    = _compute_distance_buckets([o for o in recent if o["type"] == "no"])
+    by_yes_margin  = _compute_yes_margin_buckets([o for o in recent if o["type"] == "yes"])
     by_price       = _compute_yes_price_buckets([o for o in recent if o["type"] == "yes"])
     trend          = _compute_rolling_trend(all_resolved, days=LOOKBACK_DAYS)
 
-    issues = _identify_issues(overall, by_type, by_city_no, by_confidence, by_distance, by_price)
+    issues = _identify_issues(overall, by_type, by_city_no, by_confidence, by_distance, by_price,
+                              by_city_yes=by_city_yes, by_yes_margin=by_yes_margin)
 
     report = {
         "generated_at":  datetime.utcnow().isoformat(),
@@ -276,8 +327,10 @@ def run_daily_optimizer(data: dict) -> dict:
         "overall":       overall,
         "by_type":       by_type,
         "by_city_no":    by_city_no,
+        "by_city_yes":   by_city_yes,
         "by_confidence": by_confidence,
         "by_distance":   by_distance,
+        "by_yes_margin": by_yes_margin,
         "by_price":      by_price,
         "trend":         trend,
         "issues":        issues,
@@ -305,6 +358,9 @@ def auto_apply_safe_changes(report: dict, data: dict) -> dict:
       - Add city to yes_exclude_cities when city NO win rate < 60%
       - Raise no_min_distance when a distance bucket has < 75% win rate
       - Lower max_single_bet when total losses exceed 20% of bankroll
+      - YES: raise yes_min_margin when YES win rate < 25%
+      - YES: add city to yes_exclude_cities when YES city win rate < 15%
+      - YES: lower yes_max_entry_price when high-price YES bets lose consistently
 
     Returns: {"changes": [...], "applied": int}
     """
@@ -389,6 +445,55 @@ def auto_apply_safe_changes(report: dict, data: dict) -> dict:
                     f"14-day loss {loss_pct:.0f}% of staked: reduced max bet "
                     f"${cur_max:.0f} → ${new_max:.0f}"
                 )
+
+    # ── Rule 5: YES — raise min margin when YES win rate < 25% ──────────────
+    yes_stats = report.get("by_type", {}).get("yes", {})
+    if yes_stats.get("n", 0) >= 10 and yes_stats.get("win_rate") is not None:
+        wr = yes_stats["win_rate"]
+        if wr < 0.25:
+            cur_f = float(overrides.get("yes_min_margin_f",
+                          STRATEGY.get("yes_min_margin_f", 2.0)))
+            cur_c = float(overrides.get("yes_min_margin_c",
+                          STRATEGY.get("yes_min_margin_c", 1.0)))
+            new_f = min(cur_f + 0.5, 5.0)
+            new_c = min(cur_c + 0.3, 3.0)
+            if new_f > cur_f:
+                overrides["yes_min_margin_f"] = new_f
+                overrides["yes_min_margin_c"] = new_c
+                changes.append(
+                    f"YES win rate {wr:.0%} < 25%: raised min margin "
+                    f"{cur_f:.1f}°F → {new_f:.1f}°F / {cur_c:.1f}°C → {new_c:.1f}°C"
+                )
+
+    # ── Rule 6: YES — ban cities with < 15% YES win rate ─────────────────────
+    by_city_yes = report.get("by_city_yes", {})
+    if by_city_yes:
+        for city, stats in by_city_yes.items():
+            if stats.get("n", 0) >= 5 and stats.get("win_rate") is not None:
+                if stats["win_rate"] < 0.15 and city not in excluded:
+                    excluded.append(city)
+                    changes.append(
+                        f"{city} YES win rate {stats['win_rate']:.0%} < 15%: "
+                        f"added to yes_exclude_cities"
+                    )
+        if len(excluded) > len(STRATEGY.get("yes_exclude_cities", [])):
+            overrides["yes_exclude_cities"] = excluded
+
+    # ── Rule 7: YES — lower max entry price when expensive YES bets lose ─────
+    by_price = report.get("by_price", {})
+    for bucket, stats in (by_price or {}).items():
+        if "0.50+" in bucket and stats.get("n", 0) >= 5:
+            wr = stats.get("win_rate", 1.0)
+            if wr < 0.20:
+                cur = float(overrides.get("yes_max_entry_price",
+                            STRATEGY.get("yes_max_entry_price", 0.75)))
+                new = max(cur - 0.05, 0.40)
+                if new < cur:
+                    overrides["yes_max_entry_price"] = round(new, 2)
+                    changes.append(
+                        f"Expensive YES (0.50+) win rate {wr:.0%} < 20%: "
+                        f"lowered max entry price {cur:.2f} → {new:.2f}"
+                    )
 
     # Save overrides
     if changes:
