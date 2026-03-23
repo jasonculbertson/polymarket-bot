@@ -1881,10 +1881,12 @@ def daily_report():
 
     # Generate fresh report
     try:
-        from tracker import _load as _tload, learn_from_outcomes
+        from tracker import _load as _tload, resolve_outcomes
+        from learner import learn_from_outcomes
         from optimizer import run_daily_optimizer, auto_apply_safe_changes
         from notify import write_daily_summary_md
 
+        resolve_outcomes()
         data = _tload()
         learn_result = learn_from_outcomes()
         report = run_daily_optimizer(data)
