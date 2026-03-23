@@ -450,11 +450,24 @@ def write_daily_summary_md(data: dict, learn_result: dict, report: dict,
 
     lines.extend(["", "---", f"*Generated {now.strftime('%Y-%m-%d %H:%M UTC')}*", ""])
 
+    content = "\n".join(lines)
+
+    # Save to Postgres so it's accessible via /api/daily-report on Railway
     try:
+        from tracker import _pg_save
+        _pg_save(f"daily_report_md_{today_str}", {"content": content, "date": today_str})
+        _pg_save("daily_report_md_latest", {"content": content, "date": today_str})
+        print(f"[notify] daily summary saved to Postgres")
+    except Exception as e:
+        print(f"[notify] failed to save to Postgres: {e}")
+
+    # Also try to write locally (works on Mac, silently fails on Railway)
+    try:
+        os.makedirs(DESKTOP_SUMMARY_DIR, exist_ok=True)
         with open(filepath, "w") as f:
-            f.write("\n".join(lines))
+            f.write(content)
         print(f"[notify] daily summary written to {filepath}")
     except Exception as e:
-        print(f"[notify] failed to write summary: {e}")
+        print(f"[notify] failed to write local file: {e}")
 
-    return filepath
+    return content

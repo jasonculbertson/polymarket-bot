@@ -1865,6 +1865,40 @@ def monitor_debug():
         return jsonify({"error": str(e), "trace": traceback.format_exc()})
 
 
+@app.route("/api/daily-report")
+def daily_report():
+    """Generate and return today's daily summary as markdown."""
+    try:
+        # Try to load cached version from Postgres first
+        from tracker import _pg_load
+        cached = _pg_load("daily_report_md_latest")
+        if cached and cached.get("content"):
+            from flask import Response
+            return Response(cached["content"], mimetype="text/markdown",
+                          headers={"Content-Type": "text/markdown; charset=utf-8"})
+    except Exception:
+        pass
+
+    # Generate fresh report
+    try:
+        from tracker import _load as _tload, learn_from_outcomes
+        from optimizer import run_daily_optimizer, auto_apply_safe_changes
+        from notify import write_daily_summary_md
+
+        data = _tload()
+        learn_result = learn_from_outcomes()
+        report = run_daily_optimizer(data)
+        auto_applied = auto_apply_safe_changes(report, data)
+        content = write_daily_summary_md(data, learn_result, report, auto_applied)
+
+        from flask import Response
+        return Response(content, mimetype="text/markdown",
+                       headers={"Content-Type": "text/markdown; charset=utf-8"})
+    except Exception as e:
+        import traceback
+        return jsonify({"error": str(e), "trace": traceback.format_exc()})
+
+
 @app.route("/bankroll", methods=["GET"])
 def bankroll_get():
     """Return current bankroll and today's daily stats."""
