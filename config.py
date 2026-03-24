@@ -394,6 +394,8 @@ STRATEGY = {
     "live_yes_min_edge": 0.12,   # positive edge threshold for YES A-tier
     # Hard cap: never auto-execute NO bets above this price (near-zero upside + no exit liquidity)
     "no_max_entry_price": float(os.environ.get("NO_MAX_ENTRY_PRICE") or "0.88"),
+    # Thin market guard: reject if bid-ask spread > X% of mid-price at execution time
+    "no_max_spread_pct": float(os.environ.get("NO_MAX_SPREAD_PCT") or "0.15"),
     # ── Bankroll & compounding ────────────────────────────────────────────────
     "initial_bankroll":    float(os.environ.get("INITIAL_BANKROLL") or "150"),
     # Daily return target — informational only, does NOT reduce bet sizes when hit
