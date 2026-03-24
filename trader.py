@@ -589,50 +589,65 @@ def redeem_winning_position(token_id: str, condition_id: str, bet_type: str) -> 
     except Exception as _se:
         log.warning("[trader] CLOB sell of winning tokens failed (%s) — trying on-chain redeem", _se)
 
-    # ── Fallback: on-chain redeemPositions ──────────────────────────────────
-    # Note: with signature_type=2 (proxy wallet), Polymarket usually auto-redeems.
-    # This path handles the case where auto-redemption hasn't happened yet.
+    # ── Fallback: on-chain redeemPositions via web3 ─────────────────────────
+    # Submit the redeemPositions tx directly to Polygon using the POLY_PRIVATE_KEY.
+    # CTF contract: 0x4D97DCd97eC945f40cF65F87097ACe5EA0476045 (Polygon mainnet)
+    CTF_ADDRESS = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"
+    POLYGON_RPC = os.environ.get("POLYGON_RPC_URL", "https://polygon-rpc.com")
+
     try:
+        from web3 import Web3
         from eth_abi import encode
-        from eth_account import Account
         from eth_utils import keccak, to_checksum_address
 
-        # Ensure condition_id is bytes32
-        cid_bytes = bytes.fromhex(condition_id.lstrip("0x").zfill(64))
+        if not POLY_PRIVATE_KEY:
+            raise RuntimeError("POLY_PRIVATE_KEY not set")
 
-        # redeemPositions(address collateral, bytes32 parentId, bytes32 conditionId, uint256[] indexSets)
-        selector = keccak(text="redeemPositions(address,bytes32,bytes32,uint256[])")[:4]
-        calldata = "0x" + (selector + encode(
+        w3 = Web3(Web3.HTTPProvider(POLYGON_RPC, request_kwargs={"timeout": 30}))
+        account = w3.eth.account.from_key(POLY_PRIVATE_KEY)
+        sender  = account.address
+
+        # Build redeemPositions calldata
+        cid_bytes = bytes.fromhex(condition_id.lstrip("0x").zfill(64))
+        selector  = keccak(text="redeemPositions(address,bytes32,bytes32,uint256[])")[:4]
+        calldata  = selector + encode(
             ["address", "bytes32", "bytes32", "uint256[]"],
             [
                 to_checksum_address(USDC_ADDRESS),
-                b"\x00" * 32,   # parentCollectionId = 0 (root)
+                b"\x00" * 32,
                 cid_bytes,
                 index_sets,
             ]
-        )).hex()
+        )
 
-        # For proxy wallets Polymarket auto-handles this; log calldata for manual fallback
-        log.warning("[trader] redeemPositions calldata: %s", calldata[:60])
-        log.warning("[trader] NOTE: funder is a proxy — auto-redemption should happen within 24h. "
-                    "If not, call redeemPositions on CTF contract from funder wallet.")
-
+        nonce    = w3.eth.get_transaction_count(sender)
+        gas_price = w3.eth.gas_price
+        tx = {
+            "to":       to_checksum_address(CTF_ADDRESS),
+            "data":     "0x" + calldata.hex(),
+            "gas":      150_000,
+            "gasPrice": int(gas_price * 1.2),   # 20% tip for fast inclusion
+            "nonce":    nonce,
+            "chainId":  137,  # Polygon mainnet
+        }
+        signed = account.sign_transaction(tx)
+        tx_hash = w3.eth.send_raw_transaction(signed.rawTransaction).hex()
+        log.warning("[trader] redeemPositions tx submitted: %s", tx_hash)
         return {
-            "redeemed": False,
-            "tx_hash": None,
-            "method": "manual_needed",
-            "condition_id": condition_id,
-            "index_sets": index_sets,
-            "calldata": calldata,
-            "message": (
-                "Could not sell on CLOB. Polymarket should auto-redeem winning tokens within 24h. "
-                "If not, call redeemPositions on the ConditionalTokens contract from your funder wallet."
-            ),
+            "redeemed": True,
+            "tx_hash":  tx_hash,
+            "method":   "onchain",
+            "message":  f"redeemPositions tx: {tx_hash}",
         }
 
     except Exception as e:
-        log.error("[trader] redeem_winning_position error: %s", e)
-        return {"redeemed": False, "tx_hash": None, "message": f"Error: {e}"}
+        log.error("[trader] on-chain redeem failed: %s", e)
+        return {
+            "redeemed": False,
+            "tx_hash":  None,
+            "method":   "failed",
+            "message":  f"On-chain redeem error: {e}. Polymarket should auto-redeem within 24h.",
+        }
 
 
 def get_condition_id_for_market(market_id: str) -> Optional[str]:
