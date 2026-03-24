@@ -1209,8 +1209,10 @@ def update_open_position_prices() -> dict:
     Safe to call every scan cycle — skips resolved positions.
     """
     from config import TRADING
-    stop_loss_pct  = TRADING.get("stop_loss_pct", 50) / 100.0
-    min_hours      = TRADING.get("stop_loss_min_hours_to_resolution", 4)
+    stop_loss_pct    = TRADING.get("stop_loss_pct", 8) / 100.0
+    take_profit_pct  = TRADING.get("take_profit_pct", 10) / 100.0
+    force_exit_hours = TRADING.get("force_exit_hours_before_resolution", 24.0)
+    min_hours        = TRADING.get("stop_loss_min_hours_to_resolution", 4)
 
     try:
         data = _load()
@@ -1264,43 +1266,62 @@ def update_open_position_prices() -> dict:
             updated += 1
             changed = True
 
-            # ── Simulated stop-loss ───────────────────────────────────────────
-            if opp.get("simulated_stop_loss_triggered"):
-                continue  # already fired, don't re-trigger
+            # ── Paper early-exit simulation (mirrors live monitor logic) ─────
+            # Resolve paper positions using the same stop-loss / take-profit /
+            # force-exit thresholds as live trading. This gives accurate P&L data
+            # for deciding when to promote YES (or NO) to live.
             if entry_price <= 0:
                 continue
 
-            loss_pct = (entry_price - current_price) / entry_price
-            if loss_pct < stop_loss_pct:
-                continue
-
-            # Check time gate: don't exit if too close to resolution
+            # Compute hours to resolution
             hours_left = float("inf")
-            res_time = opp.get("resolution_time") or ""
+            res_time = opp.get("resolution_time") or opp.get("resolution_date") or ""
             if res_time:
                 try:
-                    res_dt = datetime.fromisoformat(res_time.replace("Z", "+00:00"))
-                    res_dt_naive = res_dt.replace(tzinfo=None)
-                    hours_left = (res_dt_naive - now).total_seconds() / 3600
+                    from datetime import timezone
+                    if "T" in str(res_time):
+                        res_dt = datetime.fromisoformat(str(res_time).replace("Z", "+00:00"))
+                    else:
+                        res_dt = datetime.fromisoformat(f"{res_time}T23:59:00+00:00")
+                    now_utc = datetime.now(timezone.utc)
+                    hours_left = (res_dt - now_utc).total_seconds() / 3600
                 except Exception:
                     pass
 
-            if hours_left < min_hours:
-                continue  # too close to resolution — let it ride
-
             size = float(opp.get("paper_size_usd") or 0)
-            opp["simulated_stop_loss_triggered"]  = True
-            opp["simulated_stop_loss_price"]      = current_price
-            opp["simulated_stop_loss_time"]       = now.isoformat()
-            opp["simulated_stop_loss_hours_left"] = round(hours_left, 1)
-            if size > 0:
-                exit_proceeds = size * (current_price / entry_price)
-                opp["simulated_exit_pnl_usd"] = round(exit_proceeds - size, 2)
-                opp["simulated_exit_pnl_pct"] = round((exit_proceeds - size) / size * 100, 2)
-            stop_loss_triggered += 1
-            print(f"[stop-loss SIM] {opp['type'].upper()} {opp.get('city')} "
-                  f"entry={entry_price:.3f} now={current_price:.3f} "
-                  f"loss={loss_pct:.0%} hours_left={hours_left:.1f}h → would exit")
+            pnl_chg = (current_price - entry_price) / entry_price
+
+            def _resolve_paper(reason: str, exit_p: float):
+                """Mark this paper position as resolved at exit_p."""
+                pnl = round(pnl_chg * 100, 2)
+                opp["outcome"]       = "win" if pnl_chg > 0 else "loss"
+                opp["exit_reason"]   = reason
+                opp["exit_price"]    = round(exit_p, 4)
+                opp["exit_at"]       = now.isoformat()
+                opp["pnl_pct"]       = pnl
+                if size > 0:
+                    opp["paper_pnl_usd"] = round(size * pnl_chg, 2)
+                print(f"[paper-exit] {reason.upper()} {opp['type'].upper()} "
+                      f"{opp.get('city')} entry={entry_price:.3f} exit={exit_p:.3f} "
+                      f"pnl={pnl:+.1f}%")
+
+            # Priority 1: force exit — within N hours of resolution
+            if hours_left <= force_exit_hours and hours_left >= 0:
+                _resolve_paper("force_exit", current_price)
+                stop_loss_triggered += 1
+                continue
+
+            # Priority 2: stop-loss
+            if pnl_chg <= -stop_loss_pct and hours_left > min_hours:
+                _resolve_paper("stop_loss", current_price)
+                stop_loss_triggered += 1
+                continue
+
+            # Priority 3: take-profit
+            if take_profit_pct > 0 and pnl_chg >= take_profit_pct:
+                _resolve_paper("take_profit", current_price)
+                stop_loss_triggered += 1
+                continue
 
         except Exception as e:
             errors += 1
