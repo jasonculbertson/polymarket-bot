@@ -314,13 +314,29 @@ def buy(token_id: str, size_usd: float, price: float,
     # Fetch live price for drift check and share-count calculation
     live_price = _fetch_live_price(token_id)
     book_ask   = _fetch_best_ask(token_id)
-    ref_price  = live_price or book_ask or _fetch_best_bid(token_id)
+    book_bid   = _fetch_best_bid(token_id)
+    ref_price  = live_price or book_ask or book_bid
 
     if ref_price is None:
         raise ValueError(
             f"No live price or orderbook for {token_id[:16]} — "
             f"market appears closed or inactive, skipping"
         )
+
+    # Thin market check: reject if bid-ask spread is too wide.
+    # Wide spread = illiquid market = bad fill + no exit liquidity.
+    # e.g. ask=0.99, bid=0.50 → spread=0.49 → 50% of mid → reject.
+    from config import STRATEGY as _STRAT
+    _max_spread = float(_STRAT.get("no_max_spread_pct", 0.15))  # default 15% of mid
+    if book_ask and book_bid and book_ask > book_bid:
+        mid = (book_ask + book_bid) / 2
+        spread_pct = (book_ask - book_bid) / mid if mid > 0 else 1.0
+        if spread_pct > _max_spread:
+            raise ValueError(
+                f"Bid-ask spread too wide: bid={book_bid:.3f} ask={book_ask:.3f} "
+                f"spread={spread_pct:.1%} > max={_max_spread:.0%} for {token_id[:16]} — "
+                f"thin market, skipping"
+            )
 
     # Drift check: reject if market moved >15¢ from scan price since we scored it
     drift = abs(ref_price - price)

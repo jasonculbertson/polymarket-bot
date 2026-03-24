@@ -550,6 +550,18 @@ def find_no_opps(event: dict, forecast_temp: float, confidence: str,
         if mkt["liquidity"] < min_liq:
             continue
 
+        # ── Bid-ask spread filter — skip illiquid/wide-spread markets ──────
+        # Wide spread = thin order book, bad fill quality, no exit liquidity.
+        # Uses CLOB data fetched by fetch_markets. If unavailable, skip check.
+        _clob_ask = mkt.get("clob_best_ask")
+        _clob_bid = mkt.get("clob_best_bid")
+        _max_spread = float(cfg.get("no_max_spread_pct", 0.15))
+        if _clob_ask and _clob_bid and _clob_ask > _clob_bid:
+            _mid = (_clob_ask + _clob_bid) / 2
+            _spread = (_clob_ask - _clob_bid) / _mid if _mid > 0 else 1.0
+            if _spread > _max_spread:
+                continue  # Too wide — skip entirely (not even paper-traded)
+
         # ── Probability edge (for quality-tier assignment only) ────────────
         model_p = _bracket_prob(forecast_temp, sigma, lo, hi)
         market_p = float(yes_price)
