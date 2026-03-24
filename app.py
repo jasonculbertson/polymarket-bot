@@ -1838,6 +1838,47 @@ def bankroll_sync():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/admin/overrides", methods=["GET"])
+def get_overrides():
+    """View current strategy overrides stored in Postgres."""
+    try:
+        from tracker import _pg_load
+        overrides = _pg_load("strategy_overrides") or {}
+        return jsonify({"overrides": overrides})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/admin/overrides", methods=["POST"])
+def set_overrides():
+    """Update strategy overrides. Body: {"key": str, "value": any} or {"clear": true}."""
+    try:
+        from tracker import _pg_load, _pg_save
+        body = request.get_json(silent=True) or {}
+        if body.get("clear"):
+            _pg_save("strategy_overrides", {})
+            return jsonify({"ok": True, "action": "cleared"})
+        overrides = _pg_load("strategy_overrides") or {}
+        key = body.get("key")
+        value = body.get("value")
+        if key is None:
+            return jsonify({"error": "key required"}), 400
+        if value is None:
+            overrides.pop(key, None)
+            action = f"removed {key}"
+        else:
+            overrides[key] = value
+            action = f"set {key}={value}"
+        _pg_save("strategy_overrides", overrides)
+        # Reload into live config
+        from config import STRATEGY
+        if key in STRATEGY and key not in ("last_auto_applied", "last_changes"):
+            STRATEGY[key] = value
+        return jsonify({"ok": True, "action": action, "overrides": overrides})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/monitor/debug")
 def monitor_debug():
     """Diagnostic: show exactly what the monitor sees for each live position."""
