@@ -338,11 +338,31 @@ def buy(token_id: str, size_usd: float, price: float,
         )
 
     exec_price = book_ask or ref_price
+
+    # Hard cap: never buy above no_max_entry_price (default 0.88).
+    # A NO token at 99¢ has ≤1¢ max upside and zero exit liquidity — block unconditionally.
+    from config import STRATEGY as _STRAT
+    _no_max = float(_STRAT.get("no_max_entry_price", 0.88))
+    if exec_price > _no_max:
+        raise ValueError(
+            f"Execution price {exec_price:.4f} exceeds no_max_entry_price={_no_max:.2f} "
+            f"for {token_id[:16]} — refusing to buy near-zero-upside NO token"
+        )
+
+    # Additional drift check: reject if execution price (ask) is >10¢ above scan price.
+    # The mid-price drift check above can pass even when the ask is much higher.
+    exec_drift = exec_price - price
+    if exec_drift > 0.10:
+        raise ValueError(
+            f"Execution price drift too large: scan={price:.3f} ask={exec_price:.3f} "
+            f"(exec_drift={exec_drift:.3f}) for {token_id[:16]} — skipping"
+        )
+
     shares = round(size_usd / exec_price, 4)
 
     log.warning(
-        "[trader] BUY FOK %s  shares=%.4f  ref_price=%.4f  size_usd=%.2f  live=%s",
-        token_id[:16], shares, exec_price, size_usd, LIVE_MODE,
+        "[trader] BUY FOK %s  shares=%.4f  ref_price=%.4f  exec_price=%.4f  size_usd=%.2f  live=%s",
+        token_id[:16], shares, ref_price, exec_price, size_usd, LIVE_MODE,
     )
 
     if not LIVE_MODE:
