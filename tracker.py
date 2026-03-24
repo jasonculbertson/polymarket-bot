@@ -992,7 +992,30 @@ def redeem_all_live_wins() -> dict:
     if not LIVE_MODE:
         return {"attempted": 0, "results": [], "note": "paper mode — no real redemptions"}
 
+    from datetime import datetime, timedelta
     data = _load()
+
+    # Auto-mark wins older than 7 days as redeemed (Polymarket auto-redeems within 24h).
+    # This prevents infinite retry loops for stale positions.
+    _stale_cutoff = datetime.utcnow() - timedelta(days=7)
+    _stale_marked = []
+    for o in data["opportunities"]:
+        if o.get("outcome") != "win" or not o.get("is_live") or o.get("redeemed"):
+            continue
+        rd = o.get("resolved_at") or o.get("resolution_date") or ""
+        if rd:
+            try:
+                rd_dt = datetime.fromisoformat(rd[:10])
+                if rd_dt < _stale_cutoff:
+                    o["redeemed"] = True
+                    o["redeem_method"] = "auto_stale"
+                    _stale_marked.append(o.get("id"))
+            except Exception:
+                pass
+    if _stale_marked:
+        _save(data)
+        _log.warning("[tracker] auto-marked %d stale wins as redeemed: %s", len(_stale_marked), _stale_marked)
+
     live_wins = [
         o for o in data["opportunities"]
         if o.get("outcome") == "win"
