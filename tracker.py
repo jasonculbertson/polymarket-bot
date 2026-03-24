@@ -138,8 +138,19 @@ def get_bankroll() -> float:
         if val is not None:
             # Stored as {"amount": float, "updated_at": str}
             amt = val.get("amount") if isinstance(val, dict) else val
-            if amt and float(amt) > 0:
+            if amt and float(amt) >= 10:  # sanity: bankroll < $10 is clearly corrupt
                 return float(amt)
+            elif amt:
+                log.warning("[tracker] bankroll looks corrupt ($%.2f) — falling back to initial", float(amt))
+    except Exception:
+        pass
+    # If no valid bankroll in Postgres, try live CLOB balance
+    try:
+        import trader as _trader
+        live = _trader.get_balance()
+        if live is not None and live >= 10:
+            set_bankroll(live)  # persist so future calls use it
+            return live
     except Exception:
         pass
     return initial
@@ -935,6 +946,23 @@ def resolve_outcomes() -> int:
     if resolved_count or backfill_actual:
         data["last_resolved"] = datetime.utcnow().isoformat()
         with _tracker_lock:
+            # Merge: re-read current state and preserve any live trade fields
+            # that record_live_trade() may have written while we were resolving.
+            fresh = _load()
+            fresh_by_id = {o["id"]: o for o in fresh.get("opportunities", [])}
+            _LIVE_FIELDS = ("is_live", "live_order_id", "live_size_usd", "shares",
+                            "token_id", "execution_price", "exit_price", "exit_reason",
+                            "live_at")
+            for opp in data["opportunities"]:
+                fresh_opp = fresh_by_id.get(opp["id"])
+                if fresh_opp:
+                    for field in _LIVE_FIELDS:
+                        if fresh_opp.get(field) and not opp.get(field):
+                            opp[field] = fresh_opp[field]
+            # Also preserve the taken list
+            fresh_taken = fresh.get("taken", [])
+            data_taken = data.get("taken", [])
+            data["taken"] = list(set(data_taken + fresh_taken))
             _save(data)
 
     return resolved_count
@@ -1280,6 +1308,19 @@ def update_open_position_prices() -> dict:
 
     if changed:
         with _tracker_lock:
+            # Merge: preserve live trade fields that may have been written concurrently
+            fresh = _load()
+            fresh_by_id = {o["id"]: o for o in fresh.get("opportunities", [])}
+            _LIVE_FIELDS = ("is_live", "live_order_id", "live_size_usd", "shares",
+                            "token_id", "execution_price", "exit_price", "exit_reason",
+                            "live_at")
+            for opp in data["opportunities"]:
+                fresh_opp = fresh_by_id.get(opp["id"])
+                if fresh_opp:
+                    for field in _LIVE_FIELDS:
+                        if fresh_opp.get(field) and not opp.get(field):
+                            opp[field] = fresh_opp[field]
+            data["taken"] = list(set(data.get("taken", []) + fresh.get("taken", [])))
             _save(data)
 
     print(f"[price-monitor] {updated} positions updated | "
