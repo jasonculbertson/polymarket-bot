@@ -175,12 +175,15 @@ def run_scan_bg(cities=None, capital=None, days=1, target_date=None):
             _auto_execute_trades(_tload().get("opportunities", []))
         except Exception as e:
             _scan_log.append(f"[auto-trade] ERROR: {e}")
-        # Auto-redeem any winning live positions after every scan
+        # Auto-redeem winning positions — both tracked and untracked (CLOB scan)
         try:
-            from tracker import redeem_all_live_wins
-            redeem_result = redeem_all_live_wins()
-            if redeem_result.get("attempted", 0) > 0:
-                _scan_log.append(f"[redeem] {redeem_result}")
+            from tracker import redeem_all_live_wins, redeem_all_clob_wins
+            r1 = redeem_all_live_wins()
+            if r1.get("attempted", 0) > 0:
+                _scan_log.append(f"[redeem-tracked] {r1}")
+            r2 = redeem_all_clob_wins()
+            if r2.get("attempted", 0) > 0:
+                _scan_log.append(f"[redeem-clob] {r2}")
         except Exception as e:
             _scan_log.append(f"[redeem] ERROR: {e}")
     except Exception as e:
@@ -856,9 +859,11 @@ def admin_redeem_all_wins():
     No body required.
     """
     try:
-        from tracker import redeem_all_live_wins
-        result = redeem_all_live_wins()
-        return jsonify(result)
+        from tracker import redeem_all_live_wins, redeem_all_clob_wins
+        r1 = redeem_all_live_wins()
+        r2 = redeem_all_clob_wins()
+        return jsonify({"tracked": r1, "clob_scan": r2,
+                        "total_attempted": r1.get("attempted", 0) + r2.get("attempted", 0)})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -1519,13 +1524,16 @@ def _start_scheduler():
     print("Daily learn+optimize scheduled at 08:00 UTC")
 
     # JOB 5a: Redeem resolved wins every 2 hours
-    # Ensures we don't leave redeemable positions sitting on Polymarket
+    # Runs both tracker-based AND CLOB-scan to catch untracked positions
     def _redeem_job():
         try:
-            from tracker import redeem_all_live_wins
-            result = redeem_all_live_wins()
-            if result.get("attempted", 0) > 0:
-                print(f"[redeem-job] {result}")
+            from tracker import redeem_all_live_wins, redeem_all_clob_wins
+            r1 = redeem_all_live_wins()
+            if r1.get("attempted", 0) > 0:
+                print(f"[redeem-job] tracked: {r1}")
+            r2 = redeem_all_clob_wins()
+            if r2.get("attempted", 0) > 0:
+                print(f"[redeem-job] clob-scan: {r2}")
         except Exception as e:
             print(f"[redeem-job] error: {e}")
 
