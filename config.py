@@ -392,6 +392,8 @@ STRATEGY = {
     # YES A-tier: edge ≥ 0.12  (our Gaussian says bracket is 12%+ more likely than market implies)
     "live_no_min_edge":  0.15,   # |negative edge| threshold for NO A-tier
     "live_yes_min_edge": 0.12,   # positive edge threshold for YES A-tier
+    # Hard cap: never auto-execute NO bets above this price (near-zero upside + no exit liquidity)
+    "no_max_entry_price": float(os.environ.get("NO_MAX_ENTRY_PRICE") or "0.88"),
     # ── Bankroll & compounding ────────────────────────────────────────────────
     "initial_bankroll":    float(os.environ.get("INITIAL_BANKROLL") or "150"),
     # Daily return target — informational only, does NOT reduce bet sizes when hit

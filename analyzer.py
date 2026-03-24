@@ -196,7 +196,8 @@ class YesCluster:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _no_quality_tier(distance_f: float, unit: str, confidence: str,
-                     ev_score: float, prob_edge: float = 0.0) -> str:
+                     ev_score: float, prob_edge: float = 0.0,
+                     no_price: float = 0.0) -> str:
     """
     A = clear winner: bet in live mode.
 
@@ -212,11 +213,17 @@ def _no_quality_tier(distance_f: float, unit: str, confidence: str,
     live_dist_c   = float(STRATEGY.get("live_no_min_distance_c", 3.5))
     live_ev       = float(STRATEGY.get("live_min_ev_score", 12.0))
     live_min_edge = float(STRATEGY.get("live_no_min_edge", 0.15))  # |edge| threshold for A-tier
+    no_max_entry  = float(STRATEGY.get("no_max_entry_price", 0.88))
     min_dist = live_dist_c if unit == "C" else live_dist_f
     # Edge-path floor: 3/4 of full threshold.
     # At 3/4 × 8°F = 6°F with σ=4.0: P(win)=93.3% → profitable at ≤80¢ entry.
     # At 2/3 (old value), bets at 85¢ lost money when σ > 5.0.
     edge_min_dist = min_dist * 0.75
+
+    # Hard cap: NO tokens above max entry price have near-zero upside and
+    # no exit liquidity — never auto-execute these regardless of other signals.
+    if no_price > no_max_entry:
+        return "B"
 
     if confidence != "high" or ev_score < live_ev:
         return "B"
@@ -591,7 +598,7 @@ def find_no_opps(event: dict, forecast_temp: float, confidence: str,
             ev_score=ev,
             effective_return_pct=eff_ret,
             spread_pct=sprd,
-            quality_tier=_no_quality_tier(dist, unit, confidence, ev, edge),
+            quality_tier=_no_quality_tier(dist, unit, confidence, ev, edge, no_price),
             model_prob=round(model_p, 4),
             market_prob=round(market_p, 4),
             prob_edge=edge,
