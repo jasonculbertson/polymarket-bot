@@ -848,6 +848,53 @@ def outcomes_backfill():
         return jsonify({"error": str(e), "backfill_run": False, "newly_resolved": 0})
 
 
+@app.route("/admin/mark-redeemed", methods=["POST"])
+def admin_mark_redeemed():
+    """
+    Manually mark one or more live positions as redeemed (stops retry loop).
+    Use when Polymarket auto-redeemed but the bot didn't detect it.
+
+    POST JSON: {"opp_ids": ["no_1575043", ...]}   — mark specific IDs
+               {"days_old": 3}                     — mark all wins older than N days
+    """
+    try:
+        from tracker import _load, _save, _tracker_lock
+        from datetime import datetime, timedelta
+        body = request.get_json(force=True) or {}
+        opp_ids  = body.get("opp_ids", [])
+        days_old = body.get("days_old")
+
+        with _tracker_lock:
+            data = _load()
+            marked = []
+            for o in data["opportunities"]:
+                if o.get("outcome") != "win" or not o.get("is_live"):
+                    continue
+                if o.get("redeemed"):
+                    continue
+                match = False
+                if opp_ids and o.get("id") in opp_ids:
+                    match = True
+                if days_old is not None:
+                    rd = o.get("resolved_at") or o.get("resolution_date") or ""
+                    if rd:
+                        try:
+                            rd_dt = datetime.fromisoformat(rd[:10])
+                            if (datetime.utcnow() - rd_dt).days >= int(days_old):
+                                match = True
+                        except Exception:
+                            pass
+                if match:
+                    o["redeemed"] = True
+                    o["redeem_method"] = "manual_admin"
+                    marked.append(o.get("id"))
+            if marked:
+                _save(data)
+        return jsonify({"marked_redeemed": marked, "count": len(marked)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/admin/redeem-all-wins", methods=["POST"])
 def admin_redeem_all_wins():
     """
