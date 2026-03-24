@@ -1216,19 +1216,25 @@ def _scan_capital() -> float:
     Return available USDC from Polymarket CLOB as scan capital.
     This reflects actual deployable cash, not portfolio value.
     Falls back to internal bankroll, then SCAN_CAPITAL env-var.
+    Minimum $50 to prevent near-zero sizing from corrupt bankroll.
     """
     try:
         import trader as _trader
         live = _trader.get_balance()
-        if live is not None and live > 0:
+        if live is not None and live >= 10:
             return live
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[scan_capital] trader.get_balance() failed: {e}")
     try:
         from tracker import get_bankroll
-        return get_bankroll()
+        br = get_bankroll()
+        if br >= 10:
+            return br
     except Exception:
-        return float(SCAN_CAPITAL)
+        pass
+    capital = float(SCAN_CAPITAL)
+    print(f"[scan_capital] using SCAN_CAPITAL fallback: ${capital}")
+    return max(capital, 50.0)  # never size bets on less than $50
 
 
 def _bracket_side(opp: dict) -> str:
@@ -1814,6 +1820,22 @@ def monitor_status():
         return jsonify(get_status())
     except Exception as e:
         return jsonify({"error": str(e), "running": False})
+
+
+@app.route("/bankroll/sync", methods=["POST"])
+def bankroll_sync():
+    """Sync bankroll to actual CLOB balance. Fixes corrupt bankroll."""
+    try:
+        import trader as _trader
+        from tracker import set_bankroll, get_bankroll
+        live = _trader.get_balance()
+        old = get_bankroll()
+        if live is not None and live >= 1:
+            set_bankroll(live)
+            return jsonify({"ok": True, "old": old, "new": live, "source": "clob_balance"})
+        return jsonify({"error": "Could not fetch CLOB balance", "balance": live, "old": old}), 500
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/monitor/debug")
