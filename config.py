@@ -417,10 +417,12 @@ TRADING = {
     # Paper trading continues tracking YES bets for model improvement.
     # Set LIVE_YES_ENABLED=true in Railway to re-enable when model improves.
     "live_yes_enabled":      os.environ.get("LIVE_YES_ENABLED", "false").lower() == "true",
-    "stop_loss_pct":         float(os.environ.get("STOP_LOSS_PCT") or "20"),    # exit if down X%
+    "stop_loss_pct":         float(os.environ.get("STOP_LOSS_PCT") or "10"),    # exit if down 10%
     # Don't trigger stop-loss within this many hours of resolution (price may just be stale)
     "stop_loss_min_hours_to_resolution": float(os.environ.get("STOP_LOSS_MIN_HOURS") or "2"),
-    "take_profit_pct":       float(os.environ.get("TAKE_PROFIT_PCT") or "0"),   # 0 = disabled
+    "take_profit_pct":       float(os.environ.get("TAKE_PROFIT_PCT") or "8"),   # exit if up 8%
+    # Force-exit all positions this many hours before resolution — don't hold to binary outcome
+    "force_exit_hours_before_resolution": float(os.environ.get("FORCE_EXIT_HOURS") or "24"),
     "monitor_interval_secs": int(os.environ.get("MONITOR_INTERVAL_SECS") or "300"),
     "slippage_pct":          float(os.environ.get("SLIPPAGE_PCT") or "1"),      # price tolerance %
     # Circuit breaker: pause auto-scan when today's paper P&L falls below this

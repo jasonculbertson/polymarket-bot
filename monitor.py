@@ -29,10 +29,11 @@ from config import TRADING, CLOB_API
 
 log = logging.getLogger(__name__)
 
-STOP_LOSS_PCT         = TRADING["stop_loss_pct"]
-TAKE_PROFIT_PCT       = TRADING["take_profit_pct"]
-MONITOR_INTERVAL_SECS = TRADING["monitor_interval_secs"]
-LIVE_MODE             = TRADING["live_mode"]
+STOP_LOSS_PCT               = TRADING["stop_loss_pct"]
+TAKE_PROFIT_PCT             = TRADING["take_profit_pct"]
+MONITOR_INTERVAL_SECS       = TRADING["monitor_interval_secs"]
+LIVE_MODE                   = TRADING["live_mode"]
+FORCE_EXIT_HOURS            = TRADING.get("force_exit_hours_before_resolution", 24.0)
 
 # Cancel orders that are still showing LIVE after this many hours.
 # FOK orders fill or cancel within seconds, so this only catches edge cases
@@ -196,6 +197,41 @@ def check_positions():
                 continue
 
             # fill_status == "FILLED" or None (error → treat as filled, proceed normally)
+
+        # ── Phase 2a-pre: forced time-based exit ──────────────────────────────
+        # We don't hold to resolution — we sell before markets conclude.
+        # If within FORCE_EXIT_HOURS of resolution, sell at current bid.
+        res_time_str = pos.get("resolution_time") or pos.get("resolution_date")
+        if res_time_str and FORCE_EXIT_HOURS > 0:
+            try:
+                from datetime import timezone
+                if "T" in str(res_time_str):
+                    res_dt = datetime.fromisoformat(str(res_time_str).replace("Z", "+00:00"))
+                else:
+                    res_dt = datetime.fromisoformat(f"{res_time_str}T23:59:00+00:00")
+                now_utc = datetime.now(timezone.utc)
+                hours_left = (res_dt - now_utc).total_seconds() / 3600
+                if hours_left <= FORCE_EXIT_HOURS:
+                    with _exiting_lock:
+                        if opp_id in _exiting_positions:
+                            pass
+                        else:
+                            _exiting_positions.add(opp_id)
+                            current_p = _fetch_best_bid(token_id)
+                            _log_event("FORCE_EXIT", opp_id, token_id, current_p or 0.0,
+                                       f"{hours_left:.1f}h to resolution — selling before close")
+                            log.warning("[monitor] FORCE EXIT %s — %.1fh to resolution", opp_id, hours_left)
+                            try:
+                                shares = float(pos.get("shares", 0))
+                                trader.sell(token_id, shares, current_p)
+                                tracker.mark_exited_early(opp_id, current_p or 0.0)
+                            except Exception as fe:
+                                log.error("[monitor] force-exit sell FAILED for %s: %s", opp_id, fe)
+                                with _exiting_lock:
+                                    _exiting_positions.discard(opp_id)
+                    continue
+            except Exception as te:
+                log.warning("[monitor] force-exit time parse failed for %s: %s", opp_id, te)
 
         # ── Phase 2a: forecast-drift exit ─────────────────────────────────────
         # check_forecast_drift() (runs every 15 min via quick_monitor) sets
