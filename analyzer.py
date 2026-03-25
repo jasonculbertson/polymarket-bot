@@ -450,19 +450,19 @@ def no_size(
     cfg = STRATEGY
     win_prob = estimate_no_win_prob(distance, confidence, unit)
     no_price = 100.0 / (100.0 + return_pct)   # derived from return_pct definition
-    cap_per_opp = capital / max(n_opps / 3, 1)
     # Scale max_size with distance: farther from bracket = higher confidence = allow larger bet
     base_distance = cfg.get("no_min_distance_f", 6) if unit == "F" else cfg.get("no_min_distance_c", 3.5)
     distance_scale = min(distance / max(base_distance, 0.1), cfg.get("no_max_distance_scale", 3.0))
     scaled_max = cfg["default_no_size"] * distance_scale
     bankroll_cap = _bankroll_max_bet(capital, prob_edge)
+    # cap_per_opp removed: auto-executor places ≤5 bets/scan; max_single_bet already hard-caps
     raw = kelly_size(
         win_prob,
         no_price,
         capital,
         kelly_fraction=cfg.get("kelly_fraction", 0.5),
         min_size=cfg["min_order_size"],
-        max_size=min(bankroll_cap, scaled_max, cap_per_opp),
+        max_size=min(bankroll_cap, scaled_max),
     )
     return max(cfg["min_order_size"], round(raw, 1))
 
