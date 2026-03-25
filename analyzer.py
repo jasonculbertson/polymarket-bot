@@ -736,13 +736,20 @@ def find_yes_clusters(event: dict, forecast_temp: float, confidence: str,
         win_prob = estimate_yes_win_prob(len(slots), confidence, unit_val)
         # Lottery clusters (total_price < threshold) get capped at a smaller size
         # to limit exposure while preserving upside.
+        # Trim cluster to the best brackets within yes_max_total_usd budget
+        yes_max_total = cfg.get("yes_max_total_usd", 10)
+        max_slots = max(1, int(yes_max_total // cfg["min_order_size"]))
+        if len(slots) > max_slots:
+            slots = sorted(slots, key=lambda s: s.yes_price)[:max_slots]  # cheapest = most edge
+            total_price = round(sum(s.yes_price for s in slots), 4)
+
         lottery_threshold = cfg.get("yes_lottery_threshold", 0.25)
         is_lottery = total_price < lottery_threshold
         if is_lottery:
             lottery_size = cfg.get("yes_lottery_size", 5)
             total_target = lottery_size * len(slots)
         else:
-            total_target = min(cfg["default_yes_size"] * len(slots), capital * 0.05)
+            total_target = min(cfg["default_yes_size"] * len(slots), yes_max_total)
         size_each_legacy = yes_cluster_size_each(total_target, len(slots), win_prob, total_price, capital,
                                                   prob_edge=cluster_edge)
         total_cost = round(size_each_legacy * len(slots), 2)

@@ -330,6 +330,8 @@ STRATEGY = {
     "no_require_high_confidence": True,
     # Default order size for YES bets (USDC) — used as Kelly cap
     "default_yes_size": 5,
+    # Hard cap on total spend per YES cluster — limits to best bracket(s) to stay small
+    "yes_max_total_usd": float(os.environ.get("YES_MAX_TOTAL_USD") or "10"),
     # YES clusters: minimum total_price — below this means market has likely already resolved
     "yes_min_total_price": 0.04,
     # YES clusters: forecast must be ≥ this many degrees inside the cluster edge
