@@ -1083,7 +1083,7 @@ def redeem_all_clob_wins() -> dict:
     _log = _log_mod.getLogger(__name__)
 
     try:
-        from trader import redeem_winning_position, get_condition_id_for_market, LIVE_MODE, POLY_FUNDER
+        from trader import redeem_winning_position, LIVE_MODE, POLY_FUNDER
     except ImportError:
         return {"attempted": 0, "results": [], "error": "trader module unavailable"}
 
@@ -1097,16 +1097,18 @@ def redeem_all_clob_wins() -> dict:
 
     # Fetch positions from Gamma API
     try:
+        # data-api returns positions with redeemable=true already filtered
         r = _req.get(
-            "https://gamma-api.polymarket.com/positions",
-            params={"user": wallet, "sizeThreshold": "0.01"},
+            "https://data-api.polymarket.com/positions",
+            params={"user": wallet, "sizeThreshold": "0", "redeemable": "true"},
             timeout=15,
         )
         r.raise_for_status()
-        positions = r.json() if isinstance(r.json(), list) else r.json().get("positions", [])
+        body = r.json()
+        positions = body if isinstance(body, list) else body.get("positions", [])
     except Exception as e:
-        _log.warning("[tracker] redeem_all_clob_wins: gamma positions fetch failed: %s", e)
-        return {"attempted": 0, "results": [], "error": f"gamma fetch failed: {e}"}
+        _log.warning("[tracker] redeem_all_clob_wins: positions fetch failed: %s", e)
+        return {"attempted": 0, "results": [], "error": f"positions fetch failed: {e}"}
 
     results = []
     # Also load already-redeemed token IDs so we don't retry
@@ -1117,27 +1119,17 @@ def redeem_all_clob_wins() -> dict:
     }
 
     for pos in positions:
-        current_val = float(pos.get("currentValue") or 0)
-        size        = float(pos.get("size") or 0)
-        token_id    = str(pos.get("asset") or pos.get("tokenId") or "")
-        market_id   = str(pos.get("conditionId") or pos.get("marketId") or "")
-        outcome     = str(pos.get("outcome") or "").lower()  # "yes" or "no"
+        size         = float(pos.get("size") or 0)
+        token_id     = str(pos.get("asset") or "")
+        condition_id = str(pos.get("conditionId") or "")
+        outcome      = str(pos.get("outcome") or "").lower()  # "yes" or "no"
 
         if not token_id or size <= 0:
             continue
         if token_id in already_redeemed:
             continue
-
-        # A position is redeemable if its current value per share ≈ $1
-        # (size in shares, currentValue in USD)
-        if size > 0 and current_val / size < 0.95:
-            continue  # not yet resolved or still trading
-
-        condition_id = ""
-        try:
-            condition_id = get_condition_id_for_market(market_id) or ""
-        except Exception:
-            pass
+        if not pos.get("redeemable"):
+            continue
 
         bet_type = outcome if outcome in ("yes", "no") else "no"
 
@@ -1149,7 +1141,7 @@ def redeem_all_clob_wins() -> dict:
             result = {"redeemed": False, "message": str(e)}
 
         result["token_id"] = token_id
-        result["market_id"] = market_id
+        result["condition_id"] = condition_id
         results.append(result)
 
         if result.get("redeemed"):
