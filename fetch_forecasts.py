@@ -249,7 +249,7 @@ def fetch_nws_forecast(lat: float, lon: float) -> Optional[dict]:
         r2 = requests.get(
             hourly_url,
             headers={"User-Agent": "polymarket-weather-bot"},
-            timeout=10,
+            timeout=6,
         )
         if r2.status_code != 200:
             return None
@@ -295,7 +295,7 @@ def fetch_open_meteo_forecast(lat: float, lon: float, unit: str = "C") -> Option
                 "forecast_days": 7,
                 "timezone": "auto",
             },
-            timeout=10,
+            timeout=6,
         )
         if r.status_code != 200:
             return None
@@ -352,7 +352,7 @@ def fetch_ensemble_spread(lat: float, lon: float, unit: str = "C") -> Optional[d
                 "timezone":         "auto",
                 "temperature_unit": "celsius",   # always °C; convert delta if needed
             },
-            timeout=15,
+            timeout=8,
         )
         if r.status_code != 200:
             return None
@@ -618,7 +618,7 @@ def fetch_all_forecasts(cities=None, days: int = 2) -> dict:
     # Pre-warm the key once before launching parallel city fetches
     _get_wu_embedded_key()
 
-    with ThreadPoolExecutor(max_workers=4) as pool:
+    with ThreadPoolExecutor(max_workers=16) as pool:
         futures = {pool.submit(fetch_city_forecast, city, days): city for city in cities}
         for future in as_completed(futures):
             city = futures[future]
