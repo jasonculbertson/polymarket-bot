@@ -1133,8 +1133,8 @@ def redeem_all_clob_wins() -> dict:
 
         bet_type = outcome if outcome in ("yes", "no") else "no"
 
-        _log.warning("[tracker] redeem_all_clob_wins: redeeming %s token=%s size=%.3f val=%.3f",
-                     bet_type, token_id[:16], size, current_val)
+        _log.warning("[tracker] redeem_all_clob_wins: redeeming %s token=%s size=%.3f",
+                     bet_type, token_id[:16], size)
         try:
             result = redeem_winning_position(token_id, condition_id, bet_type)
         except Exception as e:
