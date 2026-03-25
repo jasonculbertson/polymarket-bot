@@ -631,7 +631,9 @@ def redeem_winning_position(token_id: str, condition_id: str, bet_type: str) -> 
             "chainId":  137,  # Polygon mainnet
         }
         signed = account.sign_transaction(tx)
-        tx_hash = w3.eth.send_raw_transaction(signed.rawTransaction).hex()
+        # web3 v6+ uses raw_transaction; v5 uses rawTransaction
+        raw_tx = getattr(signed, "raw_transaction", None) or getattr(signed, "rawTransaction", None)
+        tx_hash = w3.eth.send_raw_transaction(raw_tx).hex()
         log.warning("[trader] redeemPositions tx submitted: %s", tx_hash)
         return {
             "redeemed": True,
