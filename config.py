@@ -323,8 +323,8 @@ STRATEGY = {
     # Minimum order size (USDC) — Polymarket minimum is 5
     "min_order_size": 5,
     # Default order size for NO bets (USDC) — base size at min_distance; scales up with distance
-    "default_no_size": 20,
-    # NO sizing: max scale multiplier for distant brackets (3× = up to $60, capped by max_single_bet)
+    "default_no_size": float(os.environ.get("DEFAULT_NO_SIZE") or "35"),
+    # NO sizing: max scale multiplier for distant brackets (capped by max_single_bet)
     "no_max_distance_scale": 3.0,
     # NO bets: only place when forecast confidence is "high" (all sources agree)
     "no_require_high_confidence": True,
@@ -405,12 +405,12 @@ STRATEGY = {
     # Per-bet cap: max single bet = X% of current bankroll.
     # At $150: 10% = $15 max/bet. Max 3 bets per scan = $45 deployed.
     # Conservative: survive multiple losing days while still compounding wins.
-    "max_bet_pct":         float(os.environ.get("MAX_BET_PCT") or "10"),
+    "max_bet_pct":         float(os.environ.get("MAX_BET_PCT") or "20"),
     # Outsized-edge bonus: if prob_edge magnitude ≥ threshold, allow up to 1.5× max_bet_pct
     "outsized_edge_threshold": 0.25,
-    "kelly_fraction": 0.25,
+    "kelly_fraction": float(os.environ.get("KELLY_FRACTION") or "0.40"),
     # Hard cap per single bet (USDC) — absolute ceiling regardless of bankroll size
-    "max_single_bet": float(os.environ.get("MAX_SINGLE_BET") or "20"),
+    "max_single_bet": float(os.environ.get("MAX_SINGLE_BET") or "50"),
 }
 
 # Live trading settings (all overridable via Railway env vars)
