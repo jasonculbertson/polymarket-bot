@@ -1083,19 +1083,17 @@ def redeem_all_clob_wins() -> dict:
     _log = _log_mod.getLogger(__name__)
 
     try:
-        from trader import redeem_winning_position, get_condition_id_for_market, LIVE_MODE, POLY_PRIVATE_KEY
+        from trader import redeem_winning_position, get_condition_id_for_market, LIVE_MODE, POLY_FUNDER
     except ImportError:
         return {"attempted": 0, "results": [], "error": "trader module unavailable"}
 
     if not LIVE_MODE:
         return {"attempted": 0, "results": [], "note": "paper mode"}
 
-    # Derive the wallet address from the private key
-    try:
-        from eth_account import Account
-        wallet = Account.from_key(POLY_PRIVATE_KEY).address.lower()
-    except Exception as e:
-        return {"attempted": 0, "results": [], "error": f"could not derive wallet: {e}"}
+    # POLY_FUNDER is the actual Polymarket proxy wallet address where tokens are held
+    wallet = (POLY_FUNDER or "").lower()
+    if not wallet:
+        return {"attempted": 0, "results": [], "error": "POLY_FUNDER not set — cannot query positions"}
 
     # Fetch positions from Gamma API
     try:
