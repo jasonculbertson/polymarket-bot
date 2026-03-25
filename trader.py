@@ -593,7 +593,7 @@ def redeem_winning_position(token_id: str, condition_id: str, bet_type: str) -> 
     # Submit the redeemPositions tx directly to Polygon using the POLY_PRIVATE_KEY.
     # CTF contract: 0x4D97DCd97eC945f40cF65F87097ACe5EA0476045 (Polygon mainnet)
     CTF_ADDRESS = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"
-    POLYGON_RPC = os.environ.get("POLYGON_RPC_URL", "https://polygon-rpc.com")
+    POLYGON_RPC = os.environ.get("POLYGON_RPC_URL", "https://polygon-bor-rpc.publicnode.com")
 
     try:
         from web3 import Web3
