@@ -424,7 +424,7 @@ TRADING = {
     "stop_loss_pct":         float(os.environ.get("STOP_LOSS_PCT") or "10"),    # exit if down 10%
     # Don't trigger stop-loss within this many hours of resolution (price may just be stale)
     "stop_loss_min_hours_to_resolution": float(os.environ.get("STOP_LOSS_MIN_HOURS") or "2"),
-    "take_profit_pct":       float(os.environ.get("TAKE_PROFIT_PCT") or "8"),   # exit if up 8%
+    "take_profit_pct":       float(os.environ.get("TAKE_PROFIT_PCT") or "15"),  # exit if up 15%
     # Force-exit all positions this many hours before resolution — don't hold to binary outcome
     "force_exit_hours_before_resolution": float(os.environ.get("FORCE_EXIT_HOURS") or "24"),
     "monitor_interval_secs": int(os.environ.get("MONITOR_INTERVAL_SECS") or "300"),
