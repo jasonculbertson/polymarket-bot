@@ -308,10 +308,10 @@ CLOB_API = "https://clob.polymarket.com"
 # Strategy parameters
 STRATEGY = {
     # BUY NO: bracket must be at least this far from forecast (°F for F cities, °C for C cities)
-    # Historical MAE = 4.45°F. At 5°F min distance we get ~82% win rate with σ=4.0.
-    # At 6°F we get ~93% which is needed to profit at 85¢+ entry prices.
-    "no_min_distance_f": 6,    # °F  — raised from 4; need ≥6°F for profitable NO bets
-    "no_min_distance_c": 3.3,  # °C  — raised from 2.2; proportional to F threshold
+    # Historical MAE = 4.45°F. At 4°F distance NO prices are ~75-88¢ (12-33% return).
+    # At 6°F+ NO prices are 95-99¢ (1-5% return) — too expensive with our 88¢ cap.
+    "no_min_distance_f": 4,    # °F  — lowered from 6; pairs with 88¢ NO cap for good R/R
+    "no_min_distance_c": 2.2,  # °C  — proportional to F threshold (4°F / 1.8)
     # BUY NO: minimum NO price
     "no_min_price": 0.65,
     # BUY YES: maximum YES price to consider (looking for underpriced YES)
@@ -346,8 +346,8 @@ STRATEGY = {
     "no_max_yes_price": float(os.environ.get("NO_MAX_YES_PRICE") or "0.88"),
     # NO bets: minimum NO price (maximum we'll pay for a NO token)
     # Higher NO price = lower return but higher win probability.
-    # Cap at 88¢ to ensure minimum 13.6% return on winners.
-    "no_max_no_price": float(os.environ.get("NO_MAX_NO_PRICE") or "0.88"),
+    # Cap at 90¢: 4°F-away brackets price at 88-90¢ (~95% win rate, +5-8% EV).
+    "no_max_no_price": float(os.environ.get("NO_MAX_NO_PRICE") or "0.90"),
     # NO bets: minimum return % — need enough return to overcome occasional losses.
     # At 73% win rate and 85¢ avg entry, need ≥8% return to approach break-even.
     "no_min_return_pct": float(os.environ.get("NO_MIN_RETURN_PCT") or "8.0"),
@@ -384,8 +384,8 @@ STRATEGY = {
     # A-tier thresholds (what actually auto-executes with real money):
     # Based on actual MAE of 4.45°F, need ≥8°F distance for 90%+ win rate
     # which is the minimum to be profitable at typical 85-90¢ entry prices.
-    "live_no_min_distance_f": 8.0,   # °F — need 90%+ win rate for profitability
-    "live_no_min_distance_c": 4.5,   # °C — proportional (8°F / 1.8)
+    "live_no_min_distance_f": 5.0,   # °F — lowered from 8; 5°F gives ~85% win rate at 75-85¢ NO
+    "live_no_min_distance_c": 2.8,   # °C — proportional (5°F / 1.8)
     "live_yes_min_margin_f":  4.0,   # °F inside bracket — wider margin for YES safety
     "live_yes_min_margin_c":  2.2,   # °C — proportional
     "live_min_ev_score":     15.0,   # raised from 12; higher bar for live trades
@@ -395,7 +395,7 @@ STRATEGY = {
     "live_no_min_edge":  0.15,   # |negative edge| threshold for NO A-tier
     "live_yes_min_edge": 0.12,   # positive edge threshold for YES A-tier
     # Hard cap: never auto-execute NO bets above this price (near-zero upside + no exit liquidity)
-    "no_max_entry_price": float(os.environ.get("NO_MAX_ENTRY_PRICE") or "0.88"),
+    "no_max_entry_price": float(os.environ.get("NO_MAX_ENTRY_PRICE") or "0.90"),
     # Thin market guard: reject if bid-ask spread > X% of mid-price at execution time
     "no_max_spread_pct": float(os.environ.get("NO_MAX_SPREAD_PCT") or "0.15"),
     # ── Bankroll & compounding ────────────────────────────────────────────────

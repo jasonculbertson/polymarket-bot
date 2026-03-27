@@ -571,7 +571,10 @@ def find_no_opps(event: dict, forecast_temp: float, confidence: str,
         if ret_pct < no_min_return:
             continue
 
-        win_prob = estimate_no_win_prob(dist, confidence, unit)
+        # Use bracket-specific win probability: 1 - P(actual lands in this bracket).
+        # More accurate than estimate_no_win_prob() which computes P(|error|>dist)
+        # (a tail probability that overestimates risk for 1°F-wide brackets).
+        win_prob = max(0.5, min(0.99, 1.0 - model_p))
         ev = round(win_prob * ret_pct - (1 - win_prob) * 100, 1)
         clob_bid = mkt.get("clob_best_bid")
         if clob_bid and 0 < clob_bid < 1:
