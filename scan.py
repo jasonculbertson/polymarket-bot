@@ -353,8 +353,8 @@ def print_links(clusters, no_opps, limit=10):
 def main():
     parser = argparse.ArgumentParser(description="Polymarket weather arbitrage scanner")
     parser.add_argument("--cities", nargs="+", choices=list(CITIES.keys()), help="Cities to scan")
-    parser.add_argument("--days", type=int, default=1,
-                        help="Days ahead to scan (default: 1 = tomorrow only)")
+    parser.add_argument("--days", type=int, default=3,
+                        help="Days ahead to scan (default: 3 = today through 3 days out)")
     parser.add_argument("--date", type=str, default=None,
                         help="Target resolution date to focus on: YYYY-MM-DD, 'today', or 'tomorrow'")
     parser.add_argument("--capital", type=float, default=STRATEGY.get("max_capital", 400),

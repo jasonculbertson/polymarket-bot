@@ -140,7 +140,7 @@ def _quick_monitor_job():
     threading.Thread(target=_run_quick_monitor, daemon=True).start()
 
 
-def run_scan_bg(cities=None, capital=None, days=1, target_date=None):
+def run_scan_bg(cities=None, capital=None, days=3, target_date=None):
     global _scan_running, _scan_log
     if not _scan_lock.acquire(blocking=False):
         return
