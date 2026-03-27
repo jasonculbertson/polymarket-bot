@@ -1341,15 +1341,16 @@ def _auto_execute_trades(scan_opportunities: list):
         _atlog.warning("[auto-trade] dedup: %d live_bets IDs, %d taken IDs",
                        len(live_bets), len(taken))
 
-        # YES bets disabled in live trading — paper-only until model improves
         live_yes = TRADING.get("live_yes_enabled", False)
 
-        # Only act on opportunities that are: A-tier, not taken, not already live, NO type
+        # Only act on opportunities that are: A-tier, not taken, not already live
+        # YES clusters use yes_token_ids (list); NO bets use no_token_id (string)
         a_tier = [o for o in scan_opportunities
                   if o.get("quality_tier") == "A"
                   and o.get("id") not in taken
-                  and not o.get("is_live")          # tertiary guard: skip already-placed bets
-                  and (o.get("no_token_id") or o.get("token_id"))
+                  and not o.get("is_live")
+                  and (o.get("no_token_id") or o.get("token_id") or
+                       (live_yes and o.get("yes_token_ids")))
                   and (live_yes or o.get("type") == "no")]
 
         # Per city/date: ONE bet only — take the highest return_pct bracket.
@@ -1367,35 +1368,65 @@ def _auto_execute_trades(scan_opportunities: list):
 
         _atlog.warning("[auto-trade] executing %d A-tier opportunities", len(a_tier))
         for opp in a_tier:
+            opp_id = opp.get("id", "")
             try:
-                token_id   = opp.get("no_token_id") or opp.get("token_id", "")
-                size_usd   = float(opp.get("recommended_size") or opp.get("size_usd") or 20)
-                scan_price = float(opp.get("entry_price") or opp.get("no_price") or opp.get("price") or 0.80)
-                opp_id     = opp.get("id", "")
-                if not token_id or not opp_id:
-                    _atlog.warning("[auto-trade] skipping opp with missing token_id or opp_id: %s", opp.get("id"))
-                    continue
-                _atlog.warning("[auto-trade] attempting BUY: city=%s type=%s opp_id=%s "
-                               "token=%s size=$%.0f price=%.3f",
-                               opp.get("city"), opp.get("type"), opp_id,
-                               token_id[:16], size_usd, scan_price)
-                result = _trader.buy(token_id, size_usd, scan_price, neg_risk=False)
-                ok = record_live_trade(
-                    opp_id=opp_id,
-                    order_id=result["order_id"],
-                    size_usd=size_usd,
-                    shares=result["shares"],
-                    token_id=token_id,
-                    execution_price=result.get("execution_price"),
-                )
-                _atlog.warning("[auto-trade] ✅ %s %s $%.0f @ %.2f order=%s record_ok=%s",
-                               opp.get("city"), opp.get("type", "?").upper(),
-                               size_usd, result.get("price", scan_price),
-                               result.get("order_id", "")[:16], ok)
+                is_yes = opp.get("type") == "yes" and opp.get("yes_token_ids")
+
+                if is_yes:
+                    # YES cluster: buy each bracket token for equal shares
+                    yes_token_ids = opp.get("yes_token_ids", [])
+                    total_usd     = float(opp.get("paper_size_usd") or opp.get("size_usd") or 10)
+                    size_each     = round(total_usd / len(yes_token_ids), 2) if yes_token_ids else 5.0
+                    entry_price   = float(opp.get("entry_price") or 0.20)
+                    price_each    = round(entry_price / len(yes_token_ids), 4) if yes_token_ids else entry_price
+                    _atlog.warning("[auto-trade] YES cluster %s %s — buying %d brackets $%.2f each",
+                                   opp.get("city"), opp.get("date"), len(yes_token_ids), size_each)
+                    leg_results = []
+                    for tok in yes_token_ids:
+                        r = _trader.buy(tok, size_each, price_each, neg_risk=False)
+                        leg_results.append(r)
+                        _atlog.warning("[auto-trade]   leg token=%s order=%s shares=%.2f",
+                                       tok[:16], r.get("order_id", "")[:16], r.get("shares", 0))
+                    # Record the cluster as live using the first leg's order details
+                    first = leg_results[0] if leg_results else {}
+                    ok = record_live_trade(
+                        opp_id=opp_id,
+                        order_id=first.get("order_id", ""),
+                        size_usd=total_usd,
+                        shares=first.get("shares", 0),
+                        token_id=yes_token_ids[0],
+                        execution_price=first.get("execution_price"),
+                    )
+                    _atlog.warning("[auto-trade] ✅ YES %s %s $%.0f record_ok=%s",
+                                   opp.get("city"), opp.get("date"), total_usd, ok)
+
+                else:
+                    # NO bet: single token buy
+                    token_id   = opp.get("no_token_id") or opp.get("token_id", "")
+                    size_usd   = float(opp.get("recommended_size") or opp.get("size_usd") or 20)
+                    scan_price = float(opp.get("entry_price") or opp.get("no_price") or opp.get("price") or 0.80)
+                    if not token_id or not opp_id:
+                        _atlog.warning("[auto-trade] skipping NO opp with missing token_id or opp_id: %s", opp_id)
+                        continue
+                    _atlog.warning("[auto-trade] attempting BUY: city=%s type=NO opp_id=%s "
+                                   "token=%s size=$%.0f price=%.3f",
+                                   opp.get("city"), opp_id, token_id[:16], size_usd, scan_price)
+                    result = _trader.buy(token_id, size_usd, scan_price, neg_risk=False)
+                    ok = record_live_trade(
+                        opp_id=opp_id,
+                        order_id=result["order_id"],
+                        size_usd=size_usd,
+                        shares=result["shares"],
+                        token_id=token_id,
+                        execution_price=result.get("execution_price"),
+                    )
+                    _atlog.warning("[auto-trade] ✅ NO %s $%.0f @ %.2f order=%s record_ok=%s",
+                                   opp.get("city"), size_usd, result.get("price", scan_price),
+                                   result.get("order_id", "")[:16], ok)
+
             except Exception as e:
                 err_str = str(e)
-                _atlog.warning("[auto-trade] ❌ %s %s: %s",
-                               opp.get("city"), opp.get("id"), e)
+                _atlog.warning("[auto-trade] ❌ %s %s: %s", opp.get("city"), opp_id, e)
                 _market_dead = (
                     "does not exist" in err_str
                     or "inactive" in err_str
@@ -1413,8 +1444,7 @@ def _auto_execute_trades(scan_opportunities: list):
                                 "ids":     lb_ids,
                                 "updated": datetime.utcnow().isoformat(),
                             })
-                            _atlog.warning("[auto-trade] marked %s as taken (closed market)",
-                                           opp_id)
+                            _atlog.warning("[auto-trade] marked %s as taken (closed market)", opp_id)
                     except Exception as _e2:
                         _atlog.warning("[auto-trade] failed to save taken for closed market: %s", _e2)
     except Exception as e:
