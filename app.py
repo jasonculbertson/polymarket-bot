@@ -1342,13 +1342,15 @@ def _auto_execute_trades(scan_opportunities: list):
                        len(live_bets), len(taken))
 
         live_yes = TRADING.get("live_yes_enabled", False)
+        _today = datetime.utcnow().date().isoformat()
 
-        # Only act on opportunities that are: A-tier, not taken, not already live
-        # YES clusters use yes_token_ids (list); NO bets use no_token_id (string)
+        # Only act on opportunities that are: A-tier, not taken, not already live,
+        # and resolving tomorrow or later (today's markets have collapsed spreads).
         a_tier = [o for o in scan_opportunities
                   if o.get("quality_tier") == "A"
                   and o.get("id") not in taken
                   and not o.get("is_live")
+                  and (o.get("resolution_date") or o.get("date", "")) > _today
                   and (o.get("no_token_id") or o.get("token_id") or
                        (live_yes and o.get("yes_token_ids")))
                   and (live_yes or o.get("type") == "no")]
