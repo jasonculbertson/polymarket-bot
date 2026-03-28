@@ -328,6 +328,7 @@ def record_scan(yes_clusters, no_opps, all_forecasts: dict = None) -> int:
 
     # Build lookup for re-grading existing unresolved opportunities
     existing_by_id = {o["id"]: o for o in data["opportunities"]}
+    updated = 0
 
     for o in no_opps:
         oid = _no_id(o.market_id)
@@ -344,6 +345,7 @@ def record_scan(yes_clusters, no_opps, all_forecasts: dict = None) -> int:
                 existing["model_prob"]   = getattr(o, "model_prob", existing.get("model_prob"))
                 existing["market_prob"]  = getattr(o, "market_prob", existing.get("market_prob"))
                 existing["no_token_id"]  = o.no_token_id or existing.get("no_token_id", "")
+                updated += 1
             continue
         data["opportunities"].append({
             "id": oid,
@@ -394,6 +396,17 @@ def record_scan(yes_clusters, no_opps, all_forecasts: dict = None) -> int:
         mids = [b.market_id for b in c.brackets]
         oid = _yes_id(c.event_slug, mids)
         if oid in existing_ids:
+            # Re-grade quality_tier and refresh price/edge fields for open YES clusters.
+            # Same pattern as NO opps — ensures config changes take effect on already-tracked entries.
+            existing = existing_by_id.get(oid)
+            if existing and existing.get("outcome") is None and not existing.get("is_live"):
+                existing["quality_tier"] = getattr(c, "quality_tier", existing.get("quality_tier", "B"))
+                existing["entry_price"]  = round(c.total_price, 4)
+                existing["return_pct"]   = round(c.return_pct, 2)
+                existing["prob_edge"]    = getattr(c, "prob_edge", existing.get("prob_edge"))
+                existing["model_prob"]   = getattr(c, "model_prob", existing.get("model_prob"))
+                existing["market_prob"]  = getattr(c, "market_prob", existing.get("market_prob"))
+                updated += 1
             continue
         city_date_key = (c.city, c.date)
         if city_date_key in existing_yes_city_dates:
@@ -436,7 +449,7 @@ def record_scan(yes_clusters, no_opps, all_forecasts: dict = None) -> int:
         existing_ids.add(oid)
         added += 1
 
-    if added:
+    if added or updated:
         with _tracker_lock:
             _save(data)
     return len(data["opportunities"])

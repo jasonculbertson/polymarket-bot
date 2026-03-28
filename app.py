@@ -1345,12 +1345,13 @@ def _auto_execute_trades(scan_opportunities: list):
         _today = datetime.utcnow().date().isoformat()
 
         # Only act on opportunities that are: A-tier, not taken, not already live,
-        # and resolving tomorrow or later (today's markets have collapsed spreads).
+        # and weather-day is tomorrow or later (today's markets have collapsed spreads).
+        # Use "date" (weather day) not "resolution_date" (which is weather_day+1 and too permissive).
         a_tier = [o for o in scan_opportunities
                   if o.get("quality_tier") == "A"
                   and o.get("id") not in taken
                   and not o.get("is_live")
-                  and (o.get("resolution_date") or o.get("date", "")) > _today
+                  and o.get("date", "") > _today
                   and (o.get("no_token_id") or o.get("token_id") or
                        (live_yes and o.get("yes_token_ids")))
                   and (live_yes or o.get("type") == "no")]
