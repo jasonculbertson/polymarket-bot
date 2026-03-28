@@ -1350,7 +1350,7 @@ def _auto_execute_trades(scan_opportunities: list):
                   if o.get("quality_tier") == "A"
                   and o.get("id") not in taken
                   and not o.get("is_live")
-                  and (o.get("resolution_date") or o.get("date", "")) > _today
+                  and o.get("date", "") > _today
                   and (o.get("no_token_id") or o.get("token_id") or
                        (live_yes and o.get("yes_token_ids")))
                   and (live_yes or o.get("type") == "no")]

@@ -386,14 +386,14 @@ STRATEGY = {
     # which is the minimum to be profitable at typical 85-90¢ entry prices.
     "live_no_min_distance_f": 5.0,   # °F — lowered from 8; 5°F gives ~85% win rate at 75-85¢ NO
     "live_no_min_distance_c": 2.8,   # °C — proportional (5°F / 1.8)
-    "live_yes_min_margin_f":  4.0,   # °F inside bracket — wider margin for YES safety
-    "live_yes_min_margin_c":  2.2,   # °C — proportional
-    "live_min_ev_score":     15.0,   # raised from 12; higher bar for live trades
+    "live_yes_min_margin_f":  2.0,   # °F inside bracket — lowered from 4.0
+    "live_yes_min_margin_c":  1.1,   # °C — proportional
+    "live_min_ev_score":     12.0,   # lowered from 15; stop-loss means EV is now positive
     # Probability-edge thresholds for A-tier qualification
     # NO A-tier: edge ≤ −0.15  (market charges 15%+ more than our Gaussian says bracket is worth)
-    # YES A-tier: edge ≥ 0.12  (our Gaussian says bracket is 12%+ more likely than market implies)
+    # YES A-tier: edge ≥ 0.03  (lowered from 0.12; any meaningful positive edge qualifies)
     "live_no_min_edge":  0.15,   # |negative edge| threshold for NO A-tier
-    "live_yes_min_edge": 0.12,   # positive edge threshold for YES A-tier
+    "live_yes_min_edge": 0.03,   # lowered from 0.12; any positive edge with EV>12 qualifies
     # Hard cap: never auto-execute NO bets above this price (near-zero upside + no exit liquidity)
     "no_max_entry_price": float(os.environ.get("NO_MAX_ENTRY_PRICE") or "0.90"),
     # Thin market guard: reject if bid-ask spread > X% of mid-price at execution time
