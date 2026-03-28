@@ -1124,7 +1124,7 @@ def redeem_all_clob_wins() -> dict:
         condition_id = str(pos.get("conditionId") or "")
         outcome      = str(pos.get("outcome") or "").lower()  # "yes" or "no"
 
-        if not token_id or size <= 0:
+        if not token_id or size < 0.01:   # skip dust positions (< 1¢)
             continue
         if token_id in already_redeemed:
             continue
