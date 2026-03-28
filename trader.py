@@ -418,6 +418,69 @@ def buy(token_id: str, size_usd: float, price: float,
     }
 
 
+def buy_limit_gtc(token_id: str, size_usd: float, limit_price: float) -> dict:
+    """
+    Place a GTC (Good-Till-Cancelled) limit BUY order at a specific price.
+
+    Used for YES cluster tokens where the bid-ask spread is wide but the market
+    has good open interest. We post at our fair-value price rather than paying
+    the inflated ask. The order rests in the book and fills when a market maker
+    or counter-party arrives.
+
+    size_usd:    dollars to spend (e.g. 5.0 per bracket)
+    limit_price: price per share to bid (e.g. 0.11 from our analysis)
+
+    Returns: {"order_id": str, "shares": float, "price": float, "live": bool}
+    """
+    if limit_price <= 0 or limit_price >= 1.0:
+        raise ValueError(f"limit_price must be between 0 and 1, got {limit_price}")
+
+    shares = round(size_usd / limit_price, 4)
+
+    log.warning(
+        "[trader] BUY GTC limit %s  shares=%.4f  limit_price=%.4f  size_usd=%.2f  live=%s",
+        token_id[:16], shares, limit_price, size_usd, LIVE_MODE,
+    )
+
+    if not LIVE_MODE:
+        return {
+            "order_id": f"paper_gtc_{token_id[:12]}",
+            "shares": shares,
+            "price": limit_price,
+            "execution_price": limit_price,
+            "live": False,
+            "order_type": "GTC",
+        }
+
+    if not _CLOB_AVAILABLE:
+        raise RuntimeError("py-clob-client is not installed. Live trading unavailable.")
+
+    from py_clob_client.clob_types import LimitOrderArgs, OrderType
+    from py_clob_client.order_builder.constants import BUY as _BUY
+
+    client = _get_client()
+    limit_order = LimitOrderArgs(
+        token_id=token_id,
+        price=limit_price,
+        size=shares,
+        side=_BUY,
+    )
+    signed   = client.create_limit_order(limit_order)
+    response = client.post_order(signed, OrderType.GTC)
+
+    order_id = response.get("orderID") or response.get("id", "")
+    log.warning("[trader] BUY GTC limit placed  order_id=%s  limit_price=%.4f  shares=%.4f",
+                order_id, limit_price, shares)
+    return {
+        "order_id": order_id,
+        "shares": shares,
+        "price": limit_price,
+        "execution_price": limit_price,  # actual fill may differ; update on confirmation
+        "live": True,
+        "order_type": "GTC",
+    }
+
+
 def sell(token_id: str, shares: float, price: Optional[float] = None) -> dict:
     """
     Place a SELL market order (FOK) to exit a position.

@@ -1376,17 +1376,23 @@ def _auto_execute_trades(scan_opportunities: list):
                 is_yes = opp.get("type") == "yes" and opp.get("yes_token_ids")
 
                 if is_yes:
-                    # YES cluster: buy each bracket token for equal shares
+                    # YES cluster: GTC limit order per bracket at fair-value price.
+                    # We use limit orders (not FOK market) because YES token order books
+                    # are often wide (bid~0.001, ask~0.999) with no active market maker.
+                    # A limit bid at our fair value posts to the book and fills within hours.
                     yes_token_ids = opp.get("yes_token_ids", [])
                     total_usd     = float(opp.get("paper_size_usd") or opp.get("size_usd") or 10)
                     size_each     = round(total_usd / len(yes_token_ids), 2) if yes_token_ids else 5.0
                     entry_price   = float(opp.get("entry_price") or 0.20)
+                    # price_each = fair-value per bracket token (total cluster price / # brackets)
                     price_each    = round(entry_price / len(yes_token_ids), 4) if yes_token_ids else entry_price
-                    _atlog.warning("[auto-trade] YES cluster %s %s — buying %d brackets $%.2f each",
-                                   opp.get("city"), opp.get("date"), len(yes_token_ids), size_each)
+                    # Add small premium (+5%) to improve fill probability vs exact mid
+                    limit_price   = round(min(price_each * 1.05, price_each + 0.02), 4)
+                    _atlog.warning("[auto-trade] YES cluster %s %s — GTC limit %d brackets $%.2f @ %.4f each",
+                                   opp.get("city"), opp.get("date"), len(yes_token_ids), size_each, limit_price)
                     leg_results = []
                     for tok in yes_token_ids:
-                        r = _trader.buy(tok, size_each, price_each, neg_risk=False)
+                        r = _trader.buy_limit_gtc(tok, size_each, limit_price)
                         leg_results.append(r)
                         _atlog.warning("[auto-trade]   leg token=%s order=%s shares=%.2f",
                                        tok[:16], r.get("order_id", "")[:16], r.get("shares", 0))
