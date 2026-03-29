@@ -36,9 +36,11 @@ LIVE_MODE                   = TRADING["live_mode"]
 FORCE_EXIT_HOURS            = TRADING.get("force_exit_hours_before_resolution", 24.0)
 
 # Cancel orders that are still showing LIVE after this many hours.
-# FOK orders fill or cancel within seconds, so this only catches edge cases
-# (e.g. CLOB reporting stale state). 0.25h = 15 min safety margin.
-STALE_ORDER_HOURS = 0.25
+# FOK (NO bets): fill or cancel within seconds — 0.25h is a generous safety margin.
+# GTC (YES cluster limit orders): intentionally sit in the book for hours/days.
+STALE_ORDER_HOURS_FOK = 0.25   # 15 min for market orders (NO bets)
+STALE_ORDER_HOURS_GTC = 48.0   # 48 h for limit orders (YES clusters)
+STALE_ORDER_HOURS = STALE_ORDER_HOURS_FOK  # legacy default (NO bets)
 
 import os
 _POLY_KEY = os.environ.get("POLY_PRIVATE_KEY", "")
@@ -98,6 +100,26 @@ def _order_age_hours(live_at_str: str) -> float:
         return 999.0  # Treat unparseable timestamp as very old → safe to cancel
 
 
+def _sell_position(trader, opp_id: str, tokens: list, shares_each: float, price, log):
+    """
+    Sell all tokens for a position. Handles both single-token NO bets and
+    multi-token YES clusters. Raises on first unexpected error.
+    """
+    if not tokens:
+        log.warning("[monitor] _sell_position: no tokens for %s", opp_id)
+        return
+    for tok in tokens:
+        try:
+            trader.sell(tok, shares_each, price)
+            log.warning("[monitor]   sold token=%s shares=%.4f", tok[:16], shares_each)
+        except Exception as e:
+            err_str = str(e)
+            if "not enough balance" in err_str or "allowance" in err_str or "no position" in err_str.lower():
+                log.warning("[monitor]   token=%s no balance to sell (may not have filled yet): %s", tok[:16], e)
+            else:
+                raise
+
+
 def check_positions():
     """
     Core check: iterate live positions, verify fill status, then apply stop-loss/take-profit.
@@ -138,6 +160,12 @@ def check_positions():
         if not token_id or entry <= 0:
             continue
 
+        # YES clusters have multiple tokens — use yes_token_ids list for sells/prices
+        yes_token_ids = pos.get("yes_token_ids") or []
+        is_yes_cluster = bool(yes_token_ids)
+        # For YES clusters the shares field = shares per bracket (each token same count)
+        all_sell_tokens = yes_token_ids if is_yes_cluster else ([token_id] if token_id else [])
+
         # ── Phase 1: verify the buy order actually filled ─────────────────────
         # Only check real (non-paper) orders. Paper orders are always "filled".
         if LIVE_MODE and order_id and not order_id.startswith("paper_"):
@@ -146,8 +174,11 @@ def check_positions():
             if fill_status == "LIVE":
                 # Order is still open in the CLOB — has not filled yet.
                 age_h = _order_age_hours(live_at)
+                # GTC YES orders sit in the book intentionally — give them 48h before cancel.
+                # FOK NO orders fill within seconds — cancel after 15 min if still open.
+                stale_threshold = STALE_ORDER_HOURS_GTC if is_yes_cluster else STALE_ORDER_HOURS_FOK
 
-                if age_h >= STALE_ORDER_HOURS:
+                if age_h >= stale_threshold:
                     # Old enough to be considered dead — try to cancel.
                     # CRITICAL: only mark as cancelled if cancel actually succeeds.
                     # A cancel failure means the order already filled — the position
@@ -217,14 +248,14 @@ def check_positions():
                             pass
                         else:
                             _exiting_positions.add(opp_id)
+                            shares = float(pos.get("shares", 0))
                             current_p = _fetch_best_bid(token_id)
                             _log_event("FORCE_EXIT", opp_id, token_id, current_p or 0.0,
                                        f"{hours_left:.1f}h to resolution — selling before close")
                             log.warning("[monitor] FORCE EXIT %s — %.1fh to resolution", opp_id, hours_left)
                             try:
-                                shares = float(pos.get("shares", 0))
-                                trader.sell(token_id, shares, current_p)
-                                tracker.mark_exited_early(opp_id, current_p or 0.0)
+                                _sell_position(trader, opp_id, all_sell_tokens, shares, current_p, log)
+                                tracker.mark_exited_early(opp_id, current_p or 0.0, reason="force_exit")
                             except Exception as fe:
                                 log.error("[monitor] force-exit sell FAILED for %s: %s", opp_id, fe)
                                 with _exiting_lock:
@@ -261,7 +292,7 @@ def check_positions():
 
             try:
                 shares = float(pos.get("shares", 0))
-                trader.sell(token_id, shares, current)
+                _sell_position(trader, opp_id, all_sell_tokens, shares, current, log)
                 tracker.mark_exited_early(opp_id, current)
             except Exception as e:
                 err_str = str(e)
@@ -275,13 +306,19 @@ def check_positions():
             continue  # Done — don't also apply stop-loss logic to this position
 
         # ── Phase 2b: price monitoring — stop-loss / take-profit ──────────────
-        current = _fetch_best_bid(token_id)
+        # For YES clusters: current price = sum of best bids across all bracket tokens.
+        # For NO bets: current price = best bid on the single token.
+        if is_yes_cluster:
+            bids = [_fetch_best_bid(t) for t in all_sell_tokens]
+            bids = [b for b in bids if b is not None]
+            current = round(sum(bids), 4) if bids else None
+        else:
+            current = _fetch_best_bid(token_id)
+
         stop_loss_threshold   = entry * (1 - STOP_LOSS_PCT / 100)
         take_profit_threshold = entry * (1 + TAKE_PROFIT_PCT / 100) if TAKE_PROFIT_PCT > 0 else None
 
         if current is None:
-            # CLOB price unavailable — can't evaluate thresholds, but don't silently
-            # skip: log clearly so Railway logs show the gap.
             log.warning(
                 "[monitor] no price for %s (opp=%s entry=%.4f) — CLOB unavailable, "
                 "will retry next cycle",
@@ -298,13 +335,11 @@ def check_positions():
                        f"entry={entry:.4f} threshold={stop_loss_threshold:.4f}")
             try:
                 shares = float(pos.get("shares", 0))
-                trader.sell(token_id, shares, current)
+                _sell_position(trader, opp_id, all_sell_tokens, shares, current, log)
                 tracker.mark_stopped_out(opp_id, current)
             except Exception as e:
                 err_str = str(e)
                 if "not enough balance" in err_str or "allowance" in err_str:
-                    # CLOB can't sell — order may have been partially filled or
-                    # approval sync is needed. Log as simulated exit.
                     log.warning("[monitor] stop-loss SIMULATED (can't sell): %s — %s", opp_id, e)
                     tracker.mark_stopped_out(opp_id, current)
                 else:
@@ -321,7 +356,7 @@ def check_positions():
                        f"entry={entry:.4f} threshold={take_profit_threshold:.4f}")
             try:
                 shares = float(pos.get("shares", 0))
-                trader.sell(token_id, shares, current)
+                _sell_position(trader, opp_id, all_sell_tokens, shares, current, log)
                 tracker.mark_exited_early(opp_id, current)
             except Exception as e:
                 err_str = str(e)
