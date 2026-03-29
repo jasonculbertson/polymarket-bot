@@ -455,17 +455,17 @@ def buy_limit_gtc(token_id: str, size_usd: float, limit_price: float) -> dict:
     if not _CLOB_AVAILABLE:
         raise RuntimeError("py-clob-client is not installed. Live trading unavailable.")
 
-    from py_clob_client.clob_types import LimitOrderArgs, OrderType
+    from py_clob_client.clob_types import OrderArgs, OrderType
     from py_clob_client.order_builder.constants import BUY as _BUY
 
     client = _get_client()
-    limit_order = LimitOrderArgs(
+    order_args = OrderArgs(
         token_id=token_id,
         price=limit_price,
         size=shares,
         side=_BUY,
     )
-    signed   = client.create_limit_order(limit_order)
+    signed   = client.create_order(order_args)
     response = client.post_order(signed, OrderType.GTC)
 
     order_id = response.get("orderID") or response.get("id", "")
