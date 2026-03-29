@@ -127,12 +127,46 @@ def _run_quick_monitor(log: list = None):
     except Exception as e:
         log.append(f"[price-monitor] ERROR: {e}")
 
-    # 2. Forecast drift
+    # 2. Forecast drift — detect AND immediately sell edge-gone live positions
     try:
-        from tracker import check_forecast_drift
+        from tracker import check_forecast_drift, _load as _tload_drift, mark_exited_early
         drift_result = check_forecast_drift()
-        if drift_result.get("flagged", 0):
-            log.append(f"[forecast-drift] ⚠ {drift_result['flagged']} position(s) edge-gone — {drift_result}")
+        newly_flagged = drift_result.get("flagged", 0)
+        if newly_flagged:
+            log.append(f"[forecast-drift] ⚠ {newly_flagged} position(s) edge-gone — executing exits now")
+            # Load positions and immediately sell any that are live + edge_gone
+            try:
+                import trader as _trader
+                _drift_data = _tload_drift()
+                for _opp in _drift_data.get("opportunities", []):
+                    if not (_opp.get("edge_gone") and _opp.get("is_live") and _opp.get("outcome") is None):
+                        continue
+                    _opp_id = _opp.get("id", "")
+                    _city   = _opp.get("city", _opp_id)
+                    _reason = _opp.get("edge_gone_reason", "forecast drifted")
+                    _tokens = _opp.get("yes_token_ids") or []
+                    if not _tokens:
+                        _tok = _opp.get("no_token_id") or _opp.get("token_id")
+                        if _tok:
+                            _tokens = [_tok]
+                    _shares = float(_opp.get("shares") or 0)
+                    if not _tokens or _shares <= 0:
+                        log.append(f"[forecast-drift] ⚠ {_city}: no tokens/shares, skipping")
+                        continue
+                    log.append(f"[forecast-drift] 🚨 {_city} — {_reason[:80]}")
+                    _exit_prices = []
+                    for _tok in _tokens:
+                        try:
+                            _r = _trader.sell(_tok, _shares)
+                            _exit_prices.append(_r.get("exit_price") or 0)
+                            log.append(f"[forecast-drift]   ✅ sold token={_tok[:16]}")
+                        except Exception as _se:
+                            log.append(f"[forecast-drift]   ❌ sell failed {_tok[:16]}: {_se}")
+                    _avg_exit = round(sum(_exit_prices) / len(_exit_prices), 4) if _exit_prices else 0
+                    mark_exited_early(_opp_id, _avg_exit, reason="forecast_drift")
+                    log.append(f"[forecast-drift] ✅ {_city} exited @ {_avg_exit:.4f}")
+            except Exception as _de:
+                log.append(f"[forecast-drift] ❌ exit execution error: {_de}")
         else:
             log.append(f"[forecast-drift] {drift_result}")
     except Exception as e:
