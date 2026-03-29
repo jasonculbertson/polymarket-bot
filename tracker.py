@@ -1346,6 +1346,7 @@ def update_open_position_prices() -> dict:
     updated = 0
     stop_loss_triggered = 0
     errors = 0
+    live_exits = []   # live positions that crossed a stop-loss / take-profit / force-exit threshold
     now = datetime.utcnow()
     changed = False
 
@@ -1429,22 +1430,42 @@ def update_open_position_prices() -> dict:
                       f"{opp.get('city')} entry={entry_price:.3f} exit={exit_p:.3f} "
                       f"pnl={pnl:+.1f}%")
 
+            is_live = opp.get("is_live", False)
+            exit_reason = None
+
             # Priority 1: force exit — within N hours of resolution
             if hours_left <= force_exit_hours and hours_left >= 0:
-                _resolve_paper("force_exit", current_price)
-                stop_loss_triggered += 1
-                continue
-
+                exit_reason = "force_exit"
             # Priority 2: stop-loss
-            if pnl_chg <= -stop_loss_pct and hours_left > min_hours:
-                _resolve_paper("stop_loss", current_price)
-                stop_loss_triggered += 1
-                continue
-
+            elif pnl_chg <= -stop_loss_pct and hours_left > min_hours:
+                exit_reason = "stop_loss"
             # Priority 3: take-profit
-            if take_profit_pct > 0 and pnl_chg >= take_profit_pct:
-                _resolve_paper("take_profit", current_price)
+            elif take_profit_pct > 0 and pnl_chg >= take_profit_pct:
+                exit_reason = "take_profit"
+
+            if exit_reason:
                 stop_loss_triggered += 1
+                if is_live:
+                    # For live positions: signal caller to execute a real sell.
+                    # Build token list: YES clusters have yes_token_ids, NO bets have no_token_id.
+                    tokens = opp.get("yes_token_ids") or []
+                    if not tokens:
+                        tok = opp.get("no_token_id") or opp.get("token_id")
+                        if tok:
+                            tokens = [tok]
+                    shares_each = float(opp.get("shares") or 0)
+                    live_exits.append({
+                        "opp_id":      opp.get("id"),
+                        "city":        opp.get("city"),
+                        "exit_reason": exit_reason,
+                        "current_price": current_price,
+                        "pnl_pct":     round(pnl_chg * 100, 2),
+                        "tokens":      tokens,
+                        "shares_each": shares_each,
+                    })
+                    # Don't mark outcome yet — caller will call mark_exited_early after sell
+                else:
+                    _resolve_paper(exit_reason, current_price)
                 continue
 
         except Exception as e:
@@ -1469,8 +1490,13 @@ def update_open_position_prices() -> dict:
             _save(data)
 
     print(f"[price-monitor] {updated} positions updated | "
-          f"{stop_loss_triggered} simulated stop-loss triggers | {errors} errors")
-    return {"updated": updated, "stop_loss_triggered": stop_loss_triggered, "errors": errors}
+          f"{stop_loss_triggered} exit triggers ({len(live_exits)} live) | {errors} errors")
+    return {
+        "updated": updated,
+        "stop_loss_triggered": stop_loss_triggered,
+        "live_exits": live_exits,
+        "errors": errors,
+    }
 
 
 def _bracket_dist(forecast: float, lo, hi) -> float:
@@ -1698,9 +1724,9 @@ def mark_stopped_out(opp_id: str, exit_price: float) -> bool:
     return _mark_exit(opp_id, exit_price, "stop_loss")
 
 
-def mark_exited_early(opp_id: str, exit_price: float) -> bool:
-    """Record that a position was sold early to take profit."""
-    return _mark_exit(opp_id, exit_price, "take_profit")
+def mark_exited_early(opp_id: str, exit_price: float, reason: str = "take_profit") -> bool:
+    """Record that a position was sold early (stop_loss, take_profit, or force_exit)."""
+    return _mark_exit(opp_id, exit_price, reason)
 
 
 def mark_order_cancelled(opp_id: str) -> bool:

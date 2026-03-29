@@ -90,11 +90,40 @@ def _run_quick_monitor(log: list = None):
     if log is None:
         log = _monitor_log
 
-    # 1. Price monitor
+    # 1. Price monitor + live stop-loss / take-profit execution
     try:
-        from tracker import update_open_position_prices
+        from tracker import update_open_position_prices, mark_exited_early
         price_result = update_open_position_prices()
         log.append(f"[price-monitor] {price_result}")
+
+        # Execute real sell orders for live positions that hit stop-loss / take-profit / force-exit
+        live_exits = price_result.get("live_exits", [])
+        for ex in live_exits:
+            opp_id = ex["opp_id"]
+            reason = ex["exit_reason"]
+            tokens = ex.get("tokens", [])
+            shares_each = float(ex.get("shares_each") or 0)
+            city = ex.get("city", opp_id)
+            pnl  = ex.get("pnl_pct", 0)
+            log.append(f"[stop-loss] 🚨 {city} {reason} pnl={pnl:+.1f}% — selling {len(tokens)} token(s)")
+            if not tokens or shares_each <= 0:
+                log.append(f"[stop-loss] ⚠ {city}: no tokens/shares to sell, skipping")
+                continue
+            try:
+                import trader as _trader
+                exit_prices = []
+                for tok in tokens:
+                    try:
+                        r = _trader.sell(tok, shares_each)
+                        exit_prices.append(r.get("exit_price") or ex["current_price"])
+                        log.append(f"[stop-loss]   ✅ sold token={tok[:16]} order={r.get('order_id','')[:16]}")
+                    except Exception as sell_err:
+                        log.append(f"[stop-loss]   ❌ sell failed token={tok[:16]}: {sell_err}")
+                avg_exit = round(sum(exit_prices) / len(exit_prices), 4) if exit_prices else ex["current_price"]
+                mark_exited_early(opp_id, avg_exit, reason=reason)
+                log.append(f"[stop-loss] ✅ {city} exited @ {avg_exit:.4f} reason={reason}")
+            except Exception as ex_err:
+                log.append(f"[stop-loss] ❌ {city} exit failed: {ex_err}")
     except Exception as e:
         log.append(f"[price-monitor] ERROR: {e}")
 
