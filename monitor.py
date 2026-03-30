@@ -230,10 +230,14 @@ def check_positions():
             # fill_status == "FILLED" or None (error → treat as filled, proceed normally)
 
         # ── Phase 2a-pre: forced time-based exit ──────────────────────────────
-        # We don't hold to resolution — we sell before markets conclude.
-        # If within FORCE_EXIT_HOURS of resolution, sell at current bid.
+        # YES tokens: NEVER force-exit. They resolve to $1/share if they win,
+        # and the bid collapses to near-zero when losing anyway. Selling a
+        # winning YES bet 24h early at $0.02 instead of $1.00 is catastrophic.
+        # Let YES positions ride to resolution and redeem there.
+        # NO bets: force-exit makes sense — exit before market closes to recover
+        # remaining value rather than waiting for resolution.
         res_time_str = pos.get("resolution_time") or pos.get("resolution_date")
-        if res_time_str and FORCE_EXIT_HOURS > 0:
+        if res_time_str and FORCE_EXIT_HOURS > 0 and not is_yes_cluster:
             try:
                 from datetime import timezone
                 if "T" in str(res_time_str):

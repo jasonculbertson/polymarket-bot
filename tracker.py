@@ -1435,8 +1435,10 @@ def update_open_position_prices() -> dict:
 
             is_yes = bool(opp.get("yes_token_ids"))
 
-            # Priority 1: force exit — within N hours of resolution
-            if hours_left <= force_exit_hours and hours_left >= 0:
+            # Priority 1: force exit — within N hours of resolution (NO bets only)
+            # YES tokens must NOT be force-exited: they resolve to $1/share if
+            # winning, selling early at $0.02 bid destroys the profit entirely.
+            if hours_left <= force_exit_hours and hours_left >= 0 and not is_yes:
                 exit_reason = "force_exit"
             # Priority 2: stop-loss
             # YES tokens: skip price-based stop-loss — bids collapse to near-zero
