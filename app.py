@@ -153,27 +153,50 @@ def _run_quick_monitor(log: list = None):
                     _opp_id = _opp.get("id", "")
                     _city   = _opp.get("city", _opp_id)
                     _reason = _opp.get("edge_gone_reason", "forecast drifted")
-                    _tokens = _opp.get("yes_token_ids") or []
-                    if not _tokens:
+                    _yes_tokens = _opp.get("yes_token_ids") or []
+                    _is_cluster = bool(_yes_tokens)
+                    if not _yes_tokens:
                         _tok = _opp.get("no_token_id") or _opp.get("token_id")
                         if _tok:
-                            _tokens = [_tok]
+                            _yes_tokens = [_tok]
                     _shares = float(_opp.get("shares") or 0)
-                    if not _tokens or _shares <= 0:
+                    if not _yes_tokens or _shares <= 0:
                         log.append(f"[forecast-drift] ⚠ {_city}: no tokens/shares, skipping")
                         continue
                     log.append(f"[forecast-drift] 🚨 {_city} — {_reason[:80]}")
                     _exit_prices = []
-                    for _tok in _tokens:
+                    _sold_tokens = []
+                    _skipped_tokens = []
+                    for _tok in _yes_tokens:
                         try:
+                            # Check bid before selling — skip tokens with no real bid
+                            _bid = _trader._fetch_best_bid(_tok)
+                            if _bid is not None and _bid < 0.03:
+                                log.append(f"[forecast-drift]   ⚠ skip {_tok[:16]} bid={_bid:.3f} (no liquidity)")
+                                _skipped_tokens.append(_tok)
+                                continue
                             _r = _trader.sell(_tok, _shares)
                             _exit_prices.append(_r.get("exit_price") or 0)
-                            log.append(f"[forecast-drift]   ✅ sold token={_tok[:16]}")
+                            _sold_tokens.append(_tok)
+                            log.append(f"[forecast-drift]   ✅ sold token={_tok[:16]} @ {_r.get('exit_price',0):.3f}")
                         except Exception as _se:
                             log.append(f"[forecast-drift]   ❌ sell failed {_tok[:16]}: {_se}")
-                    _avg_exit = round(sum(_exit_prices) / len(_exit_prices), 4) if _exit_prices else 0
-                    mark_exited_early(_opp_id, _avg_exit, reason="forecast_drift")
-                    log.append(f"[forecast-drift] ✅ {_city} exited @ {_avg_exit:.4f}")
+                            _skipped_tokens.append(_tok)
+                    # Partial cluster: update yes_token_ids to remove sold tokens
+                    if _is_cluster and _skipped_tokens and _sold_tokens:
+                        from tracker import _load as _tl2, _save as _ts2, _tracker_lock as _tlock2
+                        with _tlock2:
+                            _d2 = _tl2()
+                            for _o2 in _d2["opportunities"]:
+                                if _o2.get("id") == _opp_id:
+                                    _o2["yes_token_ids"] = _skipped_tokens
+                                    _ts2(_d2)
+                                    break
+                        log.append(f"[forecast-drift]   cluster partial: {len(_skipped_tokens)} token(s) kept")
+                    elif _sold_tokens:
+                        _avg_exit = round(sum(_exit_prices) / len(_exit_prices), 4) if _exit_prices else 0
+                        mark_exited_early(_opp_id, _avg_exit, reason="forecast_drift")
+                        log.append(f"[forecast-drift] ✅ {_city} fully exited @ {_avg_exit:.4f}")
             except Exception as _de:
                 log.append(f"[forecast-drift] ❌ exit execution error: {_de}")
         else:
@@ -767,18 +790,48 @@ def admin_check_orders():
 @app.route("/admin/sell-token", methods=["POST"])
 def admin_sell_token():
     """
-    Immediately sell any token by token_id and shares.
-    Used to manually close positions the tracker lost track of.
+    Immediately sell a single token by token_id and shares.
+    Handles partial cluster exits — removes just that token from the cluster's
+    yes_token_ids. If it was the last token, marks the cluster as exited.
+
     Body: {"token_id": "...", "shares": 45.6}
     """
     try:
         import trader as _t
+        from tracker import _load as _tload, _save as _tsave, _tracker_lock, mark_exited_early
         body   = request.get_json(force=True) or {}
         tok    = body.get("token_id", "").strip()
         shares = float(body.get("shares", 0))
         if not tok or shares <= 0:
             return jsonify({"error": "token_id and shares required"}), 400
+
+        # Execute the sell
         result = _t.sell(tok, shares)
+        exit_price = result.get("exit_price", 0)
+
+        # Update tracker: remove this token from its cluster (partial exit)
+        with _tracker_lock:
+            data = _tload()
+            for opp in data["opportunities"]:
+                tids = opp.get("yes_token_ids") or []
+                if tok in tids or opp.get("token_id") == tok:
+                    tids_remaining = [t for t in tids if t != tok]
+                    if tids_remaining:
+                        # Partial exit — remove sold token, keep cluster open
+                        opp["yes_token_ids"] = tids_remaining
+                        print(f"[sell-token] partial cluster exit: removed {tok[:16]}, "
+                              f"{len(tids_remaining)} token(s) remain")
+                    else:
+                        # Last token — close the cluster
+                        opp["is_live"]     = False
+                        opp["outcome"]     = "loss"
+                        opp["exit_reason"] = "manual_sell"
+                        opp["exit_price"]  = exit_price
+                        opp["exit_at"]     = __import__("datetime").datetime.utcnow().isoformat()
+                        print(f"[sell-token] last token sold — cluster closed")
+                    _tsave(data)
+                    break
+
         return jsonify({"ok": True, "result": result})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
