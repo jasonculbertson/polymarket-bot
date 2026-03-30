@@ -1892,9 +1892,20 @@ def sync_live_positions_from_polymarket() -> dict:
             })
 
             if token_id in existing_by_token:
-                # Already in tracker — just ensure is_live=True and update price
                 opp = existing_by_token[token_id]
-                if not opp.get("is_live"):
+                # If the existing entry is closed (outcome set), it needs full revival
+                if opp.get("outcome") is not None:
+                    # Reset the entry so it appears as open again
+                    opp["is_live"]         = True
+                    opp["outcome"]         = None
+                    opp["exit_reason"]     = None
+                    opp["exit_price"]      = None
+                    opp["shares"]          = size
+                    opp["execution_price"] = avg_price
+                    opp["current_price"]   = current_price
+                    opp["live_at"]         = opp.get("live_at") or datetime.utcnow().isoformat()
+                    print(f"[sync] REVIVED closed entry {city} token={token_id[:16]}")
+                elif not opp.get("is_live"):
                     opp["is_live"]         = True
                     opp["shares"]          = size
                     opp["execution_price"] = avg_price
