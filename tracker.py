@@ -1433,14 +1433,19 @@ def update_open_position_prices() -> dict:
             is_live = opp.get("is_live", False)
             exit_reason = None
 
+            is_yes = bool(opp.get("yes_token_ids"))
+
             # Priority 1: force exit — within N hours of resolution
             if hours_left <= force_exit_hours and hours_left >= 0:
                 exit_reason = "force_exit"
             # Priority 2: stop-loss
-            elif pnl_chg <= -stop_loss_pct and hours_left > min_hours:
+            # YES tokens: skip price-based stop-loss — bids collapse to near-zero
+            # when losing, so selling gets same outcome as expiry but removes recovery chance.
+            # Forecast-drift exit (in _run_quick_monitor) is the correct exit signal.
+            elif pnl_chg <= -stop_loss_pct and hours_left > min_hours and not is_yes:
                 exit_reason = "stop_loss"
-            # Priority 3: take-profit
-            elif take_profit_pct > 0 and pnl_chg >= take_profit_pct:
+            # Priority 3: take-profit (disabled when TAKE_PROFIT_PCT=0)
+            elif take_profit_pct > 0 and pnl_chg >= take_profit_pct and not is_yes:
                 exit_reason = "take_profit"
 
             if exit_reason:
