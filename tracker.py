@@ -1817,3 +1817,149 @@ def _mark_exit(opp_id: str, exit_price: float, reason: str) -> bool:
 
                 return True
     return False
+
+
+def sync_live_positions_from_polymarket() -> dict:
+    """
+    Fetch all open positions from the Polymarket data API and ensure every
+    one is registered in the tracker as is_live=True.
+
+    This recovers from tracker data loss — positions placed live but lost
+    from the tracker (e.g. due to stale-order cancellation bugs) are re-added
+    so the stop-loss monitor can manage them.
+
+    Returns a summary dict: {synced, already_tracked, skipped, positions}
+    """
+    import re
+    import requests as _req
+
+    wallet = (POLY_FUNDER or "").strip()
+    if not wallet:
+        return {"error": "POLY_FUNDER not set"}
+
+    try:
+        r = _req.get(
+            "https://data-api.polymarket.com/positions",
+            params={"user": wallet, "sizeThreshold": "0.1"},
+            timeout=15,
+        )
+        r.raise_for_status()
+        raw = r.json()
+        pm_positions = raw if isinstance(raw, list) else raw.get("positions", [])
+    except Exception as e:
+        return {"error": f"Polymarket API fetch failed: {e}"}
+
+    with _tracker_lock:
+        data = _load()
+        existing_by_token = {
+            o.get("token_id"): o for o in data["opportunities"] if o.get("token_id")
+        }
+        # Also index by yes_token_ids members
+        for o in data["opportunities"]:
+            for tid in (o.get("yes_token_ids") or []):
+                existing_by_token[tid] = o
+
+        synced = 0
+        already = 0
+        skipped = 0
+        summary = []
+
+        for pos in pm_positions:
+            token_id  = str(pos.get("asset") or "")
+            size      = float(pos.get("size") or 0)
+            avg_price = float(pos.get("avgPrice") or 0)
+            pnl_pct   = float(pos.get("percentPnl") or 0)
+            title     = pos.get("title", "")
+            current_val = float(pos.get("currentValue") or 0)
+            current_price = round(current_val / size, 4) if size > 0 else avg_price
+
+            if not token_id or size < 0.01:
+                skipped += 1
+                continue
+
+            # Parse city from title: "Will the highest temperature in CITY be..."
+            city_match = re.search(r"in ([A-Za-z ]+?) be", title)
+            city = city_match.group(1).strip() if city_match else "Unknown"
+
+            summary.append({
+                "token_id": token_id[:20],
+                "city": city,
+                "size": size,
+                "avgPrice": avg_price,
+                "pnl_pct": round(pnl_pct, 1),
+                "tracked": token_id in existing_by_token,
+            })
+
+            if token_id in existing_by_token:
+                # Already in tracker — just ensure is_live=True and update price
+                opp = existing_by_token[token_id]
+                if not opp.get("is_live"):
+                    opp["is_live"]         = True
+                    opp["shares"]          = size
+                    opp["execution_price"] = avg_price
+                    opp["current_price"]   = current_price
+                    print(f"[sync] re-activated {city} token={token_id[:16]}")
+                else:
+                    opp["current_price"] = current_price
+                already += 1
+                continue
+
+            # Not in tracker — create a minimal live entry
+            opp_id = f"pm_sync_{token_id[:24]}"
+            new_opp = {
+                "id":               opp_id,
+                "city":             city,
+                "date":             "",           # unknown without market lookup
+                "type":             "yes",
+                "quality_tier":     "A",
+                "is_live":          True,
+                "outcome":          None,
+                "exit_reason":      None,
+                "token_id":         token_id,
+                "yes_token_ids":    [token_id],
+                "no_token_id":      None,
+                "shares":           size,
+                "entry_price":      avg_price,
+                "execution_price":  avg_price,
+                "current_price":    current_price,
+                "live_size_usd":    round(avg_price * size, 2),
+                "live_order_id":    "pm_sync",
+                "live_at":          datetime.utcnow().isoformat(),
+                "first_seen":       datetime.utcnow().isoformat(),
+                "bracket":          title,
+                "event_slug":       "",
+                "paper_pnl_usd":    0,
+                "pnl_pct":         round(pnl_pct, 2),
+            }
+            data["opportunities"].append(new_opp)
+            existing_by_token[token_id] = new_opp
+
+            # Add to taken and live_bets so dedup works
+            taken = data.setdefault("taken", [])
+            if opp_id not in taken:
+                taken.append(opp_id)
+
+            print(f"[sync] registered NEW live position: {city} token={token_id[:16]} "
+                  f"size={size} avgPrice={avg_price} pnl={pnl_pct:.1f}%")
+            synced += 1
+
+        _save(data)
+
+        # Also update live_bets Postgres key
+        try:
+            lb = _pg_load("live_bets") or {"ids": []}
+            lb_ids = set(lb.get("ids", []))
+            for o in data["opportunities"]:
+                if o.get("is_live") and o.get("id"):
+                    lb_ids.add(o["id"])
+            _pg_save("live_bets", {"ids": list(lb_ids), "updated": datetime.utcnow().isoformat()})
+        except Exception as _lbe:
+            log.warning("[sync] could not update live_bets pg key: %s", _lbe)
+
+    print(f"[sync] done: {synced} new | {already} already tracked | {skipped} skipped")
+    return {
+        "synced": synced,
+        "already_tracked": already,
+        "skipped": skipped,
+        "positions": summary,
+    }

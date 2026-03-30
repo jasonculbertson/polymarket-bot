@@ -90,6 +90,15 @@ def _run_quick_monitor(log: list = None):
     if log is None:
         log = _monitor_log
 
+    # 0. Sync real Polymarket positions into tracker (catches orphaned live positions)
+    try:
+        from tracker import sync_live_positions_from_polymarket
+        sync_result = sync_live_positions_from_polymarket()
+        if sync_result.get("synced", 0) > 0:
+            log.append(f"[pm-sync] registered {sync_result['synced']} new live position(s)")
+    except Exception as _se:
+        log.append(f"[pm-sync] ERROR: {_se}")
+
     # 1. Price monitor + live stop-loss / take-profit execution
     try:
         from tracker import update_open_position_prices, mark_exited_early
@@ -751,6 +760,40 @@ def admin_check_orders():
                 except Exception:
                     pass
         return jsonify({"orders": orders, "total": len(orders)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/admin/sell-token", methods=["POST"])
+def admin_sell_token():
+    """
+    Immediately sell any token by token_id and shares.
+    Used to manually close positions the tracker lost track of.
+    Body: {"token_id": "...", "shares": 45.6}
+    """
+    try:
+        import trader as _t
+        body   = request.get_json(force=True) or {}
+        tok    = body.get("token_id", "").strip()
+        shares = float(body.get("shares", 0))
+        if not tok or shares <= 0:
+            return jsonify({"error": "token_id and shares required"}), 400
+        result = _t.sell(tok, shares)
+        return jsonify({"ok": True, "result": result})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/admin/sync-positions", methods=["POST"])
+def admin_sync_positions():
+    """
+    Fetch real open positions from Polymarket data API and register any
+    untracked ones in the tracker as live. Also flags positions over stop-loss.
+    """
+    try:
+        from tracker import sync_live_positions_from_polymarket
+        result = sync_live_positions_from_polymarket()
+        return jsonify(result)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
