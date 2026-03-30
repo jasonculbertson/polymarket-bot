@@ -1832,8 +1832,9 @@ def sync_live_positions_from_polymarket() -> dict:
     """
     import re
     import requests as _req
+    from trader import POLY_FUNDER as _POLY_FUNDER
 
-    wallet = (POLY_FUNDER or "").strip()
+    wallet = (_POLY_FUNDER or "").strip()
     if not wallet:
         return {"error": "POLY_FUNDER not set"}
 
