@@ -315,11 +315,46 @@ def check_positions():
                         _exiting_positions.discard(opp_id)
             continue  # Done — don't also apply stop-loss logic to this position
 
-        # ── Phase 2b: price monitoring — stop-loss / take-profit ──────────────
-        # YES clusters are BINARY bets — they pay $1 or $0 at resolution.
-        # Intermediate price dips (0.11 → 0.08) are just market noise, not signals.
-        # Stop-loss on YES clusters would sell a future $1 winner for $0.09. Skip.
+        # ── Phase 2b: price monitoring — trailing stop per token ─────────────
+        # For YES clusters: check each token individually. Sell only the token
+        # that hit its trailing stop — leave the others running.
+        # For NO bets: single token, same trailing stop logic.
         if is_yes_cluster:
+            shares = float(pos.get("shares", 0))
+            for tok in list(all_sell_tokens):
+                tok_current = _fetch_best_bid(tok)
+                if tok_current is None:
+                    continue
+                tok_key = f"{opp_id}:{tok}"
+                with _peaks_lock:
+                    tok_peak = _price_peaks.get(tok_key, tok_current)
+                    if tok_current > tok_peak:
+                        _price_peaks[tok_key] = tok_current
+                        tok_peak = tok_current
+                tok_threshold = tok_peak * (1 - STOP_LOSS_PCT / 100)
+                if tok_current <= tok_threshold:
+                    log.warning(
+                        "[monitor] YES TOKEN STOP opp=%s tok=%s current=%.4f peak=%.4f thresh=%.4f",
+                        opp_id, tok[:16], tok_current, tok_peak, tok_threshold,
+                    )
+                    _log_event("STOP_LOSS", opp_id, tok, tok_current,
+                               f"peak={tok_peak:.4f} threshold={tok_threshold:.4f}")
+                    try:
+                        r = trader.sell(tok, shares)
+                        sold_price = r.get("exit_price", tok_current)
+                        log.warning("[monitor]   sold YES token=%s @ %.4f", tok[:16], sold_price)
+                        fully_closed = tracker.remove_yes_token(opp_id, tok, sold_price)
+                        if fully_closed:
+                            log.warning("[monitor]   cluster %s fully closed", opp_id)
+                        with _peaks_lock:
+                            _price_peaks.pop(tok_key, None)
+                    except Exception as e:
+                        err_str = str(e)
+                        if "not enough balance" in err_str or "allowance" in err_str:
+                            log.warning("[monitor] YES stop SIMULATED no-balance %s: %s", tok[:16], e)
+                            tracker.remove_yes_token(opp_id, tok, tok_current)
+                        else:
+                            log.error("[monitor] YES stop sell FAILED %s: %s", tok[:16], e)
             continue
 
         current = _fetch_best_bid(token_id)

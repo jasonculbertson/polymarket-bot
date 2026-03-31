@@ -1734,6 +1734,37 @@ def mark_stopped_out(opp_id: str, exit_price: float) -> bool:
     return _mark_exit(opp_id, exit_price, "stop_loss")
 
 
+def remove_yes_token(opp_id: str, token_id: str, exit_price: float) -> bool:
+    """
+    Remove a single token from a YES cluster's yes_token_ids after selling it.
+    If no tokens remain, marks the whole cluster as exited (stop_loss).
+    Returns True if the cluster is now fully closed.
+    """
+    with _tracker_lock:
+        data = _load()
+        for opp in data["opportunities"]:
+            if opp["id"] != opp_id:
+                continue
+            tokens = opp.get("yes_token_ids", [])
+            if token_id in tokens:
+                tokens.remove(token_id)
+                opp["yes_token_ids"] = tokens
+            if not tokens:
+                # All tokens sold — close the cluster
+                opp["is_live"]       = False
+                opp["outcome"]       = "loss"
+                opp["exit_reason"]   = "stop_loss"
+                opp["exit_at"]       = datetime.utcnow().isoformat()
+                opp["exit_price"]    = exit_price
+                entry = float(opp.get("entry_price") or exit_price or 1)
+                opp["pnl_pct"]       = round((exit_price - entry) / entry * 100, 2) if entry else 0
+                _save(data)
+                return True
+            _save(data)
+            return False
+    return False
+
+
 def mark_exited_early(opp_id: str, exit_price: float, reason: str = "take_profit") -> bool:
     """Record that a position was sold early (stop_loss, take_profit, or force_exit)."""
     return _mark_exit(opp_id, exit_price, reason)
