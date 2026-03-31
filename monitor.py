@@ -55,6 +55,12 @@ _MAX_EVENTS = 50
 _exiting_positions: set = set()
 _exiting_lock = threading.Lock()
 
+# Trailing stop: track peak price seen per position (in-memory, seeded from entry on first sight)
+# Stops fire when current drops 15% from peak, not from entry.
+# e.g. entry=0.11, peak=0.16 (+45%), stop fires at 0.16*(1-0.15)=0.136 (+23%)
+_price_peaks: dict = {}  # {opp_id: peak_price}
+_peaks_lock = threading.Lock()
+
 
 def _log_event(kind: str, opp_id: str, token_id: str, price: float, detail: str = ""):
     from datetime import datetime
@@ -318,9 +324,6 @@ def check_positions():
 
         current = _fetch_best_bid(token_id)
 
-        stop_loss_threshold   = entry * (1 - STOP_LOSS_PCT / 100)
-        take_profit_threshold = entry * (1 + TAKE_PROFIT_PCT / 100) if TAKE_PROFIT_PCT > 0 else None
-
         if current is None:
             log.warning(
                 "[monitor] no price for %s (opp=%s entry=%.4f) — CLOB unavailable, "
@@ -329,13 +332,23 @@ def check_positions():
             )
             continue
 
+        # Trailing stop: update peak if current is a new high, then stop from peak
+        with _peaks_lock:
+            peak = _price_peaks.get(opp_id, entry)
+            if current > peak:
+                _price_peaks[opp_id] = current
+                peak = current
+
+        stop_loss_threshold   = peak * (1 - STOP_LOSS_PCT / 100)
+        take_profit_threshold = entry * (1 + TAKE_PROFIT_PCT / 100) if TAKE_PROFIT_PCT > 0 else None
+
         if current <= stop_loss_threshold:
             with _exiting_lock:
                 if opp_id in _exiting_positions:
                     continue
                 _exiting_positions.add(opp_id)
             _log_event("STOP_LOSS", opp_id, token_id, current,
-                       f"entry={entry:.4f} threshold={stop_loss_threshold:.4f}")
+                       f"entry={entry:.4f} peak={peak:.4f} threshold={stop_loss_threshold:.4f}")
             try:
                 shares = float(pos.get("shares", 0))
                 _sell_position(trader, opp_id, all_sell_tokens, shares, current, log)
