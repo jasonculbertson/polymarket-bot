@@ -310,14 +310,13 @@ def check_positions():
             continue  # Done — don't also apply stop-loss logic to this position
 
         # ── Phase 2b: price monitoring — stop-loss / take-profit ──────────────
-        # For YES clusters: current price = sum of best bids across all bracket tokens.
-        # For NO bets: current price = best bid on the single token.
+        # YES clusters are BINARY bets — they pay $1 or $0 at resolution.
+        # Intermediate price dips (0.11 → 0.08) are just market noise, not signals.
+        # Stop-loss on YES clusters would sell a future $1 winner for $0.09. Skip.
         if is_yes_cluster:
-            bids = [_fetch_best_bid(t) for t in all_sell_tokens]
-            bids = [b for b in bids if b is not None]
-            current = round(sum(bids), 4) if bids else None
-        else:
-            current = _fetch_best_bid(token_id)
+            continue
+
+        current = _fetch_best_bid(token_id)
 
         stop_loss_threshold   = entry * (1 - STOP_LOSS_PCT / 100)
         take_profit_threshold = entry * (1 + TAKE_PROFIT_PCT / 100) if TAKE_PROFIT_PCT > 0 else None

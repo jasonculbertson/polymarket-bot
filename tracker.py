@@ -1677,31 +1677,19 @@ def check_forecast_drift(all_forecasts: dict = None) -> dict:
                 highs = [hi for lo, hi in ranges if hi != float("inf")]
                 win_lo = min(lows)  if lows  else float("-inf")
                 win_hi = max(highs) if highs else float("inf")
-                win_range = win_hi - win_lo if (win_lo != float("-inf") and win_hi != float("inf")) else 4.0
-
-                # Exit signal 1: forecast left the win range entirely
-                # Exit signal 2: forecast still inside range but drifting to the edge
-                #   — flag when fc is within 1 bracket-width of the boundary AND
-                #     has shifted ≥ 1°C/1.8°F from entry (meaningful directional move)
-                min_drift_f = 1.8 if unit == "F" else 1.0
-                dist_to_edge = min(
-                    abs(current_fc - win_lo) if win_lo != float("-inf") else float("inf"),
-                    abs(current_fc - win_hi) if win_hi != float("inf") else float("inf"),
-                )
-                near_edge = dist_to_edge <= (win_range / len(ranges))  # within one bracket-width of edge
-
+                # YES clusters are binary bets. Only exit when the forecast has
+                # clearly left the win range by a meaningful margin (≥1 bracket width).
+                # Ignore near-edge noise — a forecast at 11.1°C in a [10–12°C] range
+                # is still 1.8°C from the upper boundary and should ride to resolution.
+                bracket_width = (win_hi - win_lo) / max(len(ranges), 1) if (win_lo != float("-inf") and win_hi != float("inf")) else 2.0
                 if not (win_lo <= current_fc <= win_hi):
-                    # Forecast is already outside win range
-                    edge_gone = True
-                    reason = (f"Forecast {current_fc:.1f}°{unit} left win range "
-                              f"[{win_lo:.0f}–{win_hi:.0f}°{unit}] "
-                              f"(shifted {fc_shift:+.1f}°, {hrs_left:.0f}h left)")
-                elif near_edge and fc_shift >= min_drift_f and hrs_left > _NEAR_HOURS:
-                    # Still inside range but trending toward the boundary
-                    edge_gone = True
-                    reason = (f"Forecast {current_fc:.1f}°{unit} near win-range edge "
-                              f"[{win_lo:.0f}–{win_hi:.0f}°{unit}], drifting {fc_shift:+.1f}°{unit} "
-                              f"({dist_to_edge:.1f}° to boundary, {hrs_left:.0f}h left)")
+                    dist_outside = min(abs(current_fc - win_lo), abs(current_fc - win_hi))
+                    if dist_outside >= bracket_width * 0.5:
+                        # Forecast clearly outside — not just rounding noise
+                        edge_gone = True
+                        reason = (f"Forecast {current_fc:.1f}°{unit} left win range "
+                                  f"[{win_lo:.0f}–{win_hi:.0f}°{unit}] by {dist_outside:.1f}° "
+                                  f"(shifted {fc_shift:+.1f}°, {hrs_left:.0f}h left)")
 
             if edge_gone:
                 opp["edge_gone"]                = True
