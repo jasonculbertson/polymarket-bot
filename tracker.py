@@ -1725,7 +1725,7 @@ def get_live_positions() -> list:
         if o.get("is_live")
         and o.get("outcome") is None
         and o.get("exit_reason") is None
-        and o.get("token_id")
+        and (o.get("token_id") or o.get("yes_token_ids"))
     ]
 
 
