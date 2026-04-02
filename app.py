@@ -1535,20 +1535,31 @@ def _auto_execute_trades(scan_opportunities: list):
                 is_yes = opp.get("type") == "yes" and opp.get("yes_token_ids")
 
                 if is_yes:
-                    # YES cluster: market (FOK) buy per bracket — immediate fill at ask.
+                    # YES cluster: try market (FOK) first; if spread too wide, fall back to GTC limit.
                     yes_token_ids = opp.get("yes_token_ids", [])
                     total_usd     = float(opp.get("paper_size_usd") or opp.get("size_usd") or 10)
                     size_each     = round(total_usd / len(yes_token_ids), 2) if yes_token_ids else 5.0
                     entry_price   = float(opp.get("entry_price") or 0.20)
                     price_each    = round(entry_price / len(yes_token_ids), 4) if yes_token_ids else entry_price
-                    _atlog.warning("[auto-trade] YES cluster %s %s — market buy %d brackets $%.2f @ %.4f each",
-                                   opp.get("city"), opp.get("date"), len(yes_token_ids), size_each, price_each)
                     leg_results = []
+                    used_gtc = False
                     for tok in yes_token_ids:
-                        r = _trader.buy(tok, size_each, price_each, neg_risk=False)
+                        try:
+                            r = _trader.buy(tok, size_each, price_each, neg_risk=False)
+                        except ValueError as ve:
+                            if "spread too wide" in str(ve) or "spread" in str(ve).lower():
+                                # Market has no active quotes yet — post a GTC limit at our fair value
+                                _atlog.warning("[auto-trade]   spread wide on %s — posting GTC limit @ %.4f", tok[:16], price_each)
+                                r = _trader.buy_limit_gtc(tok, size_each, price_each)
+                                used_gtc = True
+                            else:
+                                raise
                         leg_results.append(r)
                         _atlog.warning("[auto-trade]   leg token=%s order=%s shares=%.2f",
                                        tok[:16], r.get("order_id", "")[:16], r.get("shares", 0))
+                    order_type = "GTC limit" if used_gtc else "market"
+                    _atlog.warning("[auto-trade] YES cluster %s %s — %s %d brackets $%.2f @ %.4f each",
+                                   opp.get("city"), opp.get("date"), order_type, len(yes_token_ids), size_each, price_each)
                     # Record the cluster as live using the first leg's order details
                     first = leg_results[0] if leg_results else {}
                     ok = record_live_trade(

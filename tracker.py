@@ -1050,6 +1050,13 @@ def redeem_all_live_wins() -> dict:
             except Exception:
                 pass
 
+        # Skip positions that have failed too many times (no MATIC for gas)
+        fail_count = int(opp.get("redeem_fail_count", 0))
+        if fail_count >= 5:
+            _log.warning("[tracker] redeem %s — skipping after %d failures (Polymarket auto-redeems within 24h)", opp.get("id"), fail_count)
+            results.append({"opp_id": opp.get("id"), "redeemed": False, "message": f"skipped after {fail_count} failures"})
+            continue
+
         try:
             result = redeem_winning_position(token_id, condition_id, bet_type)
         except Exception as e:
@@ -1067,6 +1074,15 @@ def redeem_all_live_wins() -> dict:
                         o["redeemed"] = True
                         o["redeem_method"] = result.get("method", "unknown")
                         o["redeem_tx"] = result.get("tx_hash")
+                        break
+                _save(d)
+        elif not result.get("redeemed"):
+            # Track failures so we stop spamming on no-MATIC wallets
+            with _tracker_lock:
+                d = _load()
+                for o in d["opportunities"]:
+                    if o.get("id") == opp.get("id"):
+                        o["redeem_fail_count"] = int(o.get("redeem_fail_count", 0)) + 1
                         break
                 _save(d)
 
@@ -1435,16 +1451,19 @@ def update_open_position_prices() -> dict:
 
             is_yes = bool(opp.get("yes_token_ids"))
 
+            # Trailing stop: use peak_price if recorded, else entry_price
+            peak_price = float(opp.get("peak_price") or entry_price)
+            if current_price > peak_price:
+                opp["peak_price"] = current_price
+                peak_price = current_price
+            trail_pnl_chg = (current_price - peak_price) / peak_price if peak_price > 0 else 0
+
             # Priority 1: force exit — within N hours of resolution (NO bets only)
-            # YES tokens must NOT be force-exited: they resolve to $1/share if
-            # winning, selling early at $0.02 bid destroys the profit entirely.
             if hours_left <= force_exit_hours and hours_left >= 0 and not is_yes:
                 exit_reason = "force_exit"
-            # Priority 2: stop-loss
-            # YES tokens: skip price-based stop-loss — bids collapse to near-zero
-            # when losing, so selling gets same outcome as expiry but removes recovery chance.
-            # Forecast-drift exit (in _run_quick_monitor) is the correct exit signal.
-            elif pnl_chg <= -stop_loss_pct and hours_left > min_hours and not is_yes:
+            # Priority 2: trailing stop-loss — fires when price drops 15% from peak
+            # Applies to both YES clusters and NO bets.
+            elif trail_pnl_chg <= -stop_loss_pct and hours_left > min_hours:
                 exit_reason = "stop_loss"
             # Priority 3: take-profit (disabled when TAKE_PROFIT_PCT=0)
             elif take_profit_pct > 0 and pnl_chg >= take_profit_pct and not is_yes:
