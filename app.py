@@ -1357,7 +1357,9 @@ except ImportError:
 def _get_live_today_pnl() -> float:
     """
     Sum of P&L on live trades that exited today (UTC).
+    Uses actual realized P&L (exit_price - execution_price) * shares.
     Paper-only positions do NOT count — circuit breaker protects real money only.
+    Only counts positions where a real sell was executed (exit_price is set).
     """
     from tracker import _load as _tload
     data  = _tload()
@@ -1365,14 +1367,20 @@ def _get_live_today_pnl() -> float:
     total = 0.0
     for o in data.get("opportunities", []):
         # Only count positions that had real money deployed
-        if not o.get("is_live") and not o.get("execution_price"):
+        if not o.get("execution_price"):
             continue
         # Must have exited today
         if not (o.get("exit_at") or "").startswith(today):
             continue
-        pnl = o.get("paper_pnl_usd")  # field used by _mark_exit for both live and paper
-        if pnl is not None:
-            total += float(pnl)
+        # Use actual realized P&L: only count if we have a real exit price
+        exit_price = o.get("exit_price")
+        exec_price = o.get("execution_price")
+        shares = float(o.get("shares") or 0)
+        if exit_price is not None and exec_price is not None and shares > 0:
+            pnl = (float(exit_price) - float(exec_price)) * shares
+            total += pnl
+        # If no exit_price (position expired/resolved without a manual sell), skip —
+        # Polymarket auto-redeems wins so those show up as positive cash flow separately
     return round(total, 2)
 
 
