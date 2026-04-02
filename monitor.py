@@ -321,14 +321,25 @@ def check_positions():
         # For NO bets: single token, same trailing stop logic.
         if is_yes_cluster:
             shares = float(pos.get("shares", 0))
+            n_tokens = max(len(all_sell_tokens), 1)
+            # Seed per-token entry price from cluster entry_price / num_tokens
+            # so the trailing stop is anchored to what we actually paid, not
+            # whatever the price happens to be when the monitor restarts.
+            entry_per_tok = entry / n_tokens if entry > 0 else 0
             for tok in list(all_sell_tokens):
                 tok_current = _fetch_best_bid(tok)
                 if tok_current is None:
                     continue
                 tok_key = f"{opp_id}:{tok}"
                 with _peaks_lock:
-                    tok_peak = _price_peaks.get(tok_key, tok_current)
-                    if tok_current > tok_peak:
+                    # Use entry_per_tok as floor so redeployments don't reset the peak
+                    stored_peak = _price_peaks.get(tok_key)
+                    if stored_peak is None:
+                        # First time seeing this token — seed from max(current, entry_per_tok)
+                        stored_peak = max(tok_current, entry_per_tok)
+                        _price_peaks[tok_key] = stored_peak
+                    tok_peak = max(stored_peak, tok_current)
+                    if tok_current > stored_peak:
                         _price_peaks[tok_key] = tok_current
                         tok_peak = tok_current
                 tok_threshold = tok_peak * (1 - STOP_LOSS_PCT / 100)
@@ -367,12 +378,16 @@ def check_positions():
             )
             continue
 
-        # Trailing stop: update peak if current is a new high, then stop from peak
+        # Trailing stop: seed peak from entry (not current) so redeployments
+        # don't reset the high-water mark to a post-loss price.
         with _peaks_lock:
-            peak = _price_peaks.get(opp_id, entry)
-            if current > peak:
+            stored = _price_peaks.get(opp_id)
+            if stored is None:
+                stored = max(current, entry)  # seed from entry on first sight
+                _price_peaks[opp_id] = stored
+            peak = max(stored, current)
+            if current > stored:
                 _price_peaks[opp_id] = current
-                peak = current
 
         stop_loss_threshold   = peak * (1 - STOP_LOSS_PCT / 100)
         take_profit_threshold = entry * (1 + TAKE_PROFIT_PCT / 100) if TAKE_PROFIT_PCT > 0 else None
