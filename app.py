@@ -1356,10 +1356,11 @@ except ImportError:
 
 def _get_live_today_pnl() -> float:
     """
-    Sum of P&L on live trades that exited today (UTC).
+    Sum of P&L on live trades opened AND exited today (UTC).
     Uses actual realized P&L (exit_price - execution_price) * shares.
-    Paper-only positions do NOT count — circuit breaker protects real money only.
-    Only counts positions where a real sell was executed (exit_price is set).
+    Only counts positions where real money was deployed today (live_at or first_seen today)
+    AND a real sell was executed (exit_price is set). This prevents old positions
+    that resolve today from inflating today's loss figure.
     """
     from tracker import _load as _tload
     data  = _tload()
@@ -1368,6 +1369,10 @@ def _get_live_today_pnl() -> float:
     for o in data.get("opportunities", []):
         # Only count positions that had real money deployed
         if not o.get("execution_price"):
+            continue
+        # Position must have been opened today (not just resolved today from an old entry)
+        opened_at = o.get("live_at") or o.get("first_seen") or ""
+        if not opened_at.startswith(today):
             continue
         # Must have exited today
         if not (o.get("exit_at") or "").startswith(today):
