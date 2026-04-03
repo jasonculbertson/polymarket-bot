@@ -518,6 +518,7 @@ def sell(token_id: str, shares: float, price: Optional[float] = None) -> dict:
     # ── Sync CLOB's cached view of our conditional-token balance ────────────
     # "not enough balance / allowance" is often a stale CLOB cache issue.
     # update_balance_allowance forces the CLOB to re-read on-chain state.
+    post_balance = {}
     try:
         bal_params   = BalanceAllowanceParams(asset_type=AssetType.CONDITIONAL, token_id=token_id)
         pre_balance  = client.get_balance_allowance(bal_params)
@@ -527,6 +528,19 @@ def sell(token_id: str, shares: float, price: Optional[float] = None) -> dict:
         log.warning("[trader] post-sync CLOB balance: %s", post_balance)
     except Exception as _be:
         log.warning("[trader] balance sync (non-fatal): %s", _be)
+
+    # Clamp shares to actual on-chain balance to avoid "not enough balance" errors.
+    # Polymarket conditional tokens use 6 decimal places (balance / 1e6 = shares).
+    try:
+        clob_bal = int(post_balance.get("balance", 0)) / 1e6
+        if clob_bal > 0 and clob_bal < shares:
+            log.warning(
+                "[trader] clamping sell shares %.6f → %.6f (CLOB balance)",
+                shares, clob_bal,
+            )
+            shares = clob_bal
+    except Exception as _ce:
+        log.warning("[trader] balance clamp (non-fatal): %s", _ce)
 
     # Use market order (FOK) for stop-loss exits to ensure immediate execution.
     market_order = MarketOrderArgs(
